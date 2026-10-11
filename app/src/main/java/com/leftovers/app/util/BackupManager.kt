@@ -134,6 +134,7 @@ class BackupManager(
                         .put("categoryId", t.categoryId).put("day", t.epochDay).put("note", t.note)
                         .put("createdAt", t.createdAt).put("accountId", t.accountId ?: JSONObject.NULL)
                         .put("receipt", photoRef(t.receiptPath))
+                        .put("foreignAmount", t.foreignMinor ?: JSONObject.NULL).put("foreignCurrency", t.foreignCurrency ?: JSONObject.NULL)
                 }))
                 put("transfers", JSONArray(transferList.map { t ->
                     JSONObject().put("id", t.id).put("from", t.fromAccountId).put("to", t.toAccountId).put("amount", t.amountMinor)
@@ -297,6 +298,8 @@ class BackupManager(
                     createdAt = it.optLong("createdAt", System.currentTimeMillis()),
                     accountId = it.longOrNull("accountId"),
                     receiptPath = restorePhoto(it.optString("receipt")),
+                    foreignMinor = it.longOrNull("foreignAmount"),
+                    foreignCurrency = it.stringOrNull("foreignCurrency"),
                 )
             }
             val transfers = json.optJSONArray("transfers")?.objects().orEmpty().map {

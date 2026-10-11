@@ -192,7 +192,9 @@ fun LeftoversNavHost(
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
-    val back: () -> Unit = { nav.popBackStack() }
+    // Only while there is a screen to go back to: a quick second tap on a back arrow used to remove Home itself,
+    // leaving an empty screen with just the tab bar.
+    val back: () -> Unit = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
     val idArg = listOf(navArgument("id") { type = NavType.LongType })
     var toast by remember { mutableStateOf<String?>(null) }
     // A filter Home asked Activity to open with.
@@ -267,6 +269,8 @@ fun LeftoversNavHost(
                             // Add and edit slide up like a sheet: moving a finished layout is cheap and never stretches text.
                             targetState.isAdd() -> slideInVertically(tween(320, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(220))
                             targetState.isSheet() -> slideInVertically(tween(420, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(200))
+                            // Both tabs slide together and the new one fades in straight away, so there's never a blank
+                            // moment. The old one fades out quicker, so the two barely show at once.
                             targetState.isTab() && initialState.isTab() ->
                                 slideIntoContainer(tabDirection(initialState, targetState), tween(300, easing = FastOutSlowInEasing)) { it / 6 } + fadeIn(tween(240))
                             else -> slideIntoContainer(SlideDirection.Start, navTween) + fadeIn(tween(220))
@@ -278,7 +282,7 @@ fun LeftoversNavHost(
                             targetState.isAdd() -> fadeOut(tween(220))
                             targetState.isSheet() -> fadeOut(tween(300))
                             targetState.isTab() && initialState.isTab() ->
-                                slideOutOfContainer(tabDirection(initialState, targetState), tween(300, easing = FastOutSlowInEasing)) { it / 6 } + fadeOut(tween(180))
+                                slideOutOfContainer(tabDirection(initialState, targetState), tween(300, easing = FastOutSlowInEasing)) { it / 6 } + fadeOut(tween(120))
                             else -> slideOutOfContainer(SlideDirection.Start, navTween) { it / 4 } + fadeOut(tween(220))
                         }
                     },
@@ -333,6 +337,7 @@ fun LeftoversNavHost(
                     screen(Routes.INSIGHTS) {
                         StatsScreen(
                             onOpenRecap = { nav.navigate(Routes.recap(it.toString())) },
+                            onOpenYear = { nav.navigate(Routes.recap(it.toString())) },
                             onOpenTransaction = { nav.navigate(Routes.edit(it)) },
                         )
                     }
@@ -510,8 +515,9 @@ private fun FloatingDock(current: String?, onTab: (String) -> Unit, onAdd: () ->
             .navigationBarsPadding()
             .padding(bottom = 14.dp)
             .clip(CircleShape)
-            .frosted()
-            // A soft top-lit sheen, so the bar reads as glass even over a plain dark background.
+            // Light mode: a lighter tint than the headers, so the bar is glass like the cards, not milky white.
+            .frosted(if (c.isDark) c else c.copy(barTint = Color.White.copy(alpha = 0.18f)))
+            // A soft top-lit sheen, so the bar reads as glass in both themes.
             .background(Brush.verticalGradient(listOf(c.glassStrong, c.glass.copy(alpha = c.glass.alpha * 0.4f))))
             .border(1.dp, glassBorder(c), CircleShape)
             .padding(6.dp),

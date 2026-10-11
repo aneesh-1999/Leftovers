@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/icon.svg" width="96" alt="Leftovers app icon" />
+<img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/icon-96.png" width="96" alt="Leftovers app icon">
 
 # Leftovers
 
@@ -12,20 +12,14 @@ today, plan for the things you want, and ask an AI about your money if you'd lik
 [![Download](https://img.shields.io/badge/Download-latest%20APK-CDF46F?logo=android&logoColor=black)](https://github.com/saisaharsh3/Leftovers/releases/latest)
 ![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)
 ![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](https://github.com/saisaharsh3/Leftovers/blob/main/LICENSE)
 
-<img src="docs/screenshots/home.jpg" width="180" alt="Home" />&nbsp;
-<img src="docs/screenshots/add.jpg" width="180" alt="Add an expense" />&nbsp;
-<img src="docs/screenshots/insights.jpg" width="180" alt="Insights" />&nbsp;
-<img src="docs/screenshots/plan.jpg" width="180" alt="Plan" />
+![Home, adding an expense, Insights and Plan](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row1.png)
 
-<img src="docs/screenshots/calendar.jpg" width="180" alt="Activity calendar" />&nbsp;
-<img src="docs/screenshots/filters.jpg" width="180" alt="Filter by account, category or tag" />&nbsp;
-<img src="docs/screenshots/money-owed.jpg" width="180" alt="Money owed" />&nbsp;
-<img src="docs/screenshots/assistant.jpg" width="180" alt="AI assistant" />
+![Activity calendar, filters, Money owed and the AI assistant](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row2.png)
 
-<a href="https://github.com/saisaharsh3/Leftovers/releases/latest"><img src="https://img.shields.io/badge/Download%20APK-CDF46F?style=for-the-badge&logo=android&logoColor=black" height="44" alt="Download the APK" /></a>&nbsp;
-<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/saisaharsh3/Leftovers"><img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" height="44" alt="Get it on Obtainium" /></a>
+<a href="https://github.com/saisaharsh3/Leftovers/releases/latest"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-download.png" height="40" alt="Download the APK"></a>&nbsp;
+<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/saisaharsh3/Leftovers"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-obtainium.png" height="40" alt="Get it on Obtainium"></a>
 
 If Leftovers is useful to you, a ⭐ helps other people find it.
 
@@ -50,9 +44,11 @@ Most budget apps want an account, show ads, or send your spending to a server. L
 - Expenses and income with categories, notes, accounts and receipt photos
 - Add forgotten spending for any past day from a date strip or calendar
 - Split one bill across several categories
+- Split a bill with friends, equally or by amount: your share is your expense, and what each person owes goes to Money owed
+- Spending abroad? Log it in the local currency at your own rate; the original amount stays visible
 - Search every entry by note, category or amount; filter by account, category or #tag
 - Add #tags to notes (*"Dinner #goa"*) to group entries across categories and months, with a total
-- Edit with a tap; swipe left to delete, with undo. Deleted entries can be restored later from Settings
+- Tap an entry to edit or delete it. Deleted entries can be restored later from Settings
 
 **Budgets that make sense day to day**
 - Monthly budget, or a yearly one split evenly, by smart rollover, or custom per month
@@ -78,7 +74,7 @@ Most budget apps want an account, show ads, or send your spending to a server. L
 - Category breakdown that opens each category's entries
 - Spending calendar that opens any day's entries
 - Trends: category changes vs last month, weekend spending, where the month is heading
-- Month-over-month comparison and a story-style monthly recap you can share as an image
+- Month-over-month comparison, a story-style monthly recap you can share as an image, and a year in review
 
 **AI assistant** (optional)
 - Connect Claude, ChatGPT, Gemini, Mistral, Groq, DeepSeek, Grok, OpenRouter or your own server, with your own API key
@@ -88,15 +84,18 @@ Most budget apps want an account, show ads, or send your spending to a server. L
 - Every change it proposes waits for you to tap **Apply**. See [AI assistant](#ai-assistant) below.
 
 **Extras**
-- Home-screen widgets: *Safe to spend today* (with one-tap add) and *Left this month*
+- Home-screen widgets: *Safe to spend today* (with one-tap add) and *Left this month*, plus an *Add expense* Quick Settings tile
 - Evening reminder, app lock (fingerprint, face or PIN)
+- Import from a bank statement or another app (CSV), skipping anything already logged
 - Backup and restore to a file or Google Drive (photos included if you like), daily, weekly or monthly automatic
   backups to a folder you choose, CSV export
 - Optional backup password: backups are encrypted (AES-256) and need it to restore
-- Optional payment detection from bank SMS and from bank email alerts, suggesting entries for you to confirm.
+- Optional payment detection from bank SMS and from bank email alerts, suggesting entries for you to confirm,
+  including money coming in as income.
   Add your own keywords for banks it misses, and test any message to see what it would suggest. One payment never shows up twice, even when it arrives by both SMS and email
-- Swipe sideways to move between Home, Activity, Insights and Plan; the page follows your finger
-- Dark glass design with spring animations and high-refresh-rate support; light theme available
+- Swipe sideways to move between Home, Activity, Insights and Plan
+- Frosted glass design in dark and light mode (or solid surfaces with *Glass effects* off), spring animations
+  and high-refresh-rate support
 
 ## Privacy
 
@@ -172,7 +171,7 @@ OpenRouter passes requests on to the model's own provider).
 **Automatic updates:** add the repo to [Obtainium](https://github.com/ImranR98/Obtainium) with the badge at the
 top, and new releases install straight from GitHub.
 
-Requires Android 8.0 (API 26) or newer. What's new in each version is in [CHANGELOG.md](CHANGELOG.md).
+Requires Android 8.0 (API 26) or newer. What's new in each version is in [CHANGELOG.md](https://github.com/saisaharsh3/Leftovers/blob/main/CHANGELOG.md).
 
 ## Development
 
@@ -205,7 +204,7 @@ On Windows use `gradlew.bat`. If Gradle can't find the SDK, create `local.proper
 
 ### Publishing a GitHub release
 
-Pushing a tag such as `v1.2.0` runs the [release workflow](.github/workflows/release.yml), which runs
+Pushing a tag such as `v1.2.0` runs the [release workflow](https://github.com/saisaharsh3/Leftovers/blob/main/.github/workflows/release.yml), which runs
 the tests, builds a signed APK and attaches it to a GitHub release. It needs these repository secrets
 (**Settings → Secrets and variables → Actions**):
 
@@ -260,16 +259,14 @@ app/src/main/java/com/leftovers/app/
 - **Write code:** start with a
   [good first issue](https://github.com/saisaharsh3/Leftovers/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or one marked
   [help wanted](https://github.com/saisaharsh3/Leftovers/issues?q=is%3Aopen+label%3A%22help+wanted%22). Read
-  [CONTRIBUTING.md](CONTRIBUTING.md) and open your pull request against the **`dev`** branch.
+  [CONTRIBUTING.md](https://github.com/saisaharsh3/Leftovers/blob/main/CONTRIBUTING.md) and open your pull request against the **`dev`** branch.
 
 ### Contributors
 
-<a href="https://github.com/saisaharsh3/Leftovers/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=saisaharsh3/Leftovers" alt="Contributors" />
-</a>
+[![Contributors](https://contrib.rocks/image?repo=saisaharsh3/Leftovers)](https://github.com/saisaharsh3/Leftovers/graphs/contributors)
 
 ## License
 
-[MIT](LICENSE). Third-party assets are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT](https://github.com/saisaharsh3/Leftovers/blob/main/LICENSE). Third-party assets are listed in [THIRD_PARTY_NOTICES.md](https://github.com/saisaharsh3/Leftovers/blob/main/THIRD_PARTY_NOTICES.md).
 
 Made by C. Sai Saharsh · [github.com/saisaharsh3](https://github.com/saisaharsh3)

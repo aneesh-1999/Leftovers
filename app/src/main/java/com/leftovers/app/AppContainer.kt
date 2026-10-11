@@ -85,7 +85,10 @@ class AppContainer(private val context: Context) {
     }
 
     fun start() {
-        scope.launch { sms.scrubRawBodies() }
+        scope.launch {
+            sms.scrubRawBodies()
+            sms.forgetOldSeen()
+        }
         // Initial widget update
         scope.launch {
             runCatching { SafeToSpendWidget().updateAll(context) }

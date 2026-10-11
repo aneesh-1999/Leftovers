@@ -4,12 +4,15 @@ import android.content.Context
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.leftovers.app.LeftoversApp
 import com.leftovers.app.data.SmsSuggestion
+import com.leftovers.app.data.matchFor
 import jakarta.mail.AuthenticationFailedException
 import jakarta.mail.FetchProfile
 import jakarta.mail.Folder
@@ -31,6 +34,8 @@ import jakarta.mail.search.SearchTerm
 import jakarta.mail.search.SubjectTerm
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import java.time.Instant
@@ -47,6 +52,9 @@ data class EmailPayment(
     val sentAt: Long,
     val messageKey: String,
     val accountDigits: String? = null,
+    val isIncome: Boolean = false,
+    /** The account it matched, by last digits or name; filled in when it's stored. */
+    val accountText: String = "",
 )
 
 /**
@@ -62,8 +70,12 @@ object EmailChecker {
     private val FIRST_LOOK_BACK_MS = TimeUnit.DAYS.toMillis(2)
     private val OVERLAP_MS = TimeUnit.HOURS.toMillis(6)
 
+    /** One check at a time: the background check, the one on opening the app and Check now can overlap. */
+    private val oneAtATime = Mutex()
+
     private val searchWords = listOf(
         "debited", "spent", "paid", "payment", "purchase", "charged", "transaction", "order", "receipt", "invoice",
+        "credited", "received",
     )
 
     /** Connection settings: TLS with certificate and host name checks, short timeouts, read without marking. */
@@ -87,23 +99,26 @@ object EmailChecker {
     }
 
     /** Looks for new payment emails and adds them as suggestions. Returns how many were added. */
-    suspend fun check(context: Context): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun check(context: Context): Result<Int> = withContext(Dispatchers.IO) { oneAtATime.withLock { checkNow(context) } }
+
+    private suspend fun checkNow(context: Context): Result<Int> {
         val container = (context.applicationContext as LeftoversApp).container
         val account = container.emailAccount
-        val connection = account.connection.value ?: return@withContext Result.success(0)
-        val password = account.password() ?: return@withContext Result.failure(IllegalStateException("Not connected"))
+        val connection = account.connection.value ?: return Result.success(0)
+        val password = account.password() ?: return Result.failure(IllegalStateException("Not connected"))
         val now = System.currentTimeMillis()
         // Always at least two days back: an alert that arrived before the last check isn't missed, and
         // emails already seen are recognised and skipped.
         val since = minOf(now - FIRST_LOOK_BACK_MS, if (connection.lastCheckedAt == 0L) now else connection.lastCheckedAt - OVERLAP_MS)
         val keywords = container.settings.settings.first().detectionKeywords
         var stats = 0 to 0
-        runCatching {
+        return runCatching {
             val found = Session.getInstance(properties(connection.host)).getStore("imaps").use { store ->
                 store.connect(connection.host, connection.address, password)
                 findPayments(store, since, keywords) { searched, fromBanks -> stats = searched to fromBanks }
             }
             var added = 0
+            val accounts = container.accounts.accounts.first()
             found.forEach { p ->
                 val isNew = container.sms.add(
                     SmsSuggestion(
@@ -116,6 +131,8 @@ object EmailChecker {
                         receivedAt = p.sentAt,
                         source = SmsSuggestion.SOURCE_EMAIL,
                         accountDigits = p.accountDigits,
+                        isIncome = p.isIncome,
+                        accountId = accounts.matchFor(p.accountText)?.id,
                     ),
                 )
                 if (isNew) added++
@@ -142,10 +159,14 @@ object EmailChecker {
         val inbox = store.getFolder("INBOX")
         inbox.open(Folder.READ_ONLY)
         try {
-            val words: Array<SearchTerm> = searchWords.flatMap { listOf(SubjectTerm(it), BodyTerm(it)) }.toTypedArray()
             // IMAP dates are whole days, so the exact time is checked again below.
-            val term = AndTerm(ReceivedDateTerm(ComparisonTerm.GE, Date(since)), OrTerm(words))
-            val found = inbox.search(term)
+            val recent = ReceivedDateTerm(ComparisonTerm.GE, Date(since))
+            // A few small searches, merged: one search with every word nests too deeply for some servers,
+            // which then quietly return fewer messages.
+            val found = searchWords.chunked(4).flatMap { chunk ->
+                val words: Array<SearchTerm> = chunk.flatMap { listOf(SubjectTerm(it), BodyTerm(it)) }.toTypedArray()
+                inbox.search(AndTerm(recent, OrTerm(words))).toList()
+            }.distinctBy { it.messageNumber }.toTypedArray()
             // Only the envelope (sender, subject, date) is fetched first. Messages that aren't from a bank,
             // card or payment service are skipped here, without ever opening them.
             inbox.fetch(found, FetchProfile().apply { add(FetchProfile.Item.ENVELOPE) })
@@ -169,7 +190,12 @@ object EmailChecker {
         val parsed = EmailParser.parse(subject, senderName, body, keywords) ?: return null
         val sentAt = (m.sentDate ?: m.receivedDate)?.time ?: return null
         val key = (m as? MimeMessage)?.messageID ?: "${from?.address}|$sentAt|$subject"
-        return EmailPayment(parsed.amountMinor, parsed.merchant, senderName.take(40), sentAt, key, SmsParser.accountDigits(subject + " " + body))
+        return EmailPayment(
+            parsed.amountMinor, parsed.merchant, senderName.take(40), sentAt, key, SmsParser.accountDigits(subject + " " + body),
+            parsed.isIncome,
+            // Just the start of the email, where banks name the account; matched against accounts when stored.
+            accountText = (subject + "\n" + body).take(2_000),
+        )
     }
 
     /** Readable text of a message, preferring plain text over HTML. Attachments are skipped. */
@@ -229,11 +255,24 @@ object EmailSync {
             wm.cancelUniqueWork(WORK_NAME)
             return
         }
-        val request = PeriodicWorkRequestBuilder<EmailCheckWorker>(30, TimeUnit.MINUTES)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+        // Every 15 minutes, Android's shortest. Phones still delay background work to save battery, so the
+        // app also checks when it's opened (see checkSoon).
+        val request = PeriodicWorkRequestBuilder<EmailCheckWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(online)
             .build()
-        wm.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+        wm.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request)
     }
+
+    /** Checks once, soon, if the last check was more than [STALE_MS] ago; used when the app is opened. */
+    fun checkSoon(context: Context, lastCheckedAt: Long) {
+        if (System.currentTimeMillis() - lastCheckedAt < STALE_MS) return
+        val request = OneTimeWorkRequestBuilder<EmailCheckWorker>().setConstraints(online).build()
+        WorkManager.getInstance(context).enqueueUniqueWork(ONCE_NAME, ExistingWorkPolicy.KEEP, request)
+    }
+
+    private const val ONCE_NAME = "email_check_once"
+    private val STALE_MS = TimeUnit.MINUTES.toMillis(5)
+    private val online get() = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 }
 
 class EmailCheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {

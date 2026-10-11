@@ -23,8 +23,8 @@ android {
         applicationId = "com.leftovers.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 14
-        versionName = "1.4.0"
+        versionCode = 16
+        versionName = "1.6.0"
     }
 
     signingConfigs {
@@ -55,6 +55,14 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        // The Dev build testers install from GitHub: optimized like a release, so its speed is the real app's
+        // (a debug build starts about three times slower and stutters), but it installs as Leftovers Dev.
+        create("dev") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            matchingFallbacks += listOf("release")
         }
     }
 
@@ -88,6 +96,8 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
     sourceSets {
+        // The Dev build shares the debug build's name and amber icon.
+        getByName("dev").res.srcDir("src/debug/res")
         getByName("debug").assets.srcDir("$projectDir/schemas")
     }
 }

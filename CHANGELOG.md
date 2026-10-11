@@ -5,8 +5,44 @@ All notable changes to Leftovers. Download any version from
 
 ## Unreleased
 
+- Split with people: when adding an expense, tap Split, pick who's sharing it, and split it equally or type
+  each person's amount. Your share is your expense; each person's share goes to Money owed. Splitting across
+  categories is in the same sheet, so it's one button
+- Import from CSV (Settings → Data): a bank statement or another app's export. Columns are found by name,
+  categories are matched by name (others go to Other), and entries already in Leftovers are skipped
+- Quick Settings tile: add "Add expense" to your notification panel to open the keypad in one tap
+- Year in review: the year as a story, like the monthly recap (Insights → Your 2026 so far)
+- Travel mode: tap the currency symbol when adding to spend in another currency at your own rate. It's saved
+  in your currency, and the original amount (e.g. AED 45) shows next to it. Rates are remembered, nothing goes online
+- Home shows today's date next to the greeting ("Good evening · Sat, 10 Oct")
+- Tab switching is back to the slide and fade from before, without the blank moment: a tab opened for the
+  first time now shows its content straight away instead of an empty screen while it loads
+
+## 1.6.0
+
+- Detected payments go to the account the message names, by its last digits or by name: "in your HBL A/C",
+  "HDFC Bank card". An account named "HBL Bank" also matches "HBL". Test a message shows which account it
+  would go to, or what to name one so it matches (#6)
+- Fixed an empty Home screen after tapping a back arrow twice quickly, or pressing Esc on a keyboard
+- Smoother tab switching: the old tab fades out before the new one fades in, so two screens never show at once (#6)
+- Faster start: housekeeping waits until the first screen is up
+- The Dev build is now optimized like a release, so testers see the real app's speed (it was a debug build,
+  about three times slower to start)
+
+## 1.5.0
+
+- *Glass effects* switch (Settings → Appearance), in dark and light: off gives solid cards without the
+  see-through look and lit edges; bars, dialogs and sheets keep their frosted blur
+- Light mode cards are now real glass too: a more colourful background shows through, and cards catch
+  light at the top with a bright rim
+- Money coming in is detected too: bank SMS and emails that say "credited" or "received" show on Home as
+  income (in green, with who it's from) and open as an Income entry (#6)
+- Email detection no longer brings back payments you already added or dismissed, checks every 15 minutes
+  and also whenever you open the app, so you don't need to tap *Check now*
+- Activity has no swipe actions any more, so entries can't be edited or deleted by accident; tap an entry
+  to edit or delete it (#6)
 - Dialogs are real frosted glass: the screen behind blurs and the panel is see-through (Android 12+);
-  on phones without window blur they stay solid so text is easy to read (#6)
+  on phones without window blur they stay solid so text is easy to read. The blur fades in with the dialog (#6)
 - The calendar and bottom sheets (keywords, accounts and others) get the same frosted glass
 - Screen headers (Activity, Insights, Plan and others) no longer end in a dark band: the frost fades out
   softly, so content blurs gradually as it scrolls under the title (#6)

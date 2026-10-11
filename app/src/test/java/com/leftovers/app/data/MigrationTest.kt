@@ -36,7 +36,7 @@ class MigrationTest {
             close()
         }
 
-        val db = helper.runMigrationsAndValidate(name, 17, true, *ALL_MIGRATIONS)
+        val db = helper.runMigrationsAndValidate(name, 19, true, *ALL_MIGRATIONS)
 
         db.query("SELECT amountMinor, note, accountId FROM transactions WHERE id = 1").use {
             it.moveToFirst()
@@ -99,6 +99,10 @@ class MigrationTest {
             it.moveToFirst()
             assertEquals(0, it.getInt(0))
         }
+        db.query("SELECT COUNT(*) FROM seen_messages").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
     }
 
     @Test fun eachStepFromVersion5Validates() {
@@ -115,5 +119,7 @@ class MigrationTest {
         helper.runMigrationsAndValidate(name, 15, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 16, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 17, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 18, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 19, true, *ALL_MIGRATIONS).close()
     }
 }

@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
 import com.leftovers.app.util.DetectionLog
+import com.leftovers.app.data.matchFor
+import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -43,6 +45,9 @@ import com.leftovers.app.util.SmsParser
 fun DetectionSheet(keywords: Set<String>, onChange: (Set<String>) -> Unit, onDismiss: () -> Unit) {
     val c = LocalAppColors.current
     val money = LocalMoney.current
+    val context = LocalContext.current
+    val accounts by remember { (context.applicationContext as com.leftovers.app.LeftoversApp).container.accounts.accounts }
+        .collectAsState(initial = emptyList())
     var newWord by remember { mutableStateOf("") }
     var sample by remember { mutableStateOf("") }
 
@@ -59,7 +64,7 @@ fun DetectionSheet(keywords: Set<String>, onChange: (Set<String>) -> Unit, onDis
         ) {
             Text("Detection keywords", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
             Text(
-                "Bank SMS and email alerts are recognised by words like \"debited\", \"spent\" and \"paid\". If your bank uses " +
+                "Bank SMS and email alerts are recognised by words like \"debited\", \"paid\" and, for money in, \"credited\". If your bank uses " +
                     "other words, add them here.",
                 style = MaterialTheme.typography.bodySmall,
                 color = c.textSecondary,
@@ -86,18 +91,37 @@ fun DetectionSheet(keywords: Set<String>, onChange: (Set<String>) -> Unit, onDis
             if (sample.isNotBlank()) {
                 val check = SmsParser.check(sample, keywords)
                 val digits = SmsParser.accountDigits(sample)
+                val account = accounts.matchFor(sample)
                 Glass(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         val p = check.parsed
                         if (p != null) {
                             Text(
-                                "${money.format(p.amountMinor)}" + if (p.merchant.isNotBlank()) " to ${p.merchant}" else "",
+                                (if (p.isIncome) "+" else "") + money.format(p.amountMinor) +
+                                    if (p.merchant.isNotBlank()) (if (p.isIncome) " from " else " to ") + p.merchant else "",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = c.positive,
                             )
-                            Text("${check.reason}: this would show up on Home to confirm.", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
-                            if (digits != null) {
-                                Text("Names account or card ending $digits", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                            Text(
+                                "${check.reason}: this would show up on Home to confirm" + if (p.isIncome) ", as income." else ".",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.textSecondary,
+                            )
+                            when {
+                                account != null -> Text("Goes to your ${account.name} account", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                                digits != null -> Text(
+                                    "Names account or card ending $digits. Add it to an account (Accounts → edit) to send these there.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = c.textSecondary,
+                                )
+                                // No match yet: say what the message calls the account, so the user knows what to name theirs.
+                                else -> com.leftovers.app.data.namedAccountIn(sample)?.let { named ->
+                                    Text(
+                                        "Mentions your \"$named\" account. Name one of your accounts \"$named\" (Accounts) to send these there.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textSecondary,
+                                    )
+                                }
                             }
                         } else {
                             Text("Not suggested", style = MaterialTheme.typography.titleMedium, color = c.textPrimary)
@@ -110,7 +134,6 @@ fun DetectionSheet(keywords: Set<String>, onChange: (Set<String>) -> Unit, onDis
             // What happened to real messages, so a missed payment can be explained.
             RowDivider(inset = 0.dp)
             Text("Recent detections", style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
-            val context = LocalContext.current
             val smsAllowed = ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
             if (!smsAllowed) {
                 Text(

@@ -80,7 +80,7 @@ fun AuroraBackground(modifier: Modifier = Modifier) {
                 center = center,
             )
         }
-        val strength = if (c.isDark) 1f else 0.9f
+        val strength = if (c.isDark) 1f else 2.1f
         blob(c.auroraA, w * (0.1f + 0.3f * drift), h * (0.06f + 0.05f * drift), w * 1.0f, 0.42f * strength)
         blob(c.auroraB, w * (1.0f - 0.25f * drift), h * (0.32f + 0.12f * drift), w * 0.85f, 0.24f * strength)
         blob(c.auroraC, w * (0.2f + 0.35f * drift), h * (0.98f - 0.1f * drift), w * 0.8f, 0.14f * strength)
@@ -88,6 +88,11 @@ fun AuroraBackground(modifier: Modifier = Modifier) {
 }
 
 fun glassBorder(c: AppColors) = Brush.verticalGradient(listOf(c.borderTop, c.borderBottom))
+
+/** A see-through fill catches light at the top, like a pane of glass, in both themes; solid fills stay flat. */
+private fun glassFill(fill: Color): Brush =
+    if (fill.alpha >= 0.9f) androidx.compose.ui.graphics.SolidColor(fill)
+    else Brush.verticalGradient(listOf(fill.copy(alpha = (fill.alpha * 1.7f).coerceAtMost(1f)), fill))
 
 /** Translucent card with a hairline top-lit border. Clickable cards gently shrink when pressed. */
 @Composable
@@ -104,7 +109,7 @@ fun Glass(
         modifier
             .then(if (onClick != null) Modifier.pressable(onClick) else Modifier)
             .clip(shape)
-            .background(tint ?: if (strong) c.glassStrong else c.glass)
+            .background(glassFill(tint ?: if (strong) c.glassStrong else c.glass))
             .border(1.dp, glassBorder(c), shape),
         content = content,
     )
@@ -130,12 +135,13 @@ fun Modifier.appear(index: Int = 0): Modifier = composed {
     var shown by rememberSaveable { mutableStateOf(false) }
     val progress by animateFloatAsState(
         targetValue = if (shown) 1f else 0f,
-        animationSpec = tween(520, delayMillis = 45 * index.coerceIn(0, 8), easing = FastOutSlowInEasing),
+        animationSpec = tween(380, delayMillis = 30 * index.coerceIn(0, 8), easing = FastOutSlowInEasing),
         label = "appear",
     )
     LaunchedEffect(Unit) { shown = true }
+    // Starts half visible, not invisible: a tab opened for the first time never looks empty while it settles.
     graphicsLayer {
-        alpha = progress
-        translationY = (1f - progress) * 28.dp.toPx()
+        alpha = 0.5f + 0.5f * progress
+        translationY = (1f - progress) * 18.dp.toPx()
     }
 }

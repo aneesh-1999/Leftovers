@@ -246,7 +246,7 @@ fun HomeScreen(
                         )
                     }
                     Column(Modifier.weight(1f)) {
-                        Text(greeting(state.userName), style = MaterialTheme.typography.bodyMedium, color = c.textSecondary)
+                        Text(greeting(state.userName) + " · " + LocalDate.now().format(greetingDate), style = MaterialTheme.typography.bodyMedium, color = c.textSecondary, maxLines = 1)
                         Text(state.month.label(), style = MaterialTheme.typography.headlineLarge, color = c.textPrimary)
                     }
                     RoundButton(Lucide.MessageCircle, "AI assistant", onOpenAssistant)
@@ -343,7 +343,7 @@ fun HomeScreen(
                             state.smsSuggestions.take(5).forEachIndexed { i, s ->
                                 if (i > 0) RowDivider()
                                 ListRow(
-                                    title = s.merchant.ifBlank { "Bank payment" },
+                                    title = s.merchant.ifBlank { if (s.isIncome) "Money in" else "Bank payment" },
                                     subtitle = java.time.LocalDate.ofEpochDay(s.epochDay).friendlyLabel() + " · " +
                                         s.sender.ifBlank { if (s.source == SmsSuggestion.SOURCE_EMAIL) "email" else "bank SMS" },
                                     leading = {
@@ -351,7 +351,11 @@ fun HomeScreen(
                                     },
                                     trailing = {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(money.format(s.amountMinor), style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                            Text(
+                                                if (s.isIncome) "+" + money.format(s.amountMinor) else money.format(s.amountMinor),
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = if (s.isIncome) c.positive else c.textPrimary,
+                                            )
                                             Spacer(Modifier.width(10.dp))
                                             RoundButton(Lucide.X, "Dismiss", { viewModel.dismissSms(s.id) }, size = 34.dp, tint = c.textTertiary)
                                         }
@@ -434,6 +438,9 @@ fun HomeScreen(
         )
     }
 }
+
+/** Today next to the greeting: "Sat, 10 Oct". */
+private val greetingDate = java.time.format.DateTimeFormatter.ofPattern("EEE, d MMM")
 
 private fun greeting(name: String = ""): String {
     val base = when (LocalTime.now().hour) {
