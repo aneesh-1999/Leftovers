@@ -204,10 +204,10 @@ class WeekRosterWidget : GlanceAppWidget() {
             val isLeave = primaryLeave != null && !hasShift
 
             val shiftTag = when {
-                isCompleted -> "✓"
                 primaryShift != null -> {
                     val shiftHours = primaryShift.netWorkingMinutes / 60.0
-                    if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
+                    val hStr = if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
+                    if (isCompleted) "$hStr ✓" else hStr
                 }
                 primaryLeave != null -> "Off"
                 else -> "—"
@@ -247,8 +247,9 @@ class WeekRosterWidget : GlanceAppWidget() {
                 val shiftHours = primarySelectedShift.netWorkingMinutes / 60.0
                 val hoursStr = if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
                 val completed = primarySelectedShift.status == ShiftStatus.COMPLETED
+                val statusLabel = if (completed) "Done ✓" else "Scheduled"
 
-                Triple("$start – $end$wpLabel ($hoursStr)", primarySelectedShift.id, completed)
+                Triple("$start – $end$wpLabel ($hoursStr) · $statusLabel", primarySelectedShift.id, completed)
             }
             selectedLeaves.isNotEmpty() -> {
                 val l = selectedLeaves.first()
@@ -468,7 +469,7 @@ class WeekRosterWidget : GlanceAppWidget() {
                     Box(
                         GlanceModifier
                             .cornerRadius(8.dp)
-                            .background(if (state.selectedDayShiftIsCompleted) accent else Color(0xFF323246))
+                            .background(if (state.selectedDayShiftIsCompleted) accent else Color(0xFF28283A))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                             .clickable(
                                 actionRunCallback<ToggleShiftCompleteAction>(
@@ -478,7 +479,7 @@ class WeekRosterWidget : GlanceAppWidget() {
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = if (state.selectedDayShiftIsCompleted) "✓ Done" else "✓ Complete",
+                            text = if (state.selectedDayShiftIsCompleted) "✓ Done" else "Mark Done",
                             style = TextStyle(
                                 color = if (state.selectedDayShiftIsCompleted) accentDark else ColorProvider(accent),
                                 fontSize = 10.sp,
