@@ -114,7 +114,6 @@ object Lucide {
     val Mountain: ImageVector by lazy { lucide("mountain", "m8 3 4 8 5-5 5 15H2L8 3z") }
     val Umbrella: ImageVector by lazy { lucide("umbrella", "M12 13v7a2 2 0 0 0 4 0", "M12 2v2", "M20.992 13a1 1 0 0 0 .97-1.274 10.284 10.284 0 0 0-19.923 0A1 1 0 0 0 3 13z") }
     val User: ImageVector by lazy { lucide("user", "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2", "M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z") }
-    val Users: ImageVector by lazy { lucide("users", "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z", "M22 21v-2a4 4 0 0 0-3-3.87", "M16 3.13a4 4 0 0 1 0 7.75") }
     val Send: ImageVector by lazy { lucide("send", "m22 2-7 20-4-9-9-4Z", "M22 2 11 13") }
     val Ban: ImageVector by lazy { lucide("ban", "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z", "m4.93 4.93 14.14 14.14") }
     val RotateCw: ImageVector by lazy { lucide("rotate-cw", "M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8", "M21 3v5h-5") }

@@ -7,7 +7,7 @@ import org.junit.Test
 /** Which account a bank message goes to: by its last digits, else by the account's name used as an account. */
 class AccountMatchTest {
     private fun account(id: Long, name: String, digits: String? = null) =
-        AccountWithBalance(id, name, "wallet", 0, 0, 0, digits, 0)
+        AccountWithBalance(id = id, name = name, icon = "wallet", color = 0, openingMinor = 0, createdAt = 0, smsDigits = digits, currency = null, balanceMinor = 0)
 
     private val cash = account(1, "Cash")
     private val hbl = account(2, "HBL")
