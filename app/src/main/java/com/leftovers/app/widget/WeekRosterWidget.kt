@@ -47,6 +47,9 @@ import com.leftovers.app.data.Shift
 import com.leftovers.app.data.ShiftStatus
 import com.leftovers.app.data.Workplace
 import com.leftovers.app.util.Money
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import kotlinx.coroutines.flow.first
 import java.time.DayOfWeek
 import java.time.Instant
@@ -58,6 +61,7 @@ import java.util.Locale
 
 val KEY_WEEK_OFFSET = intPreferencesKey("roster_week_offset")
 val KEY_SELECTED_DAY = longPreferencesKey("roster_selected_day")
+val KEY_REVISION = longPreferencesKey("roster_data_revision")
 
 private data class RosterSnapshot(
     val shifts: List<Shift>,
@@ -103,14 +107,32 @@ class WeekRosterWidget : GlanceAppWidget() {
     override var stateDefinition: GlanceStateDefinition<*> = PreferencesGlanceStateDefinition
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val rosterData = loadRosterData(context)
+        val initialData = loadRosterData(context)
+        val container = (context.applicationContext as LeftoversApp).container
 
         provideContent {
             val prefs = currentState<Preferences>()
             val weekOffset = prefs[KEY_WEEK_OFFSET] ?: 0
             val selectedEpochDay = prefs[KEY_SELECTED_DAY]
+            // Read revision to trigger recomposition when widget action executes
+            prefs[KEY_REVISION]
 
-            val state = computeState(rosterData, weekOffset, selectedEpochDay)
+            val shifts by container.roster.shifts.collectAsState(initial = initialData.shifts)
+            val leaves by container.roster.leaves.collectAsState(initial = initialData.leaves)
+            val workplacesList by container.roster.workplaces.collectAsState(initial = initialData.workplaces.values.toList())
+            val workplaces = remember(workplacesList) { workplacesList.associateBy { it.id } }
+            val settings by container.settings.settings.collectAsState(initial = null)
+
+            val currentSnapshot = remember(shifts, leaves, workplaces, settings) {
+                RosterSnapshot(
+                    shifts = shifts,
+                    leaves = leaves,
+                    workplaces = workplaces,
+                    currencyCode = settings?.currencyCode ?: initialData.currencyCode,
+                )
+            }
+
+            val state = computeState(currentSnapshot, weekOffset, selectedEpochDay)
             Content(context, state)
         }
     }
@@ -624,8 +646,13 @@ class ToggleShiftCompleteAction : ActionCallback {
         val shift = container.roster.getShiftById(shiftId)
         if (shift != null) {
             val newStatus = if (shift.status == ShiftStatus.COMPLETED) ShiftStatus.SCHEDULED else ShiftStatus.COMPLETED
-            container.roster.saveShift(shift.copy(status = newStatus))
-            WeekRosterWidget().updateAll(context)
+            container.roster.setShiftStatus(shiftId, newStatus)
+            updateAppWidgetState(context, PreferencesGlanceStateDefinition, glanceId) { prefs ->
+                prefs.toMutablePreferences().apply {
+                    this[KEY_REVISION] = System.currentTimeMillis()
+                }
+            }
+            WeekRosterWidget().update(context, glanceId)
         }
     }
 
