@@ -47,9 +47,8 @@ import com.leftovers.app.data.Shift
 import com.leftovers.app.data.ShiftStatus
 import com.leftovers.app.data.Workplace
 import com.leftovers.app.util.Money
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import kotlinx.coroutines.flow.first
 import java.time.DayOfWeek
 import java.time.Instant
@@ -108,31 +107,18 @@ class WeekRosterWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val initialData = loadRosterData(context)
-        val container = (context.applicationContext as LeftoversApp).container
 
         provideContent {
             val prefs = currentState<Preferences>()
             val weekOffset = prefs[KEY_WEEK_OFFSET] ?: 0
             val selectedEpochDay = prefs[KEY_SELECTED_DAY]
-            // Read revision to trigger recomposition when widget action executes
-            prefs[KEY_REVISION]
+            val revision = prefs[KEY_REVISION] ?: 0L
 
-            val shifts by container.roster.shifts.collectAsState(initial = initialData.shifts)
-            val leaves by container.roster.leaves.collectAsState(initial = initialData.leaves)
-            val workplacesList by container.roster.workplaces.collectAsState(initial = initialData.workplaces.values.toList())
-            val workplaces = remember(workplacesList) { workplacesList.associateBy { it.id } }
-            val settings by container.settings.settings.collectAsState(initial = null)
-
-            val currentSnapshot = remember(shifts, leaves, workplaces, settings) {
-                RosterSnapshot(
-                    shifts = shifts,
-                    leaves = leaves,
-                    workplaces = workplaces,
-                    currencyCode = settings?.currencyCode ?: initialData.currencyCode,
-                )
+            val snapshot by produceState(initialValue = initialData, key1 = revision) {
+                value = loadRosterData(context)
             }
 
-            val state = computeState(currentSnapshot, weekOffset, selectedEpochDay)
+            val state = computeState(snapshot, weekOffset, selectedEpochDay)
             Content(context, state)
         }
     }
@@ -228,8 +214,7 @@ class WeekRosterWidget : GlanceAppWidget() {
             val shiftTag = when {
                 primaryShift != null -> {
                     val shiftHours = primaryShift.netWorkingMinutes / 60.0
-                    val hStr = if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
-                    if (isCompleted) "$hStr ✓" else hStr
+                    if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
                 }
                 primaryLeave != null -> "Off"
                 else -> "—"
@@ -253,11 +238,17 @@ class WeekRosterWidget : GlanceAppWidget() {
         val selectedLeaves = allLeaves.filter { it.containsDate(selectedDate) }
         val primarySelectedShift = selectedShifts.firstOrNull()
 
+        val statusSuffix = when {
+            primarySelectedShift == null -> ""
+            primarySelectedShift.status == ShiftStatus.COMPLETED -> " · DONE ✓"
+            else -> " · SCHEDULED"
+        }
+
         val selectedDayHeader = when {
-            selectedDate == today -> "TODAY · ${selectedDate.format(fullDayFormat).uppercase(Locale.US)}"
-            selectedDate == today.plusDays(1) -> "TOMORROW · ${selectedDate.format(fullDayFormat).uppercase(Locale.US)}"
-            selectedDate == today.minusDays(1) -> "YESTERDAY · ${selectedDate.format(fullDayFormat).uppercase(Locale.US)}"
-            else -> selectedDate.format(fullDayFormat).uppercase(Locale.US)
+            selectedDate == today -> "TODAY · ${selectedDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
+            selectedDate == today.plusDays(1) -> "TOMORROW · ${selectedDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
+            selectedDate == today.minusDays(1) -> "YESTERDAY · ${selectedDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
+            else -> "${selectedDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
         }
 
         val (selectedDaySubtitle, shiftId, isCompleted) = when {
@@ -269,9 +260,8 @@ class WeekRosterWidget : GlanceAppWidget() {
                 val shiftHours = primarySelectedShift.netWorkingMinutes / 60.0
                 val hoursStr = if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
                 val completed = primarySelectedShift.status == ShiftStatus.COMPLETED
-                val statusLabel = if (completed) "Done ✓" else "Scheduled"
 
-                Triple("$start – $end$wpLabel ($hoursStr) · $statusLabel", primarySelectedShift.id, completed)
+                Triple("$start – $end$wpLabel ($hoursStr)", primarySelectedShift.id, completed)
             }
             selectedLeaves.isNotEmpty() -> {
                 val l = selectedLeaves.first()
@@ -490,9 +480,10 @@ class WeekRosterWidget : GlanceAppWidget() {
                     Spacer(GlanceModifier.width(6.dp))
                     Box(
                         GlanceModifier
+                            .width(74.dp)
+                            .height(28.dp)
                             .cornerRadius(8.dp)
                             .background(if (state.selectedDayShiftIsCompleted) accent else Color(0xFF28283A))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
                             .clickable(
                                 actionRunCallback<ToggleShiftCompleteAction>(
                                     actionParametersOf(ToggleShiftCompleteAction.KeyShiftId to state.selectedDayShiftId),
