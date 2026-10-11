@@ -116,6 +116,8 @@ fun PlanScreen(
     onOpenGoal: (Long) -> Unit,
     onOpenCategories: () -> Unit,
     onOpenDebts: () -> Unit,
+    onOpenRoster: () -> Unit,
+    onOpenRemittance: () -> Unit = {},
     viewModel: PlanViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -248,6 +250,22 @@ fun PlanScreen(
                             leading = { IconTile(Lucide.Tag, c.textPrimary, size = 42.dp) },
                             trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
                             onClick = onOpenCategories,
+                        )
+                        RowDivider()
+                        ListRow(
+                            "My Roster",
+                            subtitle = "Work shifts and calendar",
+                            leading = { IconTile(Lucide.Calendar, c.textPrimary, size = 42.dp) },
+                            trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
+                            onClick = onOpenRoster,
+                        )
+                        RowDivider()
+                        ListRow(
+                            "Remittances",
+                            subtitle = "Money sent home & Nepal tracker",
+                            leading = { IconTile(Lucide.Send, c.accent, size = 42.dp) },
+                            trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
+                            onClick = onOpenRemittance,
                         )
                     }
                 }

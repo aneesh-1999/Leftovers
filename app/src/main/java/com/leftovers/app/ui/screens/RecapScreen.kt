@@ -60,10 +60,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leftovers.app.data.GoalWithSaved
+import com.leftovers.app.data.LeaveEntry
 import com.leftovers.app.data.PlanningRepository
+import com.leftovers.app.data.Remittance
+import com.leftovers.app.data.RemittanceRepository
+import com.leftovers.app.data.RemittanceStatus
+import com.leftovers.app.data.RosterRepository
 import com.leftovers.app.data.SettingsRepository
+import com.leftovers.app.data.Shift
+import com.leftovers.app.data.ShiftStatus
+import com.leftovers.app.data.Transaction
 import com.leftovers.app.data.TransactionRepository
 import com.leftovers.app.data.TxType
+import com.leftovers.app.data.Workplace
+import com.leftovers.app.data.calculateWorkplaceEarnings
 import com.leftovers.app.data.categoryTotals
 import com.leftovers.app.data.totalOf
 import com.leftovers.app.ui.AppViewModelProvider
@@ -89,6 +99,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 data class RecapData(
+    val userName: String = "",
     val month: YearMonth,
     val spent: Long,
     val income: Long,
@@ -104,25 +115,85 @@ data class RecapData(
     val favouriteNote: String?,
     val favouriteCount: Int,
     val goals: List<GoalWithSaved>,
+    // Roster Recap
+    val totalShiftsWorked: Int = 0,
+    val totalHoursWorked: Double = 0.0,
+    val scheduledShiftsCount: Int = 0,
+    val leaveDaysCount: Int = 0,
+    val estimatedRosterEarningsMinor: Long = 0,
+    val topWorkplaceName: String? = null,
+    // Remittance Recap
+    val remittanceCount: Int = 0,
+    val totalRemittanceSentMinor: Long = 0,
+    val totalRemittanceReceivedMinor: Long = 0,
+    val remittanceSendCurrency: String = "EUR",
+    val remittanceReceiveCurrency: String = "NPR",
+    val topRecipientName: String? = null,
+    val topProviderName: String? = null,
 )
 
 class RecapViewModel(
     savedState: SavedStateHandle,
     repository: TransactionRepository,
     planning: PlanningRepository,
+    roster: RosterRepository,
+    remittances: RemittanceRepository,
     private val settings: SettingsRepository,
 ) : ViewModel() {
     private val month: YearMonth = savedState.get<String>("month")?.let { runCatching { YearMonth.parse(it) }.getOrNull() }
         ?: YearMonth.now().minusMonths(1)
 
-    val data: StateFlow<RecapData?> = combine(repository.allTransactions, planning.goals) { all, goals ->
+    val data: StateFlow<RecapData?> = combine(
+        combine(repository.allTransactions, planning.goals) { all, goals -> Pair(all, goals) },
+        combine(roster.shifts, roster.leaves, roster.activeWorkplaces) { shifts, leaves, workplaces -> Triple(shifts, leaves, workplaces) },
+        remittances.allRemittances,
+        settings.settings,
+    ) { (all, goals), (shifts, leaves, workplaces), remList, appSettings ->
         val items = all.filter { YearMonth.from(it.date) == month }
         val expenses = items.filter { it.type == TxType.EXPENSE }
         val top = items.categoryTotals(TxType.EXPENSE).firstOrNull()
         val byDay = expenses.groupBy { it.date }.mapValues { (_, l) -> l.sumOf { it.amountMinor } }
         val biggest = byDay.maxByOrNull { it.value }
         val favourite = expenses.filter { it.note.isNotBlank() }.groupingBy { it.note.trim().lowercase() }.eachCount().maxByOrNull { it.value }
+
+        // Roster Stats
+        val monthShifts = shifts.filter { YearMonth.from(it.startDate) == month || YearMonth.from(it.endDate) == month }
+        val completedShifts = monthShifts.filter { it.status == ShiftStatus.COMPLETED }
+        val scheduledShifts = monthShifts.filter { it.status == ShiftStatus.SCHEDULED }
+        val totalWorkedMinutes = completedShifts.sumOf { it.netWorkingMinutes }
+        val totalWorkedHours = totalWorkedMinutes / 60.0
+
+        val monthLeaves = leaves.filter {
+            val sYm = YearMonth.from(it.startDate)
+            val eYm = YearMonth.from(it.endDate)
+            month in sYm..eYm
+        }
+        val leaveDays = monthLeaves.sumOf { it.dayCount }
+
+        val topWp = completedShifts.mapNotNull { it.workplace?.ifBlank { null } ?: it.workplaceId?.let { id -> workplaces.firstOrNull { w -> w.id == id }?.name } }
+            .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
+
+        var totalEarningsMinor = 0L
+        workplaces.forEach { wp ->
+            val summary = calculateWorkplaceEarnings(wp, month, shifts, leaves, emptyList())
+            totalEarningsMinor += summary.estimatedNetEarningsMinor
+        }
+
+        // Remittances Stats
+        val monthRemittances = remList.filter {
+            val d = it.transferDate
+            YearMonth.from(d) == month && it.status != RemittanceStatus.CANCELLED && it.status != RemittanceStatus.FAILED
+        }
+        val remCount = monthRemittances.size
+        val totalSent = monthRemittances.sumOf { it.sendAmountMinor }
+        val totalRecv = monthRemittances.sumOf { it.actualReceiveAmountMinor ?: it.expectedReceiveAmountMinor }
+        val sendCurr = monthRemittances.firstOrNull()?.sendCurrency ?: "EUR"
+        val recvCurr = monthRemittances.firstOrNull()?.receiveCurrency ?: "NPR"
+        val topRecipient = monthRemittances.groupingBy { it.recipientName.trim() }.eachCount().maxByOrNull { it.value }?.key
+        val topProvider = monthRemittances.groupingBy { it.provider.trim() }.eachCount().maxByOrNull { it.value }?.key
+
         RecapData(
+            userName = appSettings.userName,
             month = month,
             spent = items.totalOf(TxType.EXPENSE),
             income = items.totalOf(TxType.INCOME),
@@ -138,6 +209,19 @@ class RecapViewModel(
             favouriteNote = favourite?.takeIf { it.value >= 2 }?.let { f -> expenses.first { it.note.trim().lowercase() == f.key }.note.trim() },
             favouriteCount = favourite?.value ?: 0,
             goals = goals,
+            totalShiftsWorked = completedShifts.size,
+            totalHoursWorked = totalWorkedHours,
+            scheduledShiftsCount = scheduledShifts.size,
+            leaveDaysCount = leaveDays,
+            estimatedRosterEarningsMinor = totalEarningsMinor,
+            topWorkplaceName = topWp,
+            remittanceCount = remCount,
+            totalRemittanceSentMinor = totalSent,
+            totalRemittanceReceivedMinor = totalRecv,
+            remittanceSendCurrency = sendCurr,
+            remittanceReceiveCurrency = recvCurr,
+            topRecipientName = topRecipient,
+            topProviderName = topProvider,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -272,8 +356,9 @@ private fun recapPages(d: RecapData): List<@Composable () -> Unit> {
     val monthName = d.month.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
     val pages = mutableListOf<@Composable () -> Unit>()
 
+    val introTitle = if (d.userName.isNotBlank()) "Hey ${d.userName}, in $monthName you spent" else "In $monthName you spent"
     pages += {
-        Story(Lucide.Sparkles, c.accent, "In $monthName you spent", money.formatWhole(d.spent), "across ${d.count} entries · about ${money.formatWhole(d.spent / (if (d.month == YearMonth.now()) LocalDate.now().dayOfMonth else d.month.lengthOfMonth()))} a day")
+        Story(Lucide.Sparkles, c.accent, introTitle, money.formatWhole(d.spent), "across ${d.count} entries · about ${money.formatWhole(d.spent / (if (d.month == YearMonth.now()) LocalDate.now().dayOfMonth else d.month.lengthOfMonth()))} a day")
     }
     if (d.previousSpent > 0) {
         val change = (d.spent - d.previousSpent).toFloat() / d.previousSpent * 100
@@ -318,6 +403,51 @@ private fun recapPages(d: RecapData): List<@Composable () -> Unit> {
             )
         }
     }
+
+    // Roster Shifts & Hours Story
+    if (d.totalHoursWorked > 0 || d.totalShiftsWorked > 0) {
+        val hoursStr = if (d.totalHoursWorked % 1.0 == 0.0) "${d.totalHoursWorked.toInt()} hours" else String.format(Locale.US, "%.1f hours", d.totalHoursWorked)
+        val rosterTitle = if (d.userName.isNotBlank()) "You worked hard, ${d.userName}!" else "You worked hard in $monthName"
+        pages += {
+            Story(
+                Lucide.CalendarClock,
+                c.accent,
+                rosterTitle,
+                hoursStr,
+                "${d.totalShiftsWorked} shifts completed${if (d.leaveDaysCount > 0) " · ${d.leaveDaysCount} leave days" else ""}${d.topWorkplaceName?.let { " · at $it" }.orEmpty()}",
+            )
+        }
+    }
+
+    // Roster Estimated Earnings Story
+    if (d.estimatedRosterEarningsMinor > 0) {
+        pages += {
+            Story(
+                Lucide.Wallet,
+                c.positive,
+                "Estimated shift earnings",
+                money.formatWhole(d.estimatedRosterEarningsMinor),
+                "Earned across your roster shifts in $monthName.",
+            )
+        }
+    }
+
+    // Remittance Story
+    if (d.remittanceCount > 0) {
+        val sentFormatted = "${d.remittanceSendCurrency} ${String.format(Locale.US, "%,.2f", d.totalRemittanceSentMinor / 100.0)}"
+        val recvFormatted = if (d.totalRemittanceReceivedMinor > 0) " (${d.remittanceReceiveCurrency} ${String.format(Locale.US, "%,d", d.totalRemittanceReceivedMinor / 100)})" else ""
+        val remTitle = if (d.userName.isNotBlank()) "Supporting family in $monthName" else "Sent back home in $monthName"
+        pages += {
+            Story(
+                Lucide.Send,
+                Color(0xFF38BDF8),
+                remTitle,
+                sentFormatted,
+                "across ${d.remittanceCount} transfer${if (d.remittanceCount > 1) "s" else ""}${d.topRecipientName?.let { " · to $it" }.orEmpty()}$recvFormatted${d.topProviderName?.let { " via $it" }.orEmpty()}",
+            )
+        }
+    }
+
     if (d.favouriteNote != null) {
         pages += { Story(Lucide.Coffee, c.accent, "Your regular", d.favouriteNote, "${d.favouriteCount} times this month") }
     }

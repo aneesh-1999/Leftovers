@@ -13,8 +13,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import android.os.Build
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,7 +28,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -58,10 +63,15 @@ import com.leftovers.app.data.SettingsRepository
 import com.leftovers.app.data.ThemeMode
 import com.leftovers.app.data.TransactionRepository
 import com.leftovers.app.ui.AppViewModelProvider
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import com.leftovers.app.ui.components.Chip
 import com.leftovers.app.ui.components.Glass
 import com.leftovers.app.ui.components.GlassScreen
 import com.leftovers.app.ui.components.IconTile
 import com.leftovers.app.ui.components.ListRow
+import com.leftovers.app.ui.components.PrimaryButton
+import com.leftovers.app.ui.components.RoundButton
 import com.leftovers.app.ui.components.RowDivider
 import com.leftovers.app.ui.components.SectionHeader
 import com.leftovers.app.ui.components.SegmentedToggle
@@ -98,6 +108,14 @@ class SettingsViewModel(
 
     fun setBackupPassword(password: String?) {
         viewModelScope.launch(Dispatchers.IO) { backup.password.set(password) }
+    }
+
+    fun setUserName(name: String) {
+        viewModelScope.launch { settingsRepository.setUserName(name) }
+    }
+
+    fun setUserPhoto(path: String?) {
+        viewModelScope.launch { settingsRepository.setUserPhoto(path) }
     }
 
     fun setCurrency(code: String) {
@@ -142,6 +160,22 @@ class SettingsViewModel(
 
     fun setBillReminders(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setBillReminders(enabled) }
+    }
+
+    fun setShiftRemindersEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setShiftRemindersEnabled(enabled) }
+    }
+
+    fun setShiftReminderNightMinutes(minutes: Int) {
+        viewModelScope.launch { settingsRepository.setShiftReminderNightMinutes(minutes) }
+    }
+
+    fun setShiftReminderAdvanceHours(hours: Int) {
+        viewModelScope.launch { settingsRepository.setShiftReminderAdvanceHours(hours) }
+    }
+
+    fun setShiftReminderAlarmSuggestion(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setShiftReminderAlarmSuggestion(enabled) }
     }
 
     /** Remembers [tree] for weekly backups and makes the first one straight away. */
@@ -227,9 +261,12 @@ fun SettingsScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var showCurrency by rememberSaveable { mutableStateOf(false) }
+    var showEditProfile by rememberSaveable { mutableStateOf(false) }
     var confirmWipe by rememberSaveable { mutableStateOf(false) }
     var confirmReset by rememberSaveable { mutableStateOf(false) }
     var showTime by rememberSaveable { mutableStateOf(false) }
+    var showShiftNightTime by rememberSaveable { mutableStateOf(false) }
+    var showShiftAdvanceHours by rememberSaveable { mutableStateOf(false) }
     var showAssistant by rememberSaveable { mutableStateOf(false) }
     var showEmail by rememberSaveable { mutableStateOf(false) }
     var showKeywords by rememberSaveable { mutableStateOf(false) }
@@ -267,6 +304,40 @@ fun SettingsScreen(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 4.dp, bottom = 48.dp),
         ) {
+            item { SectionHeader("Profile") }
+            item {
+                Glass(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { showEditProfile = true }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        UserAvatar(
+                            photoPath = s.userPhotoPath,
+                            name = s.userName,
+                            size = 52.dp,
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (s.userName.isNotBlank()) s.userName else "Set your name",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = c.textPrimary,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "Personalizes greetings, stories & AI assistant",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.textSecondary,
+                            )
+                        }
+                        Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
             item { SectionHeader("Appearance") }
             item {
                 Glass(Modifier.fillMaxWidth()) {
@@ -306,6 +377,21 @@ fun SettingsScreen(
                         if (s.reminderEnabled) {
                             RowDivider()
                             NavRow(Lucide.CalendarClock, "Remind me at", Reminders.label(s.reminderMinutes)) { showTime = true }
+                        }
+                        RowDivider()
+                        ToggleRow(Lucide.Briefcase, "Shift & roster reminders", s.shiftRemindersEnabled, { on ->
+                            if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            viewModel.setShiftRemindersEnabled(on)
+                        })
+                        if (s.shiftRemindersEnabled) {
+                            RowDivider()
+                            NavRow(Lucide.Moon, "Night before reminder", Reminders.label(s.shiftReminderNightMinutes)) { showShiftNightTime = true }
+                            RowDivider()
+                            NavRow(Lucide.Clock, "Advance reminder", "${s.shiftReminderAdvanceHours} hours before shift") { showShiftAdvanceHours = true }
+                            RowDivider()
+                            ToggleRow(Lucide.CalendarClock, "Alarm suggestion for morning shifts", s.shiftReminderAlarmSuggestion, {
+                                viewModel.setShiftReminderAlarmSuggestion(it)
+                            })
                         }
                         RowDivider()
                         ToggleRow(Lucide.Smartphone, "Detect bank SMS", s.smsDetection, { on ->
@@ -466,6 +552,20 @@ fun SettingsScreen(
         if (showEmail) EmailSetupSheet(onDismiss = { showEmail = false })
         if (showKeywords) DetectionSheet(s.detectionKeywords, viewModel::setDetectionKeywords, onDismiss = { showKeywords = false })
 
+        if (showEditProfile) {
+            ProfileEditSheet(
+                currentName = s.userName,
+                currentPhoto = s.userPhotoPath,
+                onSave = { newName, newPhoto ->
+                    viewModel.setUserName(newName)
+                    viewModel.setUserPhoto(newPhoto)
+                    showEditProfile = false
+                    toast("Profile updated")
+                },
+                onDismiss = { showEditProfile = false },
+            )
+        }
+
         if (showCurrency) {
             CurrencyPickerSheet(
                 selected = s.currencyCode,
@@ -567,6 +667,53 @@ fun SettingsScreen(
             )
         }
 
+        if (showShiftNightTime) {
+            val state = rememberTimePickerState(s.shiftReminderNightMinutes / 60, s.shiftReminderNightMinutes % 60)
+            GlassAlertDialog(
+                onDismissRequest = { showShiftNightTime = false },
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(30.dp),
+                title = { Text("Night before reminder at") },
+                text = { TimePicker(state) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.setShiftReminderNightMinutes(state.hour * 60 + state.minute)
+                        showShiftNightTime = false
+                    }) { Text("Done", color = c.textPrimary) }
+                },
+                dismissButton = { TextButton(onClick = { showShiftNightTime = false }) { Text("Cancel", color = c.textSecondary) } },
+            )
+        }
+
+        if (showShiftAdvanceHours) {
+            var selectedHours by remember(s.shiftReminderAdvanceHours) { mutableStateOf(s.shiftReminderAdvanceHours) }
+            GlassAlertDialog(
+                onDismissRequest = { showShiftAdvanceHours = false },
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(30.dp),
+                title = { Text("Advance reminder before shift") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Send a reminder ahead of your shift start time.", color = c.textSecondary)
+                        SegmentedToggle(
+                            listOf(1, 2, 3, 5, 8),
+                            selectedHours,
+                            { "${it}h before" },
+                            { selectedHours = it },
+                            Modifier.fillMaxWidth(),
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.setShiftReminderAdvanceHours(selectedHours)
+                        showShiftAdvanceHours = false
+                    }) { Text("Done", color = c.textPrimary) }
+                },
+                dismissButton = { TextButton(onClick = { showShiftAdvanceHours = false }) { Text("Cancel", color = c.textSecondary) } },
+            )
+        }
+
         if (confirmReset) {
             var typed by remember { mutableStateOf("") }
             GlassAlertDialog(
@@ -662,5 +809,132 @@ private fun canLock(context: Context): Boolean {
         manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL) == BiometricManager.BIOMETRIC_SUCCESS
     } else {
         context.getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure
+    }
+}
+
+@Composable
+private fun ProfileEditSheet(
+    currentName: String,
+    currentPhoto: String?,
+    onSave: (name: String, photoPath: String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAppColors.current
+    var name by rememberSaveable(currentName) { mutableStateOf(currentName) }
+    var photoPath by rememberSaveable(currentPhoto) { mutableStateOf(currentPhoto) }
+    var cropSourceUri by remember { mutableStateOf<Uri?>(null) }
+
+    val pickPhoto = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            cropSourceUri = uri
+        }
+    }
+
+    GlassSheet(onDismiss) {
+        Column(
+            Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Edit Profile", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                RoundButton(Lucide.X, "Close", onDismiss, size = 36.dp)
+            }
+
+            // Frosted Avatar Card
+            Glass(
+                Modifier.fillMaxWidth(),
+                strong = true,
+                shape = RoundedCornerShape(24.dp),
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 20.dp, horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    UserAvatar(
+                        photoPath = photoPath,
+                        name = name,
+                        size = 88.dp,
+                        onClick = {
+                            pickPhoto.launch(
+                                androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                    )
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Chip(
+                            text = if (photoPath == null) "Choose photo" else "Change photo",
+                            onClick = {
+                                pickPhoto.launch(
+                                    androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                                )
+                            },
+                            icon = Lucide.Camera,
+                            selected = true,
+                        )
+                        if (photoPath != null) {
+                            Chip(
+                                text = "Remove",
+                                onClick = { photoPath = null },
+                                icon = Lucide.Trash2,
+                                selected = false,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Name Field
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Display Name", style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                GlassTextField(
+                    value = name,
+                    onValueChange = { name = it.take(40) },
+                    placeholder = "Your name or nickname",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Used for personalizing greetings, month stories & AI assistant.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.textSecondary,
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            PrimaryButton(
+                text = "Save Profile",
+                onClick = {
+                    onSave(name.trim(), photoPath)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+
+    cropSourceUri?.let { uri ->
+        PhotoCropDialog(
+            sourceUri = uri,
+            onDismiss = { cropSourceUri = null },
+            onCrop = { savedPath ->
+                photoPath = savedPath
+                cropSourceUri = null
+            },
+        )
     }
 }

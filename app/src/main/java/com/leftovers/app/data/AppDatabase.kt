@@ -11,8 +11,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         Category::class, Transaction::class, Recurring::class, Goal::class, GoalDeposit::class,
         Account::class, Transfer::class, SmsSuggestion::class, Debt::class, DeletedTransaction::class,
+        Shift::class, Workplace::class, LeaveEntry::class, WorkplacePayment::class,
+        DeletedShift::class, DeletedLeaveEntry::class,
+        Recipient::class, Remittance::class, RemittanceStatusHistory::class,
     ],
-    version = 12,
+    version = 18,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -26,6 +29,13 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun backupDao(): BackupDao
     abstract fun debtDao(): DebtDao
     abstract fun deletedDao(): DeletedDao
+    abstract fun shiftDao(): ShiftDao
+    abstract fun workplaceDao(): WorkplaceDao
+    abstract fun leaveDao(): LeaveDao
+    abstract fun workplacePaymentDao(): WorkplacePaymentDao
+    abstract fun recipientDao(): RecipientDao
+    abstract fun remittanceDao(): RemittanceDao
+    abstract fun remittanceStatusHistoryDao(): RemittanceStatusHistoryDao
 
     companion object {
         fun build(context: Context): AppDatabase =
@@ -33,6 +43,226 @@ abstract class AppDatabase : RoomDatabase() {
                 .addCallback(SeedCategories)
                 .addMigrations(*ALL_MIGRATIONS)
                 .build()
+    }
+}
+
+/** v18 adds dueDateEpochDay and reminderEnabled to debts for money owed return reminders. */
+private val MIGRATION_17_18 = object : Migration(17, 18) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `debts` ADD COLUMN `dueDateEpochDay` INTEGER")
+        db.execSQL("ALTER TABLE `debts` ADD COLUMN `reminderEnabled` INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+/** v17 adds remittances, recipients, and status history for Manual Remittance Tracker. */
+private val MIGRATION_16_17 = object : Migration(16, 17) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `recipients` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`name` TEXT NOT NULL, " +
+                "`relationship` TEXT, " +
+                "`country` TEXT NOT NULL DEFAULT 'Nepal', " +
+                "`preferredCurrency` TEXT NOT NULL DEFAULT 'NPR', " +
+                "`preferredProvider` TEXT, " +
+                "`bankOrWalletLabel` TEXT, " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`archived` INTEGER NOT NULL DEFAULT 0, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL" +
+            ")",
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `remittances` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`recipientId` INTEGER, " +
+                "`recipientName` TEXT NOT NULL, " +
+                "`recipientCountry` TEXT NOT NULL DEFAULT 'Nepal', " +
+                "`recipientBankOrWallet` TEXT, " +
+                "`transferDateEpochDay` INTEGER NOT NULL, " +
+                "`provider` TEXT NOT NULL, " +
+                "`sendAmountMinor` INTEGER NOT NULL, " +
+                "`sendCurrency` TEXT NOT NULL DEFAULT 'EUR', " +
+                "`feeAmountMinor` INTEGER NOT NULL DEFAULT 0, " +
+                "`feeCurrency` TEXT NOT NULL DEFAULT 'EUR', " +
+                "`feeMethod` TEXT NOT NULL DEFAULT 'SEPARATE', " +
+                "`exchangeRate` REAL NOT NULL DEFAULT 0.0, " +
+                "`expectedReceiveAmountMinor` INTEGER NOT NULL DEFAULT 0, " +
+                "`actualReceiveAmountMinor` INTEGER, " +
+                "`receiveCurrency` TEXT NOT NULL DEFAULT 'NPR', " +
+                "`status` TEXT NOT NULL DEFAULT 'SENT', " +
+                "`receivedDateEpochDay` INTEGER, " +
+                "`sendingAccountId` INTEGER, " +
+                "`financeTransactionId` INTEGER, " +
+                "`referenceNumber` TEXT, " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`receiptPath` TEXT, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL, " +
+                "FOREIGN KEY(`recipientId`) REFERENCES `recipients`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL, " +
+                "FOREIGN KEY(`sendingAccountId`) REFERENCES `accounts`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL, " +
+                "FOREIGN KEY(`financeTransactionId`) REFERENCES `transactions`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL" +
+            ")",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_remittances_recipientId` ON `remittances` (`recipientId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_remittances_transferDateEpochDay` ON `remittances` (`transferDateEpochDay`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_remittances_status` ON `remittances` (`status`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_remittances_sendingAccountId` ON `remittances` (`sendingAccountId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_remittances_financeTransactionId` ON `remittances` (`financeTransactionId`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `remittance_status_history` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`remittanceId` INTEGER NOT NULL, " +
+                "`fromStatus` TEXT, " +
+                "`toStatus` TEXT NOT NULL, " +
+                "`changedAt` INTEGER NOT NULL, " +
+                "`note` TEXT, " +
+                "FOREIGN KEY(`remittanceId`) REFERENCES `remittances`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE" +
+            ")",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_remittance_status_history_remittanceId` ON `remittance_status_history` (`remittanceId`)")
+    }
+}
+
+/** v16 adds deleted_shifts and deleted_leave_entries to support full recovery in Deleted entries. */
+private val MIGRATION_15_16 = object : Migration(15, 16) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `deleted_shifts` (" +
+                "`id` INTEGER NOT NULL, " +
+                "`workplaceId` INTEGER, " +
+                "`title` TEXT NOT NULL, " +
+                "`workplace` TEXT, " +
+                "`startEpochMillis` INTEGER NOT NULL, " +
+                "`endEpochMillis` INTEGER NOT NULL, " +
+                "`breakDurationMinutes` INTEGER NOT NULL, " +
+                "`notes` TEXT NOT NULL, " +
+                "`status` TEXT NOT NULL, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL, " +
+                "`deletedAt` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`)" +
+            ")",
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `deleted_leave_entries` (" +
+                "`id` INTEGER NOT NULL, " +
+                "`workplaceId` INTEGER, " +
+                "`type` TEXT NOT NULL, " +
+                "`startDateEpochDay` INTEGER NOT NULL, " +
+                "`endDateEpochDay` INTEGER NOT NULL, " +
+                "`isFullDay` INTEGER NOT NULL, " +
+                "`customHours` REAL, " +
+                "`paymentStatus` TEXT NOT NULL, " +
+                "`paidRatePercent` REAL NOT NULL, " +
+                "`fixedPayAmountMinor` INTEGER, " +
+                "`reason` TEXT NOT NULL, " +
+                "`notes` TEXT NOT NULL, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL, " +
+                "`deletedAt` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`)" +
+            ")",
+        )
+    }
+}
+
+/** v15 adds workplaces, leave tracking, workplace payments, and links shifts to workplaces. */
+private val MIGRATION_14_15 = object : Migration(14, 15) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `shifts` ADD COLUMN `workplaceId` INTEGER")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_shifts_workplaceId` ON `shifts` (`workplaceId`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `workplaces` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`name` TEXT NOT NULL, " +
+                "`role` TEXT NOT NULL DEFAULT '', " +
+                "`address` TEXT, " +
+                "`contactPerson` TEXT, " +
+                "`contactDetails` TEXT, " +
+                "`employmentType` TEXT NOT NULL DEFAULT 'Full-time', " +
+                "`currency` TEXT NOT NULL DEFAULT 'EUR', " +
+                "`basicHourlyRateCents` INTEGER NOT NULL DEFAULT 573, " +
+                "`basicMonthlyHours` REAL NOT NULL DEFAULT 173.33, " +
+                "`overtimeMultiplier` REAL NOT NULL DEFAULT 1.5, " +
+                "`paidBreaks` INTEGER NOT NULL DEFAULT 0, " +
+                "`leaveCountsTowardsThreshold` INTEGER NOT NULL DEFAULT 0, " +
+                "`fixedMonthlyAllowanceMinor` INTEGER NOT NULL DEFAULT 0, " +
+                "`monthlyDeductionMinor` INTEGER NOT NULL DEFAULT 0, " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`archived` INTEGER NOT NULL DEFAULT 0, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL)",
+        )
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `leave_entries` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`workplaceId` INTEGER, " +
+                "`type` TEXT NOT NULL, " +
+                "`startDateEpochDay` INTEGER NOT NULL, " +
+                "`endDateEpochDay` INTEGER NOT NULL, " +
+                "`isFullDay` INTEGER NOT NULL DEFAULT 1, " +
+                "`customHours` REAL, " +
+                "`paymentStatus` TEXT NOT NULL DEFAULT 'UNPAID', " +
+                "`paidRatePercent` REAL NOT NULL DEFAULT 100.0, " +
+                "`fixedPayAmountMinor` INTEGER, " +
+                "`reason` TEXT NOT NULL DEFAULT '', " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_leave_entries_startDateEpochDay` ON `leave_entries` (`startDateEpochDay`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_leave_entries_endDateEpochDay` ON `leave_entries` (`endDateEpochDay`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_leave_entries_workplaceId` ON `leave_entries` (`workplaceId`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `workplace_payments` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`workplaceId` INTEGER NOT NULL, " +
+                "`payPeriodMonth` TEXT NOT NULL, " +
+                "`paymentEpochDay` INTEGER NOT NULL, " +
+                "`amountMinor` INTEGER NOT NULL, " +
+                "`currency` TEXT NOT NULL DEFAULT 'EUR', " +
+                "`payslipReference` TEXT NOT NULL DEFAULT '', " +
+                "`note` TEXT NOT NULL DEFAULT '', " +
+                "`reviewed` INTEGER NOT NULL DEFAULT 1, " +
+                "`financeTransactionId` INTEGER, " +
+                "`createdAt` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_workplace_payments_workplaceId` ON `workplace_payments` (`workplaceId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_workplace_payments_payPeriodMonth` ON `workplace_payments` (`payPeriodMonth`)")
+    }
+}
+
+/** v14 adds work shifts for My Roster. */
+private val MIGRATION_13_14 = object : Migration(13, 14) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `shifts` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`title` TEXT NOT NULL, " +
+                "`workplace` TEXT, " +
+                "`startEpochMillis` INTEGER NOT NULL, " +
+                "`endEpochMillis` INTEGER NOT NULL, " +
+                "`breakDurationMinutes` INTEGER NOT NULL DEFAULT 0, " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`status` TEXT NOT NULL DEFAULT 'SCHEDULED', " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_shifts_startEpochMillis` ON `shifts` (`startEpochMillis`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_shifts_endEpochMillis` ON `shifts` (`endEpochMillis`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_shifts_status` ON `shifts` (`status`)")
+    }
+}
+
+/** v13 lets each account specify its own currency. */
+private val MIGRATION_12_13 = object : Migration(12, 13) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `accounts` ADD COLUMN `currency` TEXT")
     }
 }
 
@@ -257,4 +487,4 @@ val DefaultCategories = listOf(
 
 /** Every upgrade step, oldest first; also used by the migration tests. */
 internal val ALL_MIGRATIONS: Array<Migration>
-    get() = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+    get() = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)

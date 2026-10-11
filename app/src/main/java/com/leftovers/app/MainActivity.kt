@@ -9,6 +9,7 @@ import android.view.WindowManager
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.glance.appwidget.updateAll
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
@@ -51,11 +52,15 @@ import kotlinx.coroutines.launch
 class MainActivity : FragmentActivity() {
     companion object {
         const val EXTRA_OPEN_ADD = "open_add"
+        const val EXTRA_OPEN_ROSTER = "open_roster"
+        const val EXTRA_OPEN_DEBTS = "open_debts"
         private const val RELOCK_AFTER_MS = 30_000L
     }
 
     /** Set when the widget or reminder asks to jump straight to "add". */
     private var openAddRequest by mutableStateOf(false)
+    private var openRosterRequest by mutableStateOf(false)
+    private var openDebtsRequest by mutableStateOf(false)
     private var locked by mutableStateOf(true)
     private var lockChecked by mutableStateOf(false)
     private var backgroundedAt = 0L
@@ -66,6 +71,8 @@ class MainActivity : FragmentActivity() {
         preferHighestRefreshRate()
         val container = (application as LeftoversApp).container
         openAddRequest = intent.getBooleanExtra(EXTRA_OPEN_ADD, false)
+        openRosterRequest = intent.getBooleanExtra(EXTRA_OPEN_ROSTER, false)
+        openDebtsRequest = intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)
         lifecycleScope.launch {
             locked = container.settings.settings.first().appLock
             lockChecked = true
@@ -109,12 +116,35 @@ class MainActivity : FragmentActivity() {
                             // The aurora is a blur source so frosted bars pick up its colour.
                             AuroraBackground(Modifier.hazeSource(hazeState, zIndex = 0f))
                             when {
-                                !s.onboarded -> WelcomeScreen(defaultCurrency = s.currencyCode) { code ->
-                                    scope.launch { container.settings.completeOnboarding(code) }
-                                }
+                                !s.onboarded -> WelcomeScreen(
+                                    defaultCurrency = s.currencyCode,
+                                    onDone = { code, name, photo ->
+                                        scope.launch { container.settings.completeOnboarding(code, name, photo) }
+                                    },
+                                    onRestore = { uri, password, onNeedPassword, onResult ->
+                                        scope.launch {
+                                            container.backup.import(uri, password).fold(
+                                                { count ->
+                                                    onResult("Restored $count entries successfully")
+                                                },
+                                                { err ->
+                                                    if (err is com.leftovers.app.util.BackupPasswordException) {
+                                                        onNeedPassword(password != null)
+                                                    } else {
+                                                        onResult("Couldn't restore: ${err.message}")
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    },
+                                )
                                 !showLock -> LeftoversNavHost(
                                     openAdd = openAddRequest,
+                                    openRoster = openRosterRequest,
+                                    openDebts = openDebtsRequest,
                                     onOpenAddHandled = { openAddRequest = false },
+                                    onOpenRosterHandled = { openRosterRequest = false },
+                                    onOpenDebtsHandled = { openDebtsRequest = false },
                                 )
                             }
                             AnimatedVisibility(showLock, enter = fadeIn(), exit = fadeOut()) {
@@ -131,12 +161,19 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_ADD, false)) openAddRequest = true
+        if (intent.getBooleanExtra(EXTRA_OPEN_ROSTER, false)) openRosterRequest = true
+        if (intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)) openDebtsRequest = true
     }
 
     override fun onStart() {
         super.onStart()
         val container = (application as LeftoversApp).container
         lifecycleScope.launch { container.syncRecurring() }
+        lifecycleScope.launch {
+            runCatching { com.leftovers.app.widget.WeekRosterWidget().updateAll(this@MainActivity) }
+            runCatching { com.leftovers.app.widget.SafeToSpendWidget().updateAll(this@MainActivity) }
+            runCatching { com.leftovers.app.widget.MonthBudgetWidget().updateAll(this@MainActivity) }
+        }
         if (backgroundedAt > 0 && SystemClock.elapsedRealtime() - backgroundedAt > RELOCK_AFTER_MS) {
             lifecycleScope.launch { if (container.settings.settings.first().appLock) locked = true }
         }

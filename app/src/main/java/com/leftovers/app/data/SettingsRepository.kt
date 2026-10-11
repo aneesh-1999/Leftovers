@@ -19,20 +19,22 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("System default") }
 
 data class AppSettings(
-    val onboarded: Boolean,
-    val currencyCode: String,
-    val themeMode: ThemeMode,
-    val dynamicColor: Boolean,
-    val plan: BudgetPlan,
-    val budgetAlerts: Boolean,
-    val defaultAccountId: Long,
-    val reminderEnabled: Boolean,
+    val onboarded: Boolean = false,
+    val currencyCode: String = "EUR",
+    val userName: String = "",
+    val userPhotoPath: String? = null,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val dynamicColor: Boolean = false,
+    val plan: BudgetPlan = BudgetPlan(),
+    val budgetAlerts: Boolean = true,
+    val defaultAccountId: Long = 0L,
+    val reminderEnabled: Boolean = false,
     /** Minutes after midnight for the daily reminder. */
-    val reminderMinutes: Int,
-    val appLock: Boolean,
-    val smsDetection: Boolean,
+    val reminderMinutes: Int = 20 * 60,
+    val appLock: Boolean = false,
+    val smsDetection: Boolean = false,
     /** Month (yyyy-MM) whose recap the user has already opened or dismissed. */
-    val recapSeen: String,
+    val recapSeen: String = "",
     /** Folder (document tree uri) for weekly automatic backups; null when off. */
     val autoBackupDir: String? = null,
     /** When the last automatic backup finished (epoch millis), 0 if never. */
@@ -53,6 +55,14 @@ data class AppSettings(
     val autoBackupKeep: Int = 4,
     /** Put receipt and Money owed photos inside backups (bigger files). */
     val backupPhotos: Boolean = false,
+    /** Whether roster and shift reminder notifications are enabled. */
+    val shiftRemindersEnabled: Boolean = true,
+    /** Minutes after midnight for the night-before shift reminder (default 20:00 / 8 PM). */
+    val shiftReminderNightMinutes: Int = 20 * 60,
+    /** Hours before shift start for the advance shift reminder (default 5 hours). */
+    val shiftReminderAdvanceHours: Int = 5,
+    /** Prompt user to set an alarm for early morning shifts. */
+    val shiftReminderAlarmSuggestion: Boolean = true,
 )
 
 class SettingsRepository(context: Context) {
@@ -62,6 +72,8 @@ class SettingsRepository(context: Context) {
         AppSettings(
             onboarded = p[ONBOARDED] ?: false,
             currencyCode = p[CURRENCY] ?: defaultCurrencyCode(),
+            userName = p[USER_NAME].orEmpty(),
+            userPhotoPath = p[USER_PHOTO],
             themeMode = ThemeMode.entries.firstOrNull { it.name == p[THEME] } ?: ThemeMode.DARK,
             dynamicColor = p[DYNAMIC_COLOR] ?: false,
             plan = BudgetPlan(
@@ -91,15 +103,78 @@ class SettingsRepository(context: Context) {
             backupPhotos = p[BACKUP_PHOTOS] ?: false,
             autoBackupDays = p[AUTO_BACKUP_DAYS] ?: 7,
             autoBackupKeep = p[AUTO_BACKUP_KEEP] ?: 4,
+            shiftRemindersEnabled = p[SHIFT_REMINDERS] ?: true,
+            shiftReminderNightMinutes = p[SHIFT_REMINDER_NIGHT_TIME] ?: (20 * 60),
+            shiftReminderAdvanceHours = p[SHIFT_REMINDER_ADVANCE_HOURS] ?: 5,
+            shiftReminderAlarmSuggestion = p[SHIFT_REMINDER_ALARM_SUGGESTION] ?: true,
         )
     }
 
     /** Forgets every setting, as on a fresh install. */
     suspend fun clearAll() = store.edit { it.clear() }
 
-    suspend fun completeOnboarding(currencyCode: String) = store.edit {
+    suspend fun completeOnboarding(currencyCode: String, userName: String = "", userPhotoPath: String? = null) = store.edit {
         it[CURRENCY] = currencyCode
+        if (userName.isNotBlank()) it[USER_NAME] = userName.trim()
+        if (!userPhotoPath.isNullOrBlank()) it[USER_PHOTO] = userPhotoPath
         it[ONBOARDED] = true
+    }
+
+    suspend fun restoreSettings(
+        currencyCode: String,
+        userName: String = "",
+        userPhotoPath: String? = null,
+        themeMode: ThemeMode = ThemeMode.SYSTEM,
+        dynamicColor: Boolean = false,
+        plan: BudgetPlan = BudgetPlan(),
+        budgetAlerts: Boolean = true,
+        defaultAccountId: Long = 1L,
+        reminderEnabled: Boolean = false,
+        reminderMinutes: Int = 20 * 60,
+        appLock: Boolean = false,
+        smsDetection: Boolean = false,
+        billReminders: Boolean = true,
+        shiftRemindersEnabled: Boolean = true,
+        shiftReminderNightMinutes: Int = 20 * 60,
+        shiftReminderAdvanceHours: Int = 5,
+        shiftReminderAlarmSuggestion: Boolean = true,
+        detectionKeywords: Set<String> = emptySet(),
+    ) = store.edit {
+        it[CURRENCY] = currencyCode
+        if (userName.isNotBlank()) it[USER_NAME] = userName.trim() else it.remove(USER_NAME)
+        if (!userPhotoPath.isNullOrBlank()) it[USER_PHOTO] = userPhotoPath else it.remove(USER_PHOTO)
+        it[THEME] = themeMode.name
+        it[DYNAMIC_COLOR] = dynamicColor
+        it[BUDGET_MODE] = plan.mode.name
+        it[MONTHLY_BUDGET] = plan.monthlyMinor
+        it[YEARLY_BUDGET] = plan.yearlyMinor
+        it[YEAR_SPLIT] = plan.split.name
+        it[CUSTOM_SPLIT] = BudgetPlan.encodeCustom(plan.custom)
+        it[CARRY_MODE] = plan.carry.name
+        if (plan.carryChoices.isNotEmpty()) it[CARRY_CHOICES] = BudgetPlan.encodeChoices(plan.carryChoices)
+        val from = plan.carryFrom
+        if (plan.isSet) it[CARRY_FROM] = (from ?: YearMonth.now()).toString() else it.remove(CARRY_FROM)
+        it[BUDGET_ALERTS] = budgetAlerts
+        it[DEFAULT_ACCOUNT] = defaultAccountId
+        it[REMINDER] = reminderEnabled
+        it[REMINDER_TIME] = reminderMinutes
+        it[APP_LOCK] = appLock
+        it[SMS] = smsDetection
+        it[BILL_REMINDERS] = billReminders
+        it[SHIFT_REMINDERS] = shiftRemindersEnabled
+        it[SHIFT_REMINDER_NIGHT_TIME] = shiftReminderNightMinutes
+        it[SHIFT_REMINDER_ADVANCE_HOURS] = shiftReminderAdvanceHours
+        it[SHIFT_REMINDER_ALARM_SUGGESTION] = shiftReminderAlarmSuggestion
+        if (detectionKeywords.isNotEmpty()) it[DETECTION_KEYWORDS] = detectionKeywords
+        it[ONBOARDED] = true
+    }
+
+    suspend fun setUserName(name: String) = store.edit {
+        if (name.isBlank()) it.remove(USER_NAME) else it[USER_NAME] = name.trim()
+    }
+
+    suspend fun setUserPhoto(path: String?) = store.edit {
+        if (path.isNullOrBlank()) it.remove(USER_PHOTO) else it[USER_PHOTO] = path
     }
 
     suspend fun setCurrency(code: String) = store.edit { it[CURRENCY] = code }
@@ -149,6 +224,11 @@ class SettingsRepository(context: Context) {
     suspend fun setDeletedKeepDays(days: Int) = store.edit { it[DELETED_KEEP_DAYS] = days }
     suspend fun dismissSuggestion(key: String) = store.edit { it[DISMISSED_SUGGESTIONS] = it[DISMISSED_SUGGESTIONS].orEmpty() + key }
 
+    suspend fun setShiftRemindersEnabled(enabled: Boolean) = store.edit { it[SHIFT_REMINDERS] = enabled }
+    suspend fun setShiftReminderNightMinutes(minutes: Int) = store.edit { it[SHIFT_REMINDER_NIGHT_TIME] = minutes }
+    suspend fun setShiftReminderAdvanceHours(hours: Int) = store.edit { it[SHIFT_REMINDER_ADVANCE_HOURS] = hours }
+    suspend fun setShiftReminderAlarmSuggestion(enabled: Boolean) = store.edit { it[SHIFT_REMINDER_ALARM_SUGGESTION] = enabled }
+
     /** Records that an alert was shown; returns false if it had already been sent. */
     suspend fun markAlertSent(key: String): Boolean {
         var added = false
@@ -171,6 +251,8 @@ class SettingsRepository(context: Context) {
     private companion object {
         val ONBOARDED = booleanPreferencesKey("onboarded")
         val CURRENCY = stringPreferencesKey("currency")
+        val USER_NAME = stringPreferencesKey("user_name")
+        val USER_PHOTO = stringPreferencesKey("user_photo_path")
         val THEME = stringPreferencesKey("theme")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val MONTHLY_BUDGET = longPreferencesKey("monthly_budget")
@@ -199,7 +281,10 @@ class SettingsRepository(context: Context) {
         val AUTO_BACKUP_DIR = stringPreferencesKey("auto_backup_dir")
         val AUTO_BACKUP_LAST = longPreferencesKey("auto_backup_last")
         val BILL_REMINDERS = booleanPreferencesKey("bill_reminders")
-
+        val SHIFT_REMINDERS = booleanPreferencesKey("shift_reminders")
+        val SHIFT_REMINDER_NIGHT_TIME = intPreferencesKey("shift_reminder_night_time")
+        val SHIFT_REMINDER_ADVANCE_HOURS = intPreferencesKey("shift_reminder_advance_hours")
+        val SHIFT_REMINDER_ALARM_SUGGESTION = booleanPreferencesKey("shift_reminder_alarm_suggestion")
         fun defaultCurrencyCode(): String =
             runCatching { Currency.getInstance(Locale.getDefault()).currencyCode }.getOrNull() ?: "USD"
     }

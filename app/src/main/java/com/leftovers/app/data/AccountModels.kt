@@ -19,6 +19,8 @@ data class Account(
     val createdAt: Long = System.currentTimeMillis(),
     /** Last digits of the bank account or card, so payments spotted in SMS land in this account. */
     val smsDigits: String? = null,
+    /** ISO 4217 currency code (e.g. "NPR", "EUR", "USD"), or null to follow the app's default currency. */
+    val currency: String? = null,
 )
 
 data class AccountWithBalance(
@@ -29,9 +31,10 @@ data class AccountWithBalance(
     val openingMinor: Long,
     val createdAt: Long,
     val smsDigits: String?,
+    val currency: String? = null,
     val balanceMinor: Long,
 ) {
-    fun toAccount() = Account(id, name, icon, color, openingMinor, createdAt, smsDigits)
+    fun toAccount() = Account(id, name, icon, color, openingMinor, createdAt, smsDigits, currency)
 
     /** True when a message naming account or card digits [digits] belongs to this account. */
     fun matchesDigits(digits: String?): Boolean {

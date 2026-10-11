@@ -119,6 +119,7 @@ import com.leftovers.app.ui.theme.LocalAppColors
 import com.leftovers.app.util.AmountInput
 import com.leftovers.app.util.BudgetAlertManager
 import com.leftovers.app.util.LocalMoney
+import com.leftovers.app.util.Money
 import com.leftovers.app.util.ReceiptStore
 import com.leftovers.app.util.friendlyLabel
 import kotlinx.coroutines.flow.SharingStarted
@@ -438,7 +439,9 @@ fun EditorScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            val display = money.groupInput(viewModel.amountText)
+            val selectedAccount = accounts.firstOrNull { it.id == viewModel.accountId }
+            val entryMoney = selectedAccount?.currency?.let { Money(it) } ?: money
+            val display = entryMoney.groupInput(viewModel.amountText)
             val targetSize = when (display.length) {
                 in 0..5 -> 64f
                 in 6..7 -> 54f
@@ -449,7 +452,7 @@ fun EditorScreen(
             val size by animateFloatAsState(targetSize, spring(dampingRatio = 0.9f, stiffness = 500f), label = "amountSize")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    money.symbol,
+                    entryMoney.symbol,
                     style = MaterialTheme.typography.headlineMedium,
                     color = c.textTertiary,
                     // Tapping the symbol puts the caret before the first digit.
@@ -795,8 +798,9 @@ private fun AccountPicker(accounts: List<AccountWithBalance>, selectedId: Long?,
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             accounts.forEach { a ->
+                val currSuffix = a.currency?.let { " ($it)" } ?: ""
                 DropdownMenuItem(
-                    text = { Text(a.name, color = c.textPrimary) },
+                    text = { Text("${a.name}$currSuffix", color = c.textPrimary) },
                     leadingIcon = { Icon(CategoryIcons[a.icon], contentDescription = null, tint = Color(a.color), modifier = Modifier.size(18.dp)) },
                     trailingIcon = if (a.id == current.id) {
                         { Icon(Lucide.Check, contentDescription = "Selected", tint = c.accent, modifier = Modifier.size(18.dp)) }

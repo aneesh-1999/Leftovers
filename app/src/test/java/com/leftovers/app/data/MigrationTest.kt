@@ -36,7 +36,7 @@ class MigrationTest {
             close()
         }
 
-        val db = helper.runMigrationsAndValidate(name, 12, true, *ALL_MIGRATIONS)
+        val db = helper.runMigrationsAndValidate(name, 17, true, *ALL_MIGRATIONS)
 
         db.query("SELECT amountMinor, note, accountId FROM transactions WHERE id = 1").use {
             it.moveToFirst()
@@ -59,6 +59,46 @@ class MigrationTest {
             it.moveToFirst()
             assertEquals(0, it.getInt(0))
         }
+        db.query("SELECT currency FROM accounts WHERE id = 1").use {
+            it.moveToFirst()
+            assertEquals(null, it.getString(0))
+        }
+        db.query("SELECT COUNT(*) FROM shifts").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM workplaces").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM leave_entries").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM workplace_payments").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM deleted_shifts").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM deleted_leave_entries").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM recipients").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM remittances").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM remittance_status_history").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
     }
 
     @Test fun eachStepFromVersion5Validates() {
@@ -70,5 +110,10 @@ class MigrationTest {
         helper.runMigrationsAndValidate(name, 10, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 11, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 12, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 13, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 14, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 15, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 16, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 17, true, *ALL_MIGRATIONS).close()
     }
 }

@@ -1,7 +1,22 @@
 package com.leftovers.app.ui.screens
 
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.net.Uri
 import android.os.Build
 import android.view.WindowManager
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -49,15 +64,29 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.leftovers.app.data.TransactionItem
 import com.leftovers.app.data.TxType
 import com.leftovers.app.ui.components.CategoryIcon
 import com.leftovers.app.ui.components.Glass
 import com.leftovers.app.ui.components.ListRow
+import com.leftovers.app.ui.components.glassBorder
+import com.leftovers.app.ui.components.pressable
+import com.leftovers.app.ui.icons.Lucide
 import com.leftovers.app.ui.theme.LocalAppColors
 import com.leftovers.app.util.AmountInput
 import com.leftovers.app.util.LocalMoney
+import com.leftovers.app.util.ReceiptStore
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -69,7 +98,8 @@ fun TransactionItem.timeLabel(): String =
 
 @Composable
 fun TransactionRow(item: TransactionItem, onClick: () -> Unit, subtitle: String = item.timeLabel()) {
-    val money = LocalMoney.current
+    val baseMoney = LocalMoney.current
+    val money = item.accountCurrency?.let { com.leftovers.app.util.Money(it) } ?: baseMoney
     val c = LocalAppColors.current
     val hasNote = item.note.isNotBlank()
     ListRow(
@@ -324,3 +354,266 @@ fun ordinal(n: Int): String = when {
     n % 10 == 3 -> "${n}rd"
     else -> "${n}th"
 }
+
+/**
+ * Frosted avatar circle for the user, rendering their photo if set,
+ * uppercase initial if name is provided, or a fallback user icon.
+ */
+@Composable
+fun UserAvatar(
+    photoPath: String?,
+    name: String = "",
+    size: Dp = 56.dp,
+    onClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAppColors.current
+    val bitmap by produceState<Bitmap?>(null, photoPath) {
+        value = if (!photoPath.isNullOrBlank()) ReceiptStore.loadPreview(photoPath, 300) else null
+    }
+
+    val boxModifier = if (onClick != null) {
+        modifier.size(size).pressable(onClick, pressedScale = 0.95f)
+    } else {
+        modifier.size(size)
+    }
+
+    Box(
+        modifier = boxModifier,
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(c.accent.copy(alpha = 0.15f))
+                .border(1.dp, glassBorder(c), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            val bmp = bitmap
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Profile photo",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (name.isNotBlank()) {
+                Text(
+                    text = name.trim().take(1).uppercase(),
+                    style = if (size >= 50.dp) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
+                    color = c.accent,
+                    fontWeight = FontWeight.Bold,
+                )
+            } else {
+                androidx.compose.material3.Icon(
+                    Lucide.User,
+                    contentDescription = "Profile",
+                    tint = c.accent,
+                    modifier = Modifier.size(size * 0.5f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Interactive photo cropping dialog allowing users to zoom (pinch/slider), pan,
+ * rotate, and preview within a circular portrait mask before saving.
+ */
+@Composable
+fun PhotoCropDialog(
+    sourceUri: Uri,
+    onDismiss: () -> Unit,
+    onCrop: (savedPath: String) -> Unit,
+) {
+    val context = LocalContext.current
+    val c = LocalAppColors.current
+    val scope = rememberCoroutineScope()
+
+    var sourceBitmap by remember(sourceUri) { mutableStateOf<Bitmap?>(null) }
+    var isLoading by remember(sourceUri) { mutableStateOf(true) }
+    var rotation by remember(sourceUri) { mutableStateOf(0f) }
+    var zoom by remember(sourceUri) { mutableStateOf(1f) }
+    var panOffset by remember(sourceUri) { mutableStateOf(Offset.Zero) }
+
+    LaunchedEffect(sourceUri) {
+        isLoading = true
+        sourceBitmap = ReceiptStore.decodeUri(context, sourceUri, maxSide = 1600)
+        isLoading = false
+    }
+
+    val rotBmp = remember(sourceBitmap, rotation) {
+        val src = sourceBitmap ?: return@remember null
+        if (rotation % 360f != 0f) {
+            val matrix = Matrix().apply { postRotate(rotation) }
+            Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+        } else {
+            src
+        }
+    }
+
+    GlassAlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Crop Photo", style = MaterialTheme.typography.titleLarge)
+        },
+        text = {
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (isLoading || rotBmp == null) {
+                    Box(
+                        Modifier
+                            .size(220.dp)
+                            .clip(CircleShape)
+                            .background(c.glass),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(color = c.accent, modifier = Modifier.size(32.dp))
+                    }
+                } else {
+                    val bmp = rotBmp
+                    val density = LocalDensity.current
+                    val viewportDp = 220.dp
+                    val viewportPx = with(density) { viewportDp.toPx() }
+
+                    val bw = bmp.width.toFloat()
+                    val bh = bmp.height.toFloat()
+                    val baseScale = maxOf(viewportPx / bw, viewportPx / bh)
+                    val totalScale = baseScale * zoom
+
+                    val maxPanX = maxOf(0f, (bw * totalScale - viewportPx) / 2f)
+                    val maxPanY = maxOf(0f, (bh * totalScale - viewportPx) / 2f)
+                    val clampedPanX = panOffset.x.coerceIn(-maxPanX, maxPanX)
+                    val clampedPanY = panOffset.y.coerceIn(-maxPanY, maxPanY)
+
+                    // Circular Crop Preview Viewport
+                    Box(
+                        Modifier
+                            .size(viewportDp)
+                            .clip(CircleShape)
+                            .border(2.dp, c.accent, CircleShape)
+                            .background(androidx.compose.ui.graphics.Color.Black)
+                            .pointerInput(bmp) {
+                                detectTransformGestures { _, pan, gestureZoom, _ ->
+                                    zoom = (zoom * gestureZoom).coerceIn(1f, 4f)
+                                    panOffset = Offset(
+                                        x = panOffset.x + pan.x,
+                                        y = panOffset.y + pan.y,
+                                    )
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "Crop preview",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    scaleX = zoom
+                                    scaleY = zoom
+                                    translationX = clampedPanX
+                                    translationY = clampedPanY
+                                },
+                        )
+                    }
+
+                    Spacer(Modifier.height(18.dp))
+
+                    // Controls: Zoom Slider + Rotate Button
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        androidx.compose.material3.Icon(
+                            Lucide.ZoomIn,
+                            contentDescription = "Zoom",
+                            tint = c.textSecondary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Slider(
+                            value = zoom,
+                            onValueChange = { zoom = it },
+                            valueRange = 1f..4f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(
+                                thumbColor = c.accent,
+                                activeTrackColor = c.accent,
+                                inactiveTrackColor = c.glassStrong,
+                            ),
+                        )
+                        IconButton(
+                            onClick = {
+                                rotation = (rotation + 90f) % 360f
+                                panOffset = Offset.Zero
+                            },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(c.glass)
+                                .border(1.dp, glassBorder(c), CircleShape),
+                        ) {
+                            androidx.compose.material3.Icon(
+                                Lucide.RotateCw,
+                                contentDescription = "Rotate",
+                                tint = c.textPrimary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val bmp = rotBmp ?: return@TextButton
+                    scope.launch {
+                        val density = context.resources.displayMetrics.density
+                        val viewportPx = 220f * density
+                        val bw = bmp.width.toFloat()
+                        val bh = bmp.height.toFloat()
+                        val baseScale = maxOf(viewportPx / bw, viewportPx / bh)
+                        val totalScale = baseScale * zoom
+
+                        val maxPanX = maxOf(0f, (bw * totalScale - viewportPx) / 2f)
+                        val maxPanY = maxOf(0f, (bh * totalScale - viewportPx) / 2f)
+                        val clampedPanX = panOffset.x.coerceIn(-maxPanX, maxPanX)
+                        val clampedPanY = panOffset.y.coerceIn(-maxPanY, maxPanY)
+
+                        val srcCenterX = bw / 2f - (clampedPanX / totalScale)
+                        val srcCenterY = bh / 2f - (clampedPanY / totalScale)
+                        val cropSide = (minOf(bw, bh) / zoom).coerceIn(1f, minOf(bw, bh))
+
+                        val left = (srcCenterX - cropSide / 2f).toInt().coerceIn(0, (bw - cropSide).toInt().coerceAtLeast(0))
+                        val top = (srcCenterY - cropSide / 2f).toInt().coerceIn(0, (bh - cropSide).toInt().coerceAtLeast(0))
+                        val side = cropSide.toInt().coerceIn(1, minOf(bmp.width - left, bmp.height - top))
+
+                        val cropped = Bitmap.createBitmap(bmp, left, top, side, side)
+                        val scaled = if (side != 512) {
+                            Bitmap.createScaledBitmap(cropped, 512, 512, true)
+                        } else {
+                            cropped
+                        }
+                        val path = ReceiptStore.saveBitmap(context, scaled)
+                        onCrop(path)
+                    }
+                },
+                enabled = rotBmp != null,
+            ) {
+                Text("Done", color = c.accent, fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = c.textSecondary)
+            }
+        },
+    )
+}
+

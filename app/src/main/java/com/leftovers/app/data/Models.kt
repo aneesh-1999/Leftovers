@@ -65,6 +65,8 @@ data class TransactionItem(
     val accountId: Long?,
     val receiptPath: String?,
     val addsToBudget: Boolean = false,
+    val accountCurrency: String? = null,
+    val accountName: String? = null,
 ) {
     val date: LocalDate get() = LocalDate.ofEpochDay(epochDay)
 

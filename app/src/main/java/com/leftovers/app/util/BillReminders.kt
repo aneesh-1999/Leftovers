@@ -34,13 +34,18 @@ object BillReminders {
     private val CHECK_AT: LocalTime = LocalTime.of(9, 0)
 
     fun createChannel(context: Context) {
-        val channel = NotificationChannel(CHANNEL_ID, "Upcoming bills", NotificationManager.IMPORTANCE_DEFAULT).apply {
+        val channel = NotificationChannel(CHANNEL_ID, "Upcoming bills", NotificationManager.IMPORTANCE_HIGH).apply {
             description = "A reminder the day before a subscription is charged"
+            enableVibration(true)
         }
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     fun schedule(context: Context, enabled: Boolean) {
+        // Primary: Exact alarm that wakes device even from Doze mode
+        AlarmScheduler.scheduleBillReminder(context, enabled)
+
+        // Secondary fallback: WorkManager
         val wm = WorkManager.getInstance(context)
         if (!enabled) {
             wm.cancelUniqueWork(WORK_NAME)
@@ -54,39 +59,49 @@ object BillReminders {
             .build()
         wm.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request)
     }
-}
 
-class BillReminderWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
-    override suspend fun doWork(): Result {
-        val container = (applicationContext as LeftoversApp).container
+    suspend fun deliverBillReminder(context: Context): Boolean {
+        val container = (context.applicationContext as LeftoversApp).container
         val s = container.settings.settings.first()
-        if (!s.billReminders) return Result.success()
+        if (!s.billReminders) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return Result.success()
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return false
+
+        val alertKey = "bill_reminder_${LocalDate.now().toEpochDay()}"
+        val newlySent = container.settings.markAlertSent(alertKey)
+        if (!newlySent) return false
 
         val tomorrow = LocalDate.now().plusDays(1)
         val due = container.planning.recurring.first()
             .filter { it.active && it.type == TxType.EXPENSE && it.toRecurring().nextChargeDate() == tomorrow }
-        if (due.isEmpty()) return Result.success()
+        if (due.isEmpty()) return false
 
         val money = Money(s.currencyCode)
         val title = if (due.size == 1) "${due[0].name} tomorrow" else "${due.size} bills tomorrow"
         val text = due.joinToString(" · ") { "${it.name} ${money.format(it.amountMinor)}" }
         val open = PendingIntent.getActivity(
-            applicationContext, 8,
-            Intent(applicationContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            context, 8,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val notification = NotificationCompat.Builder(applicationContext, BillReminders.CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_wallet)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
-        NotificationManagerCompat.from(applicationContext).notify(43, notification)
+        NotificationManagerCompat.from(context).notify(43, notification)
+        return true
+    }
+}
+
+class BillReminderWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        BillReminders.deliverBillReminder(applicationContext)
         return Result.success()
     }
 }

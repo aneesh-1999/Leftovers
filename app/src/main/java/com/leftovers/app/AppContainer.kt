@@ -1,0 +1,170 @@
+package com.leftovers.app
+
+import android.content.Context
+import androidx.glance.appwidget.updateAll
+import com.leftovers.app.ai.AssistantSettings
+import com.leftovers.app.data.AccountRepository
+import com.leftovers.app.data.AppDatabase
+import com.leftovers.app.data.PlanningRepository
+import com.leftovers.app.data.RosterRepository
+import com.leftovers.app.data.SeedCategories
+import com.leftovers.app.data.SettingsRepository
+import com.leftovers.app.data.SmsRepository
+import com.leftovers.app.data.TransactionRepository
+import com.leftovers.app.data.TxType
+import com.leftovers.app.util.AutoBackup
+import com.leftovers.app.util.BackupManager
+import com.leftovers.app.util.BackupPassword
+import com.leftovers.app.util.BillReminders
+import com.leftovers.app.util.DetectionLog
+import com.leftovers.app.util.EmailAccount
+import com.leftovers.app.util.EmailSync
+import com.leftovers.app.util.BudgetAlertManager
+import com.leftovers.app.util.Reminders
+import com.leftovers.app.widget.MonthBudgetWidget
+import com.leftovers.app.widget.SafeToSpendWidget
+import com.leftovers.app.widget.WeekRosterWidget
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.LocalDate
+
+/** Simple manual dependency container shared by the whole app. */
+class AppContainer(private val context: Context) {
+    private val database = AppDatabase.build(context)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val settings = SettingsRepository(context)
+    val repository = TransactionRepository(database.transactionDao(), database.categoryDao(), database.recurringDao(), database.deletedDao())
+    val planning = PlanningRepository(database)
+    val accounts = AccountRepository(database.accountDao(), database.transferDao(), database.transactionDao())
+    val sms = SmsRepository(database.smsDao(), database.transactionDao())
+    val roster = RosterRepository(
+        database.shiftDao(),
+        database.workplaceDao(),
+        database.leaveDao(),
+        database.workplacePaymentDao(),
+        database.deletedDao(),
+    )
+    val remittances = com.leftovers.app.data.RemittanceRepository(
+        database.remittanceDao(),
+        database.recipientDao(),
+        database.remittanceStatusHistoryDao(),
+        database.transactionDao(),
+        database.categoryDao(),
+    )
+    val backup = BackupManager(context, database, settings, BackupPassword(context))
+    val budgetAlerts = BudgetAlertManager(context, repository, settings)
+    val assistant = AssistantSettings(context)
+    val emailAccount = EmailAccount(context)
+
+    /**
+     * Wipes everything back to a fresh install: all data and photos, settings, the connected AI and email,
+     * and the backup password. The app then shows the welcome screen.
+     */
+    suspend fun resetEverything() = withContext(Dispatchers.IO) {
+        AutoBackup.schedule(context, false)
+        EmailSync.schedule(context, false)
+        database.clearAllTables()
+        SeedCategories.onCreate(database.openHelper.writableDatabase)
+        File(context.filesDir, "receipts").deleteRecursively()
+        emailAccount.clear()
+        assistant.disconnect()
+        backup.password.set(null)
+        DetectionLog.clear(context)
+        settings.clearAll()
+    }
+
+    fun start() {
+        scope.launch { sms.scrubRawBodies() }
+        // Initial widget update
+        scope.launch {
+            runCatching { SafeToSpendWidget().updateAll(context) }
+            runCatching { MonthBudgetWidget().updateAll(context) }
+            runCatching { WeekRosterWidget().updateAll(context) }
+        }
+        // Keep the home-screen widgets in step with the data.
+        scope.launch {
+            combine(repository.allTransactions, settings.settings, planning.recurring) { _, _, _ -> Unit }
+                .collectLatest {
+                    delay(600)
+                    runCatching { SafeToSpendWidget().updateAll(context) }
+                    runCatching { MonthBudgetWidget().updateAll(context) }
+                }
+        }
+        scope.launch {
+            combine(roster.shifts, roster.leaves, roster.workplaces) { _, _, _ -> Unit }
+                .collectLatest {
+                    delay(600)
+                    runCatching { WeekRosterWidget().updateAll(context) }
+                }
+        }
+        // Clear deleted entries older than the user's chosen keep period.
+        scope.launch {
+            settings.settings.map { it.deletedKeepDays }
+                .distinctUntilChanged()
+                .collect { repository.purgeDeleted(it) }
+        }
+        scope.launch {
+            emailAccount.connection.map { it != null }
+                .distinctUntilChanged()
+                .collect { EmailSync.schedule(context, it) }
+        }
+        scope.launch {
+            settings.settings.map { (it.autoBackupDir != null) to it.autoBackupDays }
+                .distinctUntilChanged()
+                .collect { (on, days) -> AutoBackup.schedule(context, on, days) }
+        }
+        scope.launch {
+            settings.settings.map { it.billReminders }
+                .distinctUntilChanged()
+                .collect { BillReminders.schedule(context, it) }
+        }
+        // Reschedule the reminder whenever its settings change.
+        scope.launch {
+            settings.settings.map { it.reminderEnabled to it.reminderMinutes }
+                .distinctUntilChanged()
+                .collect { (enabled, minutes) -> Reminders.schedule(context, enabled, minutes) }
+        }
+        // Reschedule shift & roster reminders whenever settings change.
+        scope.launch {
+            settings.settings.map { Triple(it.shiftRemindersEnabled, it.shiftReminderNightMinutes, it.shiftReminderAdvanceHours) }
+                .distinctUntilChanged()
+                .collect { (enabled, nightMinutes, advanceHours) ->
+                    com.leftovers.app.util.ShiftReminders.schedule(context, enabled, nightMinutes, advanceHours)
+                }
+        }
+        // Keep shift advance/post-completion alarms in sync with schedule additions/updates
+        scope.launch {
+            roster.shifts.collectLatest {
+                val s = settings.settings.first()
+                com.leftovers.app.util.AlarmScheduler.scheduleNextShiftAdvanceReminder(context, s.shiftRemindersEnabled, s.shiftReminderAdvanceHours)
+                com.leftovers.app.util.AlarmScheduler.scheduleNextShiftPostReminder(context, s.shiftRemindersEnabled)
+            }
+        }
+        // Keep money owed alarms in sync with debts
+        scope.launch {
+            planning.debts.collectLatest {
+                com.leftovers.app.util.AlarmScheduler.scheduleDebtReminder(context, true)
+            }
+        }
+    }
+
+    /** Logs subscriptions/recurring income that have come due, then checks budgets. */
+    suspend fun syncRecurring() {
+        settings.ensureCarryStart()
+        val account = settings.settings.first().defaultAccountId
+        planning.postDueRecurring(account)
+            .filter { it.type == TxType.EXPENSE }
+            .forEach { budgetAlerts.checkAfterExpense(LocalDate.ofEpochDay(it.epochDay), it.categoryId) }
+    }
+}

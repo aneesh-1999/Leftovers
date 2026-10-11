@@ -82,6 +82,7 @@ import com.leftovers.app.ui.components.sharedContainer
 import com.leftovers.app.ui.icons.Lucide
 import com.leftovers.app.ui.theme.LocalAppColors
 import com.leftovers.app.util.LocalMoney
+import com.leftovers.app.util.Money
 import com.leftovers.app.util.friendlyLabel
 import com.leftovers.app.util.label
 import dev.chrisbanes.haze.hazeSource
@@ -97,6 +98,8 @@ import kotlin.math.abs
 
 data class HomeUiState(
     val loaded: Boolean = false,
+    val userName: String = "",
+    val userPhotoPath: String? = null,
     val month: YearMonth = YearMonth.now(),
     val budgetSet: Boolean = false,
     val today: DailyBudget? = null,
@@ -139,19 +142,26 @@ class HomeViewModel(
     ) { (all, accountList), s, recurring, goals, suggestions ->
         val month = YearMonth.now()
         val todayDate = LocalDate.now()
-        val items = all.filter { YearMonth.from(it.date) == month }
-        val budget = s.plan.budgetFor(month, all)
+        val defaultAccountIds = accountList.filter { it.currency == null || it.currency.equals(s.currencyCode, ignoreCase = true) }.map { it.id }.toSet()
+        val defaultCurrencyAll = all.filter { it.accountId == null || it.accountId in defaultAccountIds }
+        val defaultCurrencyItems = defaultCurrencyAll.filter { YearMonth.from(it.date) == month }
+        val budget = s.plan.budgetFor(month, defaultCurrencyAll)
         // Like switching wallets: the balance, spent, income and recent entries follow the chosen account.
-        // The budget and safe-to-spend stay for all money together.
+        // The budget and safe-to-spend stay for default currency accounts.
         val selected = accountList.firstOrNull { it.id == s.homeAccountId }
         val shownAll = if (selected == null) all else all.filter { it.accountId == selected.id }
-        val shownMonth = if (selected == null) items else items.filter { it.accountId == selected.id }
+        val shownMonth = if (selected == null) defaultCurrencyItems else all.filter { YearMonth.from(it.date) == month && it.accountId == selected.id }
+        val defaultAccounts = accountList.filter { it.currency == null || it.currency.equals(s.currencyCode, ignoreCase = true) }
+        val defaultBalance = defaultAccounts.sumOf { it.balanceMinor }
+
         HomeUiState(
             loaded = true,
+            userName = s.userName,
+            userPhotoPath = s.userPhotoPath,
             month = month,
             budgetSet = s.plan.isSet,
-            today = dailyBudget(budget, items, recurring.pendingExpenses(month)),
-            spentToday = items.filter { it.type == TxType.EXPENSE && it.epochDay == todayDate.toEpochDay() }.sumOf { it.amountMinor },
+            today = dailyBudget(budget, defaultCurrencyItems, recurring.pendingExpenses(month)),
+            spentToday = defaultCurrencyItems.filter { it.type == TxType.EXPENSE && it.epochDay == todayDate.toEpochDay() }.sumOf { it.amountMinor },
             daysLeft = month.lengthOfMonth() - todayDate.dayOfMonth + 1,
             monthSpent = shownMonth.totalOf(TxType.EXPENSE),
             monthIncome = shownMonth.totalOf(TxType.INCOME),
@@ -165,11 +175,11 @@ class HomeViewModel(
             recapMonth = month.minusMonths(1).takeIf { prev ->
                 todayDate.dayOfMonth <= 10 && s.recapSeen != prev.toString() && all.any { YearMonth.from(it.date) == prev }
             },
-            carryPrompt = s.plan.pendingCarry(month, all),
-            balance = selected?.balanceMinor ?: accountList.sumOf { it.balanceMinor },
-            accountCount = accountList.size,
-            // Bills and salary aren't tied to an account, so the forecast is only for all money together.
-            forecast = if (selected == null) forecastMonthEnd(accountList.sumOf { it.balanceMinor }, all, recurring, todayDate) else null,
+            carryPrompt = s.plan.pendingCarry(month, defaultCurrencyAll),
+            balance = selected?.balanceMinor ?: defaultBalance,
+            accountCount = if (selected == null) defaultAccounts.size else 1,
+            // Bills and salary aren't tied to an account, so the forecast is only for default currency money together.
+            forecast = if (selected == null) forecastMonthEnd(defaultBalance, defaultCurrencyAll, recurring, todayDate) else null,
             accounts = accountList,
             selectedAccount = selected,
         )
@@ -226,8 +236,17 @@ fun HomeScreen(
                         .appear(0),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (state.userPhotoPath != null || state.userName.isNotBlank()) {
+                        UserAvatar(
+                            photoPath = state.userPhotoPath,
+                            name = state.userName,
+                            size = 44.dp,
+                            onClick = onOpenSettings,
+                            modifier = Modifier.padding(end = 12.dp),
+                        )
+                    }
                     Column(Modifier.weight(1f)) {
-                        Text(greeting(), style = MaterialTheme.typography.bodyMedium, color = c.textSecondary)
+                        Text(greeting(state.userName), style = MaterialTheme.typography.bodyMedium, color = c.textSecondary)
                         Text(state.month.label(), style = MaterialTheme.typography.headlineLarge, color = c.textPrimary)
                     }
                     RoundButton(Lucide.MessageCircle, "AI assistant", onOpenAssistant)
@@ -280,6 +299,7 @@ fun HomeScreen(
 
             state.balance?.let { balance ->
                 item {
+                    val displayMoney = state.selectedAccount?.currency?.let { Money(it) } ?: money
                     Glass(Modifier.fillMaxWidth().padding(top = 12.dp).appear(2), onClick = onOpenAccounts) {
                         Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
                             IconTile(Lucide.Wallet, c.textPrimary, size = 44.dp)
@@ -290,11 +310,11 @@ fun HomeScreen(
                                 } else {
                                     Text("Total balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
                                 }
-                                RollingText(money.formatWhole(balance), MaterialTheme.typography.headlineSmall, if (balance < 0) c.negative else c.textPrimary)
+                                RollingText(displayMoney.formatWhole(balance), MaterialTheme.typography.headlineSmall, if (balance < 0) c.negative else c.textPrimary)
                                 state.forecast?.let { f ->
                                     val end = state.month.atEndOfMonth().format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
                                     Text(
-                                        "About ${money.formatWhole(f)} by $end",
+                                        "About ${displayMoney.formatWhole(f)} by $end",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (f < 0) c.negative else c.textSecondary,
                                     )
@@ -351,9 +371,10 @@ fun HomeScreen(
                         .appear(2),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    val statsMoney = state.selectedAccount?.currency?.let { com.leftovers.app.util.Money(it) } ?: money
                     StatTile(
                         label = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 400) "Spent this month" else "Spent",
-                        value = money.formatWhole(state.monthSpent),
+                        value = statsMoney.formatWhole(state.monthSpent),
                         icon = Lucide.ArrowUpRight,
                         iconTint = c.negative,
                         modifier = Modifier.weight(1f),
@@ -361,7 +382,7 @@ fun HomeScreen(
                     )
                     StatTile(
                         label = "Income",
-                        value = money.formatWhole(state.monthIncome),
+                        value = statsMoney.formatWhole(state.monthIncome),
                         icon = Lucide.ArrowDownLeft,
                         iconTint = c.positive,
                         modifier = Modifier.weight(1f),
@@ -414,11 +435,14 @@ fun HomeScreen(
     }
 }
 
-private fun greeting(): String = when (LocalTime.now().hour) {
-    in 5..11 -> "Good morning"
-    in 12..16 -> "Good afternoon"
-    in 17..21 -> "Good evening"
-    else -> "Good night"
+private fun greeting(name: String = ""): String {
+    val base = when (LocalTime.now().hour) {
+        in 5..11 -> "Good morning"
+        in 12..16 -> "Good afternoon"
+        in 17..21 -> "Good evening"
+        else -> "Good night"
+    }
+    return if (name.isNotBlank()) "$base, $name" else base
 }
 
 @Composable
@@ -475,7 +499,8 @@ private fun TodayCard(state: HomeUiState, onClick: () -> Unit, modifier: Modifie
 @Composable
 private fun UpcomingCard(r: RecurringItem, onClick: () -> Unit) {
     val c = LocalAppColors.current
-    val money = LocalMoney.current
+    val baseMoney = LocalMoney.current
+    val money = r.accountCurrency?.let { com.leftovers.app.util.Money(it) } ?: baseMoney
     Glass(Modifier.width(156.dp), shape = RoundedCornerShape(24.dp), onClick = onClick) {
         Column(Modifier.padding(16.dp)) {
             CategoryIcon(r.categoryEmoji, r.categoryColor, size = 36.dp)
@@ -517,13 +542,15 @@ private fun GoalMiniCard(g: GoalWithSaved, onClick: () -> Unit) {
 private fun AccountSwitch(accounts: List<AccountWithBalance>, selected: AccountWithBalance?, onSelect: (Long?) -> Unit) {
     val c = LocalAppColors.current
     val money = LocalMoney.current
+    val defaultAccounts = accounts.filter { it.currency == null || it.currency.equals(money.currency.currencyCode, ignoreCase = true) }
+    val hasOtherCurrencies = accounts.any { it.currency != null && !it.currency.equals(money.currency.currencyCode, ignoreCase = true) }
     var open by remember { mutableStateOf(false) }
     Box {
         Row(
             Modifier.clip(CircleShape).pressable({ open = true }, pressedScale = 0.95f).padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(selected?.name ?: "Total balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
+            Text(selected?.name ?: if (hasOtherCurrencies) "Main (${money.currency.currencyCode})" else "Total balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
             Spacer(Modifier.width(4.dp))
             Icon(Lucide.ChevronDown, contentDescription = "Choose account", tint = c.textSecondary, modifier = Modifier.size(14.dp))
         }
@@ -536,8 +563,8 @@ private fun AccountSwitch(accounts: List<AccountWithBalance>, selected: AccountW
             DropdownMenuItem(
                 text = {
                     Column {
-                        Text("All accounts", color = c.textPrimary)
-                        Text(money.formatWhole(accounts.sumOf { it.balanceMinor }), style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                        Text(if (hasOtherCurrencies) "Main (${money.currency.currencyCode})" else "All accounts", color = c.textPrimary)
+                        Text(money.formatWhole(defaultAccounts.sumOf { it.balanceMinor }), style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
                     }
                 },
                 leadingIcon = { Icon(Lucide.Wallet, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(18.dp)) },
@@ -552,11 +579,12 @@ private fun AccountSwitch(accounts: List<AccountWithBalance>, selected: AccountW
                 },
             )
             accounts.forEach { a ->
+                val accMoney = a.currency?.let { Money(it) } ?: money
                 DropdownMenuItem(
                     text = {
                         Column {
                             Text(a.name, color = c.textPrimary)
-                            Text(money.formatWhole(a.balanceMinor), style = MaterialTheme.typography.bodySmall, color = if (a.balanceMinor < 0) c.negative else c.textSecondary)
+                            Text(accMoney.formatWhole(a.balanceMinor), style = MaterialTheme.typography.bodySmall, color = if (a.balanceMinor < 0) c.negative else c.textSecondary)
                         }
                     },
                     leadingIcon = { Icon(CategoryIcons[a.icon], contentDescription = null, tint = Color(a.color), modifier = Modifier.size(18.dp)) },

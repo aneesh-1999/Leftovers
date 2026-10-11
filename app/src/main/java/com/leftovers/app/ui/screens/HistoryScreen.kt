@@ -248,8 +248,9 @@ fun HistoryScreen(
     }
 
     fun deleteWithUndo(item: TransactionItem) {
+        val itemMoney = item.accountCurrency?.let { com.leftovers.app.util.Money(it) } ?: money
         viewModel.delete(item)
-        undo.show("Deleted ${item.note.ifBlank { item.categoryName }} · ${money.format(item.amountMinor)}") { viewModel.restore(item) }
+        undo.show("Deleted ${item.note.ifBlank { item.categoryName }} · ${itemMoney.format(item.amountMinor)}") { viewModel.restore(item) }
     }
 
     GlassScreen(
@@ -385,6 +386,7 @@ fun HistoryScreen(
             state.groups.forEachIndexed { groupIndex, group ->
                 item(key = "header-${group.date}") {
                     val spent = group.items.filter { it.type == TxType.EXPENSE }.sumOf { it.amountMinor }
+                    val groupMoney = group.items.mapNotNull { it.accountCurrency }.distinct().singleOrNull()?.let { com.leftovers.app.util.Money(it) } ?: money
                     Row(
                         Modifier
                             .animateItem(fadeInSpec = tween(220), placementSpec = listMotion, fadeOutSpec = tween(160))
@@ -393,7 +395,7 @@ fun HistoryScreen(
                             .appear(groupIndex + 1),
                     ) {
                         Text(group.date.friendlyLabel(), style = MaterialTheme.typography.labelLarge, color = c.textSecondary, modifier = Modifier.weight(1f))
-                        if (spent > 0) Text(money.format(spent), style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
+                        if (spent > 0) Text(groupMoney.format(spent), style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
                     }
                 }
                 group.items.forEachIndexed { i, item ->
@@ -708,15 +710,16 @@ private fun MonthCalendar(
 @Composable
 private fun DayPanel(day: LocalDate, items: List<TransactionItem>, onAdd: () -> Unit, onOpen: (Long) -> Unit) {
     val c = LocalAppColors.current
-    val money = LocalMoney.current
+    val baseMoney = LocalMoney.current
     val spent = items.filter { it.type == TxType.EXPENSE }.sumOf { it.amountMinor }
+    val dayMoney = items.mapNotNull { it.accountCurrency }.distinct().singleOrNull()?.let { com.leftovers.app.util.Money(it) } ?: baseMoney
     AnimatedContent(targetState = day, transitionSpec = { fadeIn().togetherWith(fadeOut()) }, label = "dayPanel") { d ->
         Column(Modifier.padding(top = 18.dp)) {
             Row(Modifier.padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(d.friendlyLabel(), style = MaterialTheme.typography.titleMedium, color = c.textPrimary)
                     Text(
-                        if (spent > 0) "${money.format(spent)} spent" else "Nothing spent",
+                        if (spent > 0) "${dayMoney.format(spent)} spent" else "Nothing spent",
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textSecondary,
                     )

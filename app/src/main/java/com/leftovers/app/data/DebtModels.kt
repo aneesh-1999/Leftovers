@@ -17,8 +17,11 @@ data class Debt(
     val createdAt: Long = System.currentTimeMillis(),
     /** Photos of bills, chats or receipts in the app's private files, one path per line. */
     val receiptPath: String? = null,
+    val dueDateEpochDay: Long? = null,
+    val reminderEnabled: Boolean = false,
 ) {
     val photos: List<String> get() = receiptPath?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
+    val dueDate: LocalDate? get() = dueDateEpochDay?.let { LocalDate.ofEpochDay(it) }
 }
 
 /** Joins photo paths for [Debt.receiptPath]; null when there are none. */

@@ -13,13 +13,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,17 +38,26 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leftovers.app.data.DeletedEntry
 import com.leftovers.app.data.DeletedFilter
 import com.leftovers.app.data.DeletedItem
+import com.leftovers.app.data.DeletedLeaveEntry
+import com.leftovers.app.data.DeletedShift
+import com.leftovers.app.data.RosterRepository
 import com.leftovers.app.data.SettingsRepository
 import com.leftovers.app.data.TransactionRepository
 import com.leftovers.app.data.TxType
 import com.leftovers.app.ui.AppViewModelProvider
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import com.leftovers.app.ui.components.CategoryIcon
 import com.leftovers.app.ui.components.Chip
 import com.leftovers.app.ui.components.EmptyState
 import com.leftovers.app.ui.components.Glass
 import com.leftovers.app.ui.components.GlassScreen
+import com.leftovers.app.ui.components.IconTile
 import com.leftovers.app.ui.components.RoundButton
 import com.leftovers.app.ui.components.RowDivider
 import com.leftovers.app.ui.components.SecondaryButton
@@ -71,26 +81,68 @@ import java.time.format.DateTimeFormatter
 
 data class DeletedUiState(
     val loaded: Boolean = false,
-    val items: List<DeletedItem> = emptyList(),
+    val items: List<DeletedEntry> = emptyList(),
     val total: Int = 0,
     val filter: DeletedFilter = DeletedFilter.All,
     val keepDays: Int = 90,
 )
 
-class DeletedViewModel(private val repository: TransactionRepository, private val settings: SettingsRepository) : ViewModel() {
+class DeletedViewModel(
+    private val repository: TransactionRepository,
+    private val roster: RosterRepository,
+    private val settings: SettingsRepository,
+) : ViewModel() {
     private val filter = MutableStateFlow<DeletedFilter>(DeletedFilter.All)
 
-    val state: StateFlow<DeletedUiState> = combine(repository.deleted, filter, settings.settings) { all, f, s ->
+    val state: StateFlow<DeletedUiState> = combine(
+        repository.deleted,
+        roster.deletedShifts,
+        roster.deletedLeaves,
+        filter,
+        settings.settings,
+    ) { txs, shifts, leaves, f, s ->
         val today = LocalDate.now()
-        DeletedUiState(true, all.filter { f.matches(it.deletedOn(), today) }, all.size, f, s.deletedKeepDays)
+        val all: List<DeletedEntry> = (
+            txs.map { DeletedEntry.TransactionRecord(it) } +
+            shifts.map { DeletedEntry.ShiftRecord(it) } +
+            leaves.map { DeletedEntry.LeaveRecord(it) }
+        ).sortedByDescending { it.deletedAt }
+
+        DeletedUiState(
+            loaded = true,
+            items = all.filter { f.matches(it.deletedOn(), today) },
+            total = all.size,
+            filter = f,
+            keepDays = s.deletedKeepDays,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DeletedUiState())
 
     fun setFilter(value: DeletedFilter) { filter.value = value }
-    fun restore(ids: List<Long>) = viewModelScope.launch { repository.restoreDeleted(ids) }
-    fun deleteForever(ids: List<Long>) = viewModelScope.launch { repository.deleteForever(ids) }
+
+    fun restore(entries: List<DeletedEntry>) = viewModelScope.launch {
+        val txIds = entries.filterIsInstance<DeletedEntry.TransactionRecord>().map { it.id }
+        val shiftIds = entries.filterIsInstance<DeletedEntry.ShiftRecord>().map { it.id }
+        val leaveIds = entries.filterIsInstance<DeletedEntry.LeaveRecord>().map { it.id }
+
+        if (txIds.isNotEmpty()) repository.restoreDeleted(txIds)
+        if (shiftIds.isNotEmpty()) roster.restoreDeletedShifts(shiftIds)
+        if (leaveIds.isNotEmpty()) roster.restoreDeletedLeaves(leaveIds)
+    }
+
+    fun deleteForever(entries: List<DeletedEntry>) = viewModelScope.launch {
+        val txIds = entries.filterIsInstance<DeletedEntry.TransactionRecord>().map { it.id }
+        val shiftIds = entries.filterIsInstance<DeletedEntry.ShiftRecord>().map { it.id }
+        val leaveIds = entries.filterIsInstance<DeletedEntry.LeaveRecord>().map { it.id }
+
+        if (txIds.isNotEmpty()) repository.deleteForever(txIds)
+        if (shiftIds.isNotEmpty()) roster.deleteShiftsForever(shiftIds)
+        if (leaveIds.isNotEmpty()) roster.deleteLeavesForever(leaveIds)
+    }
+
     fun setKeepDays(days: Int) = viewModelScope.launch {
         settings.setDeletedKeepDays(days)
         repository.purgeDeleted(days)
+        roster.purgeDeletedRoster(days)
     }
 }
 
@@ -112,12 +164,12 @@ fun DeletedScreen(onBack: () -> Unit, viewModel: DeletedViewModel = viewModel(fa
     val money = LocalMoney.current
     var pickDates by remember { mutableStateOf(false) }
     var confirmDeleteAll by remember { mutableStateOf(false) }
-    var confirmDeleteOne by remember { mutableStateOf<DeletedItem?>(null) }
-    val shownIds = state.items.map { it.entry.id }
+    var confirmDeleteOne by remember { mutableStateOf<DeletedEntry?>(null) }
+    val shownEntries = state.items
 
     GlassScreen(
         title = "Deleted entries",
-        subtitle = "Restore anything you deleted",
+        subtitle = "Restore transactions, shifts & leaves you deleted",
         onBack = onBack,
         bottomBar = {
             if (state.items.isNotEmpty()) {
@@ -125,7 +177,7 @@ fun DeletedScreen(onBack: () -> Unit, viewModel: DeletedViewModel = viewModel(fa
                     Modifier.frosted().navigationBarsPadding().padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    SecondaryButton("Restore ${if (state.filter == DeletedFilter.All) "all" else "these"}", { viewModel.restore(shownIds) }, Modifier.weight(1f), icon = Lucide.RotateCcw)
+                    SecondaryButton("Restore ${if (state.filter == DeletedFilter.All) "all" else "these"}", { viewModel.restore(shownEntries) }, Modifier.weight(1f), icon = Lucide.RotateCcw)
                     SecondaryButton("Delete ${if (state.filter == DeletedFilter.All) "all" else "these"}", { confirmDeleteAll = true }, Modifier.weight(1f), icon = Lucide.Trash2)
                 }
             }
@@ -156,7 +208,7 @@ fun DeletedScreen(onBack: () -> Unit, viewModel: DeletedViewModel = viewModel(fa
                 item(key = "empty") {
                     Glass(Modifier.fillMaxWidth()) {
                         if (state.total == 0) {
-                            EmptyState(Lucide.Trash2, "Nothing deleted", "Entries you delete wait here, so you can bring them back.")
+                            EmptyState(Lucide.Trash2, "Nothing deleted", "Entries, work shifts and leave you delete wait here, so you can bring them back.")
                         } else {
                             EmptyState(Lucide.Calendar, "Nothing deleted then", "Try another date range.")
                         }
@@ -164,9 +216,18 @@ fun DeletedScreen(onBack: () -> Unit, viewModel: DeletedViewModel = viewModel(fa
                 }
             } else if (state.items.isNotEmpty()) {
                 item(key = "summary") {
-                    val spent = state.items.filter { it.entry.type == TxType.EXPENSE }.sumOf { it.entry.amountMinor }
+                    val txItems = state.items.filterIsInstance<DeletedEntry.TransactionRecord>()
+                    val shiftItems = state.items.filterIsInstance<DeletedEntry.ShiftRecord>()
+                    val leaveItems = state.items.filterIsInstance<DeletedEntry.LeaveRecord>()
+                    val spent = txItems.filter { it.item.entry.type == TxType.EXPENSE }.sumOf { it.item.entry.amountMinor }
+
+                    val countParts = mutableListOf<String>()
+                    if (txItems.isNotEmpty()) countParts.add("${txItems.size} transaction${if (txItems.size == 1) "" else "s"}")
+                    if (shiftItems.isNotEmpty()) countParts.add("${shiftItems.size} shift${if (shiftItems.size == 1) "" else "s"}")
+                    if (leaveItems.isNotEmpty()) countParts.add("${leaveItems.size} leave record${if (leaveItems.size == 1) "" else "s"}")
+
                     Text(
-                        "${state.items.size} ${if (state.items.size == 1) "entry" else "entries"}" + if (spent > 0) " · ${money.format(spent)} spent" else "",
+                        countParts.joinToString(" · ") + if (spent > 0) " · ${money.format(spent)} spent" else "",
                         style = MaterialTheme.typography.labelLarge,
                         color = c.textSecondary,
                         modifier = Modifier.padding(start = 6.dp, top = 4.dp),
@@ -186,7 +247,29 @@ fun DeletedScreen(onBack: () -> Unit, viewModel: DeletedViewModel = viewModel(fa
                             Column(Modifier.padding(vertical = 4.dp)) {
                                 items.forEachIndexed { i, item ->
                                     if (i > 0) RowDivider()
-                                    DeletedRow(item, onRestore = { viewModel.restore(listOf(item.entry.id)) }, onDelete = { confirmDeleteOne = item })
+                                    when (item) {
+                                        is DeletedEntry.TransactionRecord -> {
+                                            DeletedTransactionRow(
+                                                item = item.item,
+                                                onRestore = { viewModel.restore(listOf(item)) },
+                                                onDelete = { confirmDeleteOne = item },
+                                            )
+                                        }
+                                        is DeletedEntry.ShiftRecord -> {
+                                            DeletedShiftRow(
+                                                shift = item.shift,
+                                                onRestore = { viewModel.restore(listOf(item)) },
+                                                onDelete = { confirmDeleteOne = item },
+                                            )
+                                        }
+                                        is DeletedEntry.LeaveRecord -> {
+                                            DeletedLeaveRow(
+                                                leave = item.leave,
+                                                onRestore = { viewModel.restore(listOf(item)) },
+                                                onDelete = { confirmDeleteOne = item },
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -234,17 +317,22 @@ fun DeletedScreen(onBack: () -> Unit, viewModel: DeletedViewModel = viewModel(fa
         DeleteForeverDialog(
             title = "Delete ${state.items.size} ${if (state.items.size == 1) "entry" else "entries"} for good?",
             onConfirm = {
-                viewModel.deleteForever(shownIds)
+                viewModel.deleteForever(shownEntries)
                 confirmDeleteAll = false
             },
             onDismiss = { confirmDeleteAll = false },
         )
     }
     confirmDeleteOne?.let { item ->
+        val title = when (item) {
+            is DeletedEntry.TransactionRecord -> "Delete entry for good?"
+            is DeletedEntry.ShiftRecord -> "Delete shift '${item.shift.title}' for good?"
+            is DeletedEntry.LeaveRecord -> "Delete ${item.leave.type.label} record for good?"
+        }
         DeleteForeverDialog(
-            title = "Delete for good?",
+            title = title,
             onConfirm = {
-                viewModel.deleteForever(listOf(item.entry.id))
+                viewModel.deleteForever(listOf(item))
                 confirmDeleteOne = null
             },
             onDismiss = { confirmDeleteOne = null },
@@ -253,7 +341,7 @@ fun DeletedScreen(onBack: () -> Unit, viewModel: DeletedViewModel = viewModel(fa
 }
 
 @Composable
-private fun DeletedRow(item: DeletedItem, onRestore: () -> Unit, onDelete: () -> Unit) {
+private fun DeletedTransactionRow(item: DeletedItem, onRestore: () -> Unit, onDelete: () -> Unit) {
     val c = LocalAppColors.current
     val money = LocalMoney.current
     val e = item.entry
@@ -285,6 +373,88 @@ private fun DeletedRow(item: DeletedItem, onRestore: () -> Unit, onDelete: () ->
         Spacer(Modifier.width(6.dp))
         RoundButton(Lucide.Trash2, "Delete for good", onDelete, size = 36.dp, tint = c.negative)
     }
+}
+
+@Composable
+private fun DeletedShiftRow(shift: DeletedShift, onRestore: () -> Unit, onDelete: () -> Unit) {
+    val c = LocalAppColors.current
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconTile(Lucide.CalendarClock, c.accent, size = 40.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                shift.title,
+                style = MaterialTheme.typography.titleSmall,
+                color = c.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                listOfNotNull(
+                    shift.startDate.friendlyLabel(),
+                    shift.workplace,
+                    shift.formattedTimeRange,
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        DeletedStatusBadge("Shift", c.glass, c.textSecondary)
+        Spacer(Modifier.width(8.dp))
+        RoundButton(Lucide.RotateCcw, "Restore", onRestore, size = 36.dp, tint = c.accent)
+        Spacer(Modifier.width(6.dp))
+        RoundButton(Lucide.Trash2, "Delete for good", onDelete, size = 36.dp, tint = c.negative)
+    }
+}
+
+@Composable
+private fun DeletedLeaveRow(leave: DeletedLeaveEntry, onRestore: () -> Unit, onDelete: () -> Unit) {
+    val c = LocalAppColors.current
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconTile(Lucide.Calendar, c.warning, size = 40.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "${leave.type.emoji} ${leave.type.label}",
+                style = MaterialTheme.typography.titleSmall,
+                color = c.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                listOfNotNull(
+                    if (leave.dayCount == 1) leave.startDate.friendlyLabel() else "${leave.startDate.format(shortDate)} – ${leave.endDate.format(shortDate)} (${leave.dayCount} d)",
+                    leave.reason.ifBlank { null },
+                    leave.paymentStatus.label,
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        DeletedStatusBadge(leave.type.label, c.glass, c.textSecondary)
+        Spacer(Modifier.width(8.dp))
+        RoundButton(Lucide.RotateCcw, "Restore", onRestore, size = 36.dp, tint = c.accent)
+        Spacer(Modifier.width(6.dp))
+        RoundButton(Lucide.Trash2, "Delete for good", onDelete, size = 36.dp, tint = c.negative)
+    }
+}
+
+@Composable
+private fun DeletedStatusBadge(text: String, color: androidx.compose.ui.graphics.Color, textColor: androidx.compose.ui.graphics.Color) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = textColor,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(color)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    )
 }
 
 @Composable

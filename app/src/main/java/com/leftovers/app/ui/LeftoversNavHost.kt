@@ -94,9 +94,15 @@ import com.leftovers.app.ui.screens.HistoryScreen
 import com.leftovers.app.ui.screens.HomeScreen
 import com.leftovers.app.ui.screens.PlanScreen
 import com.leftovers.app.ui.screens.RecapScreen
+import com.leftovers.app.ui.screens.RosterScreen
 import com.leftovers.app.ui.screens.SettingsScreen
 import com.leftovers.app.ui.screens.StatsScreen
 import com.leftovers.app.ui.screens.SubscriptionsScreen
+import com.leftovers.app.ui.screens.RemittanceScreen
+import com.leftovers.app.ui.screens.RemittanceDetailScreen
+import com.leftovers.app.ui.screens.RecipientsScreen
+import com.leftovers.app.ui.screens.RemittanceHistoryScreen
+import com.leftovers.app.ui.screens.RemittanceReportsScreen
 import com.leftovers.app.ui.theme.LocalAppColors
 import kotlinx.coroutines.delay
 
@@ -117,15 +123,23 @@ private object Routes {
     const val GOAL = "goals/{id}"
     const val ACCOUNTS = "accounts"
     const val RECAP = "recap/{month}"
+    const val ROSTER = "roster"
     const val SETTINGS = "settings"
     const val CATEGORIES = "categories"
     const val ASSISTANT = "assistant"
+    const val REMITTANCE = "remittance"
+    const val REMITTANCE_DETAIL = "remittance/{id}"
+    const val REMITTANCE_RECIPIENTS = "remittance/recipients"
+    const val REMITTANCE_HISTORY = "remittance/history?recipientId={recipientId}"
+    const val REMITTANCE_REPORTS = "remittance/reports"
 
     fun add(day: Long = -1L, amount: Long = -1L, note: String = "", sms: Long = -1L) =
         "add?day=$day&amount=$amount&note=${Uri.encode(note)}&sms=$sms"
     fun edit(id: Long) = "edit/$id"
     fun goal(id: Long) = "goals/$id"
     fun recap(month: String) = "recap/$month"
+    fun remittanceDetail(id: Long) = "remittance/$id"
+    fun remittanceHistory(recipientId: Long? = null) = if (recipientId != null) "remittance/history?recipientId=$recipientId" else "remittance/history"
 
     /** In dock order, left to right; a sideways swipe moves to the neighbour. */
     val tabOrder = listOf(HOME, ACTIVITY, INSIGHTS, PLAN)
@@ -167,7 +181,14 @@ private fun NavGraphBuilder.screen(
 
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-fun LeftoversNavHost(openAdd: Boolean = false, onOpenAddHandled: () -> Unit = {}) {
+fun LeftoversNavHost(
+    openAdd: Boolean = false,
+    openRoster: Boolean = false,
+    openDebts: Boolean = false,
+    onOpenAddHandled: () -> Unit = {},
+    onOpenRosterHandled: () -> Unit = {},
+    onOpenDebtsHandled: () -> Unit = {},
+) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
@@ -196,6 +217,20 @@ fun LeftoversNavHost(openAdd: Boolean = false, onOpenAddHandled: () -> Unit = {}
         if (openAdd) {
             nav.navigate(Routes.add())
             onOpenAddHandled()
+        }
+    }
+    LaunchedEffect(openRoster) {
+        if (openRoster) {
+            nav.switchTab(Routes.PLAN)
+            nav.navigate(Routes.ROSTER)
+            onOpenRosterHandled()
+        }
+    }
+    LaunchedEffect(openDebts) {
+        if (openDebts) {
+            nav.switchTab(Routes.PLAN)
+            nav.navigate(Routes.DEBTS)
+            onOpenDebtsHandled()
         }
     }
 
@@ -310,10 +345,48 @@ fun LeftoversNavHost(openAdd: Boolean = false, onOpenAddHandled: () -> Unit = {}
                             onOpenGoal = { nav.navigate(Routes.goal(it)) },
                             onOpenCategories = { nav.navigate(Routes.CATEGORIES) },
                             onOpenDebts = { nav.navigate(Routes.DEBTS) },
+                            onOpenRoster = { nav.navigate(Routes.ROSTER) },
+                            onOpenRemittance = { nav.navigate(Routes.REMITTANCE) },
                         )
                     }
+                    screen(Routes.ROSTER) { RosterScreen(onBack = back) }
                     screen(Routes.DEBTS) { DebtsScreen(onBack = back) }
                     screen(Routes.DELETED) { DeletedScreen(onBack = back) }
+                    screen(Routes.REMITTANCE) {
+                        RemittanceScreen(
+                            onBack = back,
+                            onOpenRemittance = { nav.navigate(Routes.remittanceDetail(it)) },
+                            onOpenRecipients = { nav.navigate(Routes.REMITTANCE_RECIPIENTS) },
+                            onOpenReports = { nav.navigate(Routes.REMITTANCE_REPORTS) },
+                            onOpenHistory = { nav.navigate(Routes.remittanceHistory(null)) },
+                        )
+                    }
+                    screen(Routes.REMITTANCE_DETAIL, idArg) {
+                        RemittanceDetailScreen(
+                            onBack = back,
+                            onEdit = { /* edited inside sheet in detail screen */ },
+                        )
+                    }
+                    screen(Routes.REMITTANCE_RECIPIENTS) {
+                        RecipientsScreen(
+                            onBack = back,
+                            onSelectRecipient = { nav.navigate(Routes.remittanceHistory(it)) },
+                        )
+                    }
+                    screen(
+                        Routes.REMITTANCE_HISTORY,
+                        listOf(navArgument("recipientId") { type = NavType.LongType; defaultValue = -1L }),
+                    ) { entry ->
+                        RemittanceHistoryScreen(
+                            onBack = back,
+                            onOpenRemittance = { nav.navigate(Routes.remittanceDetail(it)) },
+                            onOpenAdd = { nav.navigate(Routes.REMITTANCE) },
+                            initialRecipientId = entry.arguments?.getLong("recipientId")?.takeIf { it != -1L },
+                        )
+                    }
+                    screen(Routes.REMITTANCE_REPORTS) {
+                        RemittanceReportsScreen(onBack = back)
+                    }
                     screen(
                         Routes.ADD,
                         listOf(

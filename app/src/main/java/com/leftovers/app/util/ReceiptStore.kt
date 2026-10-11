@@ -82,6 +82,35 @@ object ReceiptStore {
         }
     }
 
+    /** Decodes an image URI into a workable bitmap respecting orientation and max bounds. */
+    suspend fun decodeUri(context: Context, source: Uri, maxSide: Int = 1600): Bitmap? = withContext(Dispatchers.IO) {
+        runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            var sample = 1
+            while (bounds.outWidth / sample > maxSide * 2 || bounds.outHeight / sample > maxSide * 2) sample *= 2
+            val bitmap = context.contentResolver.openInputStream(source)?.use {
+                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+            } ?: return@runCatching null
+            val rotation = context.contentResolver.openInputStream(source)?.use {
+                when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+            } ?: 0f
+            scaleAndRotate(bitmap, rotation)
+        }.getOrNull()
+    }
+
+    /** Saves a memory Bitmap (e.g. from the photo cropper) into private storage; returns its path. */
+    suspend fun saveBitmap(context: Context, bitmap: Bitmap): String = withContext(Dispatchers.IO) {
+        val out = File(dir(context), "receipt-${UUID.randomUUID()}.jpg")
+        out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+        out.absolutePath
+    }
+
     fun delete(path: String?) {
         if (path != null) runCatching { File(path).delete() }
     }

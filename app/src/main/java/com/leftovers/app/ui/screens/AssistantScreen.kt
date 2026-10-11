@@ -123,6 +123,7 @@ enum class ChangeState { PENDING, APPLIED, CANCELLED, FAILED }
  * change it proposes until the user taps Apply or Cancel. Nothing is stored after the screen closes.
  */
 class AssistantViewModel(private val container: AppContainer, private val assistant: AssistantSettings) : ViewModel() {
+    val appSettings = container.settings.settings
     val config = assistant.config
     val privacy = assistant.privacy
     val items = mutableStateListOf<ChatItem>()
@@ -329,11 +330,12 @@ class AssistantViewModel(private val container: AppContainer, private val assist
 }
 
 private val suggestions = listOf(
+    "How much money have I sent to Nepal this month?",
+    "Record sending €300 to Mom via Wise",
+    "When is my next shift?",
+    "Add morning shift tomorrow",
     "How much did I spend on food this month?",
     "Am I on track with my budget?",
-    "Add 250 for coffee today",
-    "What are my biggest expenses this month?",
-    "Which subscriptions renew this week?",
 )
 
 @Composable
@@ -371,6 +373,7 @@ fun AssistantScreen(
         if (viewModel.items.isNotEmpty()) listState.animateScrollToItem(viewModel.items.size)
     }
     val cfg = config
+    val settingsState by viewModel.appSettings.collectAsStateWithLifecycle(initialValue = com.leftovers.app.data.AppSettings())
 
     GlassScreen(
         title = "Assistant",
@@ -453,7 +456,7 @@ fun AssistantScreen(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (viewModel.items.isEmpty()) item { Suggestions { viewModel.send(it) } }
+                if (viewModel.items.isEmpty()) item { Suggestions(userName = settingsState.userName) { viewModel.send(it) } }
                 items(viewModel.items, key = { it.key }) { item ->
                     when (item) {
                         is ChatItem.User -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
@@ -536,10 +539,11 @@ private fun ConnectPrompt(modifier: Modifier, onConnect: () -> Unit) {
 }
 
 @Composable
-private fun Suggestions(onPick: (String) -> Unit) {
+private fun Suggestions(userName: String = "", onPick: (String) -> Unit) {
     val c = LocalAppColors.current
+    val heading = if (userName.isNotBlank()) "Hi $userName! Ask about your money, shifts, or remittances." else "Ask about your money, or tell it what to log."
     Column(Modifier.padding(top = 4.dp)) {
-        Text("Ask about your money, or tell it what to log.", style = MaterialTheme.typography.titleMedium, color = c.textPrimary, modifier = Modifier.padding(start = 6.dp))
+        Text(heading, style = MaterialTheme.typography.titleMedium, color = c.textPrimary, modifier = Modifier.padding(start = 6.dp))
         Text(
             "Changes always wait for you to confirm.",
             style = MaterialTheme.typography.bodySmall,
@@ -660,8 +664,17 @@ private fun ChangeCard(item: ChatItem.Change, waiting: Int, onDecide: (Boolean) 
         ChangeKind.SUBSCRIPTION -> Lucide.Repeat
         ChangeKind.TRANSFER -> Lucide.Wallet
         ChangeKind.GOAL -> Lucide.PiggyBank
+        ChangeKind.SHIFT -> Lucide.Clock
+        ChangeKind.EDIT_SHIFT -> Lucide.Pencil
+        ChangeKind.DELETE_SHIFT -> Lucide.Trash2
+        ChangeKind.LEAVE -> Lucide.Calendar
+        ChangeKind.REMITTANCE -> Lucide.Send
+        ChangeKind.UPDATE_REMITTANCE -> Lucide.Pencil
+        ChangeKind.DELETE_REMITTANCE -> Lucide.Trash2
+        ChangeKind.RECIPIENT -> Lucide.User
     }
-    val tint = if (item.kind == ChangeKind.DELETE) c.negative else c.accent
+    val isDanger = item.kind == ChangeKind.DELETE || item.kind == ChangeKind.DELETE_SHIFT || item.kind == ChangeKind.DELETE_REMITTANCE
+    val tint = if (isDanger) c.negative else c.accent
     val pending = item.state == ChangeState.PENDING
     Glass(Modifier.fillMaxWidth().alpha(if (pending) 1f else 0.75f), strong = pending, shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(14.dp)) {
@@ -678,7 +691,7 @@ private fun ChangeCard(item: ChatItem.Change, waiting: Int, onDecide: (Boolean) 
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         DecisionButton("Not now", primary = false, Modifier.weight(1f)) { onDecide(false) }
-                        DecisionButton(if (item.kind == ChangeKind.DELETE) "Delete" else "Confirm", primary = true, Modifier.weight(1f), danger = item.kind == ChangeKind.DELETE) { onDecide(true) }
+                        DecisionButton(if (isDanger) "Delete" else "Confirm", primary = true, Modifier.weight(1f), danger = isDanger) { onDecide(true) }
                     }
                     if (waiting > 1) {
                         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {

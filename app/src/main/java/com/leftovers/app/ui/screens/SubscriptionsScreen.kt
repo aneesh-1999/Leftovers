@@ -444,7 +444,8 @@ private fun DeductionCalendar(items: List<RecurringItem>, modifier: Modifier = M
 @Composable
 private fun RecurringRow(item: RecurringItem, onClick: () -> Unit, onToggle: (Boolean) -> Unit) {
     val c = LocalAppColors.current
-    val money = LocalMoney.current
+    val baseMoney = LocalMoney.current
+    val money = item.accountCurrency?.let { com.leftovers.app.util.Money(it) } ?: baseMoney
     Row(
         Modifier
             .fillMaxWidth()

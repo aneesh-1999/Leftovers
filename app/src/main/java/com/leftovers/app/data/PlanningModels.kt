@@ -82,6 +82,7 @@ data class RecurringItem(
     val categoryName: String,
     val categoryEmoji: String,
     val categoryColor: Long,
+    val accountCurrency: String? = null,
 ) {
     fun toRecurring() = Recurring(id, name, amountMinor, type, categoryId, dayOfMonth, startMonth, lastPostedMonth, active, everyMonths, accountId)
 

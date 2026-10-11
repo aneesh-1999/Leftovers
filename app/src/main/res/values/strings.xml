@@ -2,4 +2,5 @@
     <string name="app_name">Leftovers</string>
     <string name="month_widget_description">See what\'s left of this month\'s budget</string>
     <string name="widget_description">See what\'s safe to spend today and add a spend in one tap</string>
+    <string name="week_roster_widget_description">See your weekly shift roster, working hours, and today\'s schedule at a glance</string>
 </resources>

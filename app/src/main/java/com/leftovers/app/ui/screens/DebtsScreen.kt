@@ -4,11 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.Icon
-import androidx.compose.foundation.layout.size
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.platform.LocalContext
-import com.leftovers.app.util.ReceiptStore
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,21 +18,35 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,10 +54,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leftovers.app.data.Debt
 import com.leftovers.app.data.MAX_DEBT_PHOTOS
-import com.leftovers.app.data.photosToPath
 import com.leftovers.app.data.PersonBalance
 import com.leftovers.app.data.PlanningRepository
 import com.leftovers.app.data.openBalances
+import com.leftovers.app.data.photosToPath
 import com.leftovers.app.ui.AppViewModelProvider
 import com.leftovers.app.ui.components.Chip
 import com.leftovers.app.ui.components.EmptyState
@@ -63,13 +73,17 @@ import com.leftovers.app.ui.icons.Lucide
 import com.leftovers.app.ui.theme.LocalAppColors
 import com.leftovers.app.util.AmountInput
 import com.leftovers.app.util.LocalMoney
+import com.leftovers.app.util.ReceiptStore
 import com.leftovers.app.util.friendlyLabel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 
 class DebtsViewModel(private val planning: PlanningRepository) : ViewModel() {
@@ -86,6 +100,9 @@ class DebtsViewModel(private val planning: PlanningRepository) : ViewModel() {
     fun settle(person: String) = viewModelScope.launch { planning.settle(person) }
 }
 
+private val returnDateChipFormatter = DateTimeFormatter.ofPattern("MMM d")
+private val returnDateFullFormatter = DateTimeFormatter.ofPattern("EEE, MMM d, yyyy")
+
 /** Money lent to and borrowed from people. It never counts as spending or income. */
 @Composable
 fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factory = AppViewModelProvider.Factory)) {
@@ -96,6 +113,7 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
     var editing by remember { mutableStateOf<Debt?>(null) }
     val owedToYou = balances.filter { it.netMinor > 0 }.sumOf { it.netMinor }
     val youOwe = balances.filter { it.netMinor < 0 }.sumOf { -it.netMinor }
+    val todayEpoch = LocalDate.now().toEpochDay()
 
     GlassScreen(
         title = "Money owed",
@@ -162,12 +180,38 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                                 Modifier.fillMaxWidth().pressable({ editing = d }, pressedScale = 0.985f).padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(
-                                    listOfNotNull(d.note.ifBlank { null }, LocalDate.ofEpochDay(d.epochDay).friendlyLabel()).joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = c.textSecondary,
-                                    modifier = Modifier.weight(1f),
-                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        listOfNotNull(d.note.ifBlank { null }, LocalDate.ofEpochDay(d.epochDay).friendlyLabel()).joinToString(" · "),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textSecondary,
+                                    )
+                                    if (d.dueDate != null) {
+                                        val isOverdue = d.dueDateEpochDay!! < todayEpoch
+                                        val isToday = d.dueDateEpochDay == todayEpoch
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier.padding(top = 2.dp),
+                                        ) {
+                                            Icon(
+                                                if (isOverdue) Lucide.Clock else if (d.reminderEnabled) Lucide.Bell else Lucide.Calendar,
+                                                contentDescription = null,
+                                                tint = if (isOverdue) c.negative else if (isToday) c.accent else c.textTertiary,
+                                                modifier = Modifier.size(11.dp),
+                                            )
+                                            Text(
+                                                when {
+                                                    isOverdue -> "Overdue (${d.dueDate!!.format(returnDateChipFormatter)})"
+                                                    isToday -> "Due today"
+                                                    else -> "Return by ${d.dueDate!!.format(returnDateChipFormatter)}"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isOverdue) c.negative else if (isToday) c.accent else c.textSecondary,
+                                            )
+                                        }
+                                    }
+                                }
                                 if (d.photos.isNotEmpty()) {
                                     Icon(Lucide.Camera, contentDescription = if (d.photos.size == 1) "Has a photo" else "Has ${d.photos.size} photos", tint = c.textTertiary, modifier = Modifier.padding(end = 8.dp).size(14.dp))
                                 }
@@ -205,7 +249,7 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Unit, onSave: (Debt) -> Unit, onDelete: (() -> Unit)?) {
     val c = LocalAppColors.current
@@ -213,6 +257,10 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
     var person by rememberSaveable { mutableStateOf(initial.person) }
     var amountText by rememberSaveable { mutableStateOf(if (initial.amountMinor != 0L) AmountInput.fromMinor(abs(initial.amountMinor)) else "") }
     var note by rememberSaveable { mutableStateOf(initial.note) }
+    var dueDateEpochDay by rememberSaveable { mutableStateOf(initial.dueDateEpochDay) }
+    var reminderEnabled by rememberSaveable { mutableStateOf(initial.reminderEnabled) }
+    var showDatePicker by rememberSaveable { mutableStateOf(false) }
+
     // Paths, one per line, so the list survives rotation like the other fields.
     var photoText by rememberSaveable { mutableStateOf(initial.receiptPath.orEmpty()) }
     val photos = photoText.split('\n').filter { it.isNotBlank() }
@@ -222,6 +270,13 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
     val amount = AmountInput.toMinor(amountText) ?: 0L
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    fun selectDueDate(date: LocalDate?) {
+        dueDateEpochDay = date?.toEpochDay()
+        if (date != null && !reminderEnabled) {
+            reminderEnabled = true
+        }
+    }
 
     fun attach(uris: List<Uri>, cleanup: () -> Unit = {}) {
         scope.launch {
@@ -245,6 +300,9 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
         onDismiss()
     }
 
+    val selectedDueDate = dueDateEpochDay?.let { LocalDate.ofEpochDay(it) }
+    val today = LocalDate.now()
+
     GlassSheet(close) {
         Column(
             Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
@@ -261,6 +319,108 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
             }
             MoneyField(amountText, { amountText = it }, label = "Amount")
             GlassTextField(note, { note = it.take(60) }, placeholder = "e.g. Dinner at Toit", label = "Note")
+
+            // Return / Due Date & Reminder Section
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (lent) "When they return" else "When I return",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = c.textSecondary,
+                    )
+                    if (selectedDueDate != null) {
+                        Text(
+                            selectedDueDate.format(returnDateFullFormatter),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = c.accent,
+                        )
+                    }
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val tomorrow = today.plusDays(1)
+                    val in1Week = today.plusWeeks(1)
+                    val in2Weeks = today.plusWeeks(2)
+                    val in1Month = today.plusMonths(1)
+
+                    Chip("Tomorrow", { selectDueDate(tomorrow) }, selected = dueDateEpochDay == tomorrow.toEpochDay())
+                    Chip("In 1 week", { selectDueDate(in1Week) }, selected = dueDateEpochDay == in1Week.toEpochDay())
+                    Chip("In 2 weeks", { selectDueDate(in2Weeks) }, selected = dueDateEpochDay == in2Weeks.toEpochDay())
+                    Chip("In 1 month", { selectDueDate(in1Month) }, selected = dueDateEpochDay == in1Month.toEpochDay())
+                    Chip(
+                        text = if (selectedDueDate != null && dueDateEpochDay !in listOf(tomorrow.toEpochDay(), in1Week.toEpochDay(), in2Weeks.toEpochDay(), in1Month.toEpochDay())) {
+                            selectedDueDate.format(returnDateChipFormatter)
+                        } else {
+                            "Pick date"
+                        },
+                        onClick = { showDatePicker = true },
+                        icon = Lucide.Calendar,
+                        selected = selectedDueDate != null && dueDateEpochDay !in listOf(tomorrow.toEpochDay(), in1Week.toEpochDay(), in2Weeks.toEpochDay(), in1Month.toEpochDay()),
+                    )
+                    if (dueDateEpochDay != null) {
+                        Chip("No date", { dueDateEpochDay = null; reminderEnabled = false }, icon = Lucide.X)
+                    }
+                }
+            }
+
+            // Notification Reminder Card
+            if (dueDateEpochDay != null) {
+                Glass(shape = RoundedCornerShape(18.dp)) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .pressable({ reminderEnabled = !reminderEnabled })
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(32.dp)
+                                .background(if (reminderEnabled) c.accent.copy(alpha = 0.15f) else c.glassStrong, CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Lucide.Bell,
+                                contentDescription = null,
+                                tint = if (reminderEnabled) c.accent else c.textTertiary,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Reminder notification",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = c.textPrimary,
+                            )
+                            Text(
+                                "Notify on return date at 9:00 AM",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.textSecondary,
+                            )
+                        }
+                        Switch(
+                            checked = reminderEnabled,
+                            onCheckedChange = { reminderEnabled = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = c.accent,
+                                uncheckedThumbColor = c.textTertiary,
+                                uncheckedTrackColor = c.glassStrong,
+                                uncheckedBorderColor = Color.Transparent,
+                            ),
+                        )
+                    }
+                }
+            }
+
             // Photos of the bill, chat screenshots or payment receipts. Everything wraps on narrow phones.
             if (photos.isNotEmpty()) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -290,7 +450,16 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
                 {
                     // Photos removed while editing are deleted once the change is saved.
                     original.filter { it !in photos }.forEach { ReceiptStore.delete(it) }
-                    onSave(initial.copy(person = person.trim(), amountMinor = if (lent) amount else -amount, note = note.trim(), receiptPath = photosToPath(photos)))
+                    onSave(
+                        initial.copy(
+                            person = person.trim(),
+                            amountMinor = if (lent) amount else -amount,
+                            note = note.trim(),
+                            receiptPath = photosToPath(photos),
+                            dueDateEpochDay = dueDateEpochDay,
+                            reminderEnabled = reminderEnabled && dueDateEpochDay != null,
+                        ),
+                    )
                 },
                 Modifier.fillMaxWidth(),
                 enabled = person.isNotBlank() && amount > 0,
@@ -306,4 +475,28 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
             }
         }
     }
+
+    if (showDatePicker) {
+        val initialMillis = (selectedDueDate ?: today.plusWeeks(1))
+            .atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val dateState = rememberDatePickerState(initialSelectedDateMillis = initialMillis)
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    dateState.selectedDateMillis?.let {
+                        val picked = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate()
+                        selectDueDate(picked)
+                    }
+                    showDatePicker = false
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+            },
+        ) {
+            DatePicker(state = dateState)
+        }
+    }
 }
+

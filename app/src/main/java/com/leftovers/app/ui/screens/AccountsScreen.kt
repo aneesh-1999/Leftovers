@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
@@ -73,6 +74,8 @@ import com.leftovers.app.ui.icons.Lucide
 import com.leftovers.app.ui.theme.LocalAppColors
 import com.leftovers.app.util.AmountInput
 import com.leftovers.app.util.LocalMoney
+import com.leftovers.app.util.Money
+import com.leftovers.app.util.currencyOptions
 import com.leftovers.app.util.friendlyLabel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -202,12 +205,34 @@ fun AccountsScreen(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 16.dp),
         ) {
+            val byCurrency = accounts.groupBy { it.currency }
+            val hasCustomCurrencies = accounts.any { it.currency != null }
+
             item {
                 Glass(Modifier.fillMaxWidth().appear(0), strong = true, shape = RoundedCornerShape(32.dp)) {
                     Column(Modifier.padding(22.dp)) {
                         Text("Total across accounts", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
                         Spacer(Modifier.height(4.dp))
-                        RollingText(money.format(accounts.sumOf { it.balanceMinor }), MaterialTheme.typography.displaySmall, c.textPrimary)
+                        if (!hasCustomCurrencies) {
+                            RollingText(money.format(accounts.sumOf { it.balanceMinor }), MaterialTheme.typography.displaySmall, c.textPrimary)
+                        } else {
+                            byCurrency.entries.forEachIndexed { idx, (currCode, accs) ->
+                                if (idx > 0) Spacer(Modifier.height(4.dp))
+                                val m = currCode?.let { Money(it) } ?: money
+                                val sum = accs.sumOf { it.balanceMinor }
+                                Row(verticalAlignment = Alignment.Bottom) {
+                                    Text(
+                                        m.format(sum),
+                                        style = if (byCurrency.size == 1) MaterialTheme.typography.displaySmall else MaterialTheme.typography.headlineMedium,
+                                        color = if (sum < 0) c.negative else c.textPrimary,
+                                    )
+                                    if (currCode != null) {
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(currCode, style = MaterialTheme.typography.labelMedium, color = c.textSecondary, modifier = Modifier.padding(bottom = 2.dp))
+                                    }
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(6.dp))
                         Text("Starts from each account's opening balance", style = MaterialTheme.typography.bodySmall, color = c.textTertiary)
                     }
@@ -219,13 +244,17 @@ fun AccountsScreen(
                     Column(Modifier.padding(vertical = 6.dp)) {
                         accounts.forEachIndexed { i, a ->
                             if (i > 0) RowDivider()
+                            val accMoney = a.currency?.let { Money(it) } ?: money
+                            val subtitleParts = mutableListOf<String>()
+                            if (a.id == defaultId) subtitleParts.add("Default for new entries")
+                            if (a.currency != null) subtitleParts.add(a.currency)
                             ListRow(
                                 title = a.name,
-                                subtitle = if (a.id == defaultId) "Default for new entries" else null,
+                                subtitle = subtitleParts.joinToString(" · ").ifBlank { null },
                                 leading = { CategoryIcon(a.icon, a.color, size = 42.dp) },
                                 trailing = {
                                     Text(
-                                        money.format(a.balanceMinor),
+                                        accMoney.format(a.balanceMinor),
                                         style = MaterialTheme.typography.titleSmall,
                                         color = if (a.balanceMinor < 0) c.negative else c.textPrimary,
                                     )
@@ -348,77 +377,119 @@ private fun AccountEditor(
     onDelete: (() -> Unit)?,
 ) {
     val c = LocalAppColors.current
+    val baseMoney = LocalMoney.current
     var name by rememberSaveable { mutableStateOf(initial.name) }
     var icon by rememberSaveable { mutableStateOf(initial.icon) }
     var color by rememberSaveable { mutableStateOf(initial.color) }
     var opening by rememberSaveable { mutableStateOf(if (initial.openingMinor != 0L) AmountInput.fromMinor(initial.openingMinor) else "") }
     var makeDefault by rememberSaveable { mutableStateOf(isDefault) }
     var digits by rememberSaveable { mutableStateOf(initial.smsDigits.orEmpty()) }
+    var currency by rememberSaveable { mutableStateOf(initial.currency) }
+    var pickingCurrency by rememberSaveable { mutableStateOf(false) }
 
-    GlassSheet(onDismiss) {
-        Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CategoryIcon(icon, color, size = 52.dp)
-                Spacer(Modifier.width(14.dp))
-                Text(if (initial.id == 0L) "New account" else "Edit account", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
-            }
-            GlassTextField(name, { name = it.take(24) }, placeholder = "e.g. HDFC, GPay, Credit card", label = "Name")
-            MoneyField(opening, { opening = it }, label = "Current balance when you start tracking")
-            GlassTextField(
-                digits,
-                { v -> digits = v.filter(Char::isDigit).take(4) },
-                placeholder = "e.g. 1234",
-                label = "Account or card ending (for SMS)",
-                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
-            )
-            Text(
-                "Bank SMS that mention these last digits are added to this account.",
-                style = MaterialTheme.typography.bodySmall,
-                color = c.textTertiary,
-                modifier = Modifier.padding(start = 6.dp),
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                accountIcons.forEach { key ->
-                    val selected = key == icon
-                    val bg by animateColorAsState(if (selected) Color(color).copy(alpha = 0.22f) else c.glass, label = "accIcon")
-                    Box(
-                        Modifier.size(46.dp).pressable({ icon = key }, pressedScale = 0.9f).clip(RoundedCornerShape(15.dp)).background(bg)
-                            .border(1.dp, if (selected) Color(color) else c.borderBottom, RoundedCornerShape(15.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(CategoryIcons[key], contentDescription = key, tint = if (selected) Color(color) else c.textSecondary, modifier = Modifier.size(22.dp)) }
+    val accountMoney = currency?.let { Money(it) } ?: baseMoney
+
+    CompositionLocalProvider(LocalMoney provides accountMoney) {
+        GlassSheet(onDismiss) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CategoryIcon(icon, color, size = 52.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Text(if (initial.id == 0L) "New account" else "Edit account", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
                 }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Palette.all.take(8).forEach { col ->
-                    Box(
-                        Modifier.size(28.dp).pressable({ color = col }, pressedScale = 0.85f).clip(CircleShape).background(Color(col))
-                            .then(if (col == color) Modifier.border(2.dp, c.textPrimary, CircleShape) else Modifier),
-                    )
+                GlassTextField(name, { name = it.take(24) }, placeholder = "e.g. HDFC, GPay, Credit card", label = "Name")
+                MoneyField(opening, { opening = it }, label = "Current balance when you start tracking")
+
+                val currencyOption = currency?.let { code -> currencyOptions.firstOrNull { it.code.equals(code, ignoreCase = true) } }
+                val currencyDisplay = currencyOption?.let { "${it.symbol} ${it.code} · ${it.name}" }
+                    ?: currency
+                    ?: "App default (${baseMoney.label})"
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(c.glass)
+                        .border(1.dp, c.borderBottom, RoundedCornerShape(18.dp))
+                        .pressable({ pickingCurrency = true })
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Currency", style = MaterialTheme.typography.labelMedium, color = c.textSecondary)
+                        Spacer(Modifier.height(2.dp))
+                        Text(currencyDisplay, style = MaterialTheme.typography.bodyLarge, color = c.textPrimary, maxLines = 1)
+                    }
+                    Icon(Lucide.ChevronRight, contentDescription = "Change currency", tint = c.textTertiary, modifier = Modifier.size(18.dp))
                 }
-            }
-            Chip(
-                if (makeDefault) "Default for new entries" else "Make this the default",
-                onClick = { makeDefault = !makeDefault },
-                icon = if (makeDefault) Lucide.CircleCheck else Lucide.Plus,
-                selected = makeDefault,
-            )
-            PrimaryButton(
-                "Save",
-                { onSave(initial.copy(name = name.trim(), icon = icon, color = color, openingMinor = AmountInput.toMinor(opening) ?: 0L, smsDigits = digits.ifBlank { null }), makeDefault) },
-                Modifier.fillMaxWidth(),
-                enabled = name.isNotBlank(),
-            )
-            if (breakdown != null) BalanceBreakdownCard(breakdown, initial.createdAt)
-            if (onMoveEntries != null) {
-                SecondaryButton("Move its entries to another account", onMoveEntries, Modifier.fillMaxWidth(), icon = Lucide.Repeat)
-            }
-            if (onDelete != null) {
-                Text("Delete account", style = MaterialTheme.typography.labelLarge, color = c.negative, modifier = Modifier.align(Alignment.CenterHorizontally).pressable(onDelete))
+
+                GlassTextField(
+                    digits,
+                    { v -> digits = v.filter(Char::isDigit).take(4) },
+                    placeholder = "e.g. 1234",
+                    label = "Account or card ending (for SMS)",
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                )
+                Text(
+                    "Bank SMS that mention these last digits are added to this account.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.textTertiary,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    accountIcons.forEach { key ->
+                        val selected = key == icon
+                        val bg by animateColorAsState(if (selected) Color(color).copy(alpha = 0.22f) else c.glass, label = "accIcon")
+                        Box(
+                            Modifier.size(46.dp).pressable({ icon = key }, pressedScale = 0.9f).clip(RoundedCornerShape(15.dp)).background(bg)
+                                .border(1.dp, if (selected) Color(color) else c.borderBottom, RoundedCornerShape(15.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(CategoryIcons[key], contentDescription = key, tint = if (selected) Color(color) else c.textSecondary, modifier = Modifier.size(22.dp)) }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Palette.all.take(8).forEach { col ->
+                        Box(
+                            Modifier.size(28.dp).pressable({ color = col }, pressedScale = 0.85f).clip(CircleShape).background(Color(col))
+                                .then(if (col == color) Modifier.border(2.dp, c.textPrimary, CircleShape) else Modifier),
+                        )
+                    }
+                }
+                Chip(
+                    if (makeDefault) "Default for new entries" else "Make this the default",
+                    onClick = { makeDefault = !makeDefault },
+                    icon = if (makeDefault) Lucide.CircleCheck else Lucide.Plus,
+                    selected = makeDefault,
+                )
+                PrimaryButton(
+                    "Save",
+                    { onSave(initial.copy(name = name.trim(), icon = icon, color = color, openingMinor = AmountInput.toMinor(opening) ?: 0L, smsDigits = digits.ifBlank { null }, currency = currency), makeDefault) },
+                    Modifier.fillMaxWidth(),
+                    enabled = name.isNotBlank(),
+                )
+                if (breakdown != null) BalanceBreakdownCard(breakdown, initial.createdAt)
+                if (onMoveEntries != null) {
+                    SecondaryButton("Move its entries to another account", onMoveEntries, Modifier.fillMaxWidth(), icon = Lucide.Repeat)
+                }
+                if (onDelete != null) {
+                    Text("Delete account", style = MaterialTheme.typography.labelLarge, color = c.negative, modifier = Modifier.align(Alignment.CenterHorizontally).pressable(onDelete))
+                }
             }
         }
+    }
+
+    if (pickingCurrency) {
+        CurrencyPickerSheet(
+            selected = currency ?: baseMoney.currency.currencyCode,
+            onDismiss = { pickingCurrency = false },
+            onSelect = { code ->
+                currency = if (code.equals(baseMoney.currency.currencyCode, ignoreCase = true)) null else code
+                pickingCurrency = false
+            },
+        )
     }
 }
 

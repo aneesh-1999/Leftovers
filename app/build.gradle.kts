@@ -135,6 +135,7 @@ dependencies {
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.fragment)
     implementation(libs.androidx.exifinterface)
+    implementation(libs.androidx.startup)
     // Email payment detection (IMAP over TLS). Only used when the user connects a mailbox.
     implementation(libs.angus.mail)
 }

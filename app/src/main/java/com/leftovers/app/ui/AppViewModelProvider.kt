@@ -22,6 +22,7 @@ import com.leftovers.app.ui.screens.HistoryViewModel
 import com.leftovers.app.ui.screens.HomeViewModel
 import com.leftovers.app.ui.screens.PlanViewModel
 import com.leftovers.app.ui.screens.RecapViewModel
+import com.leftovers.app.ui.screens.RosterViewModel
 import com.leftovers.app.ui.screens.SettingsViewModel
 import com.leftovers.app.ui.screens.StatsViewModel
 import com.leftovers.app.ui.screens.SubscriptionsViewModel
@@ -34,7 +35,7 @@ object AppViewModelProvider {
             EditorViewModel(createSavedStateHandle(), app(), c.repository, c.accounts, c.settings, c.sms, c.planning, c.budgetAlerts)
         }
         initializer { AccountsViewModel(container().accounts, container().settings, container().repository) }
-        initializer { RecapViewModel(createSavedStateHandle(), container().repository, container().planning, container().settings) }
+        initializer { RecapViewModel(createSavedStateHandle(), container().repository, container().planning, container().roster, container().remittances, container().settings) }
         initializer { HistoryViewModel(container().repository, container().accounts, container().planning) }
         initializer { StatsViewModel(container().repository, container().settings) }
         initializer { PlanViewModel(container().repository, container().settings, container().planning) }
@@ -46,7 +47,7 @@ object AppViewModelProvider {
         }
         initializer { GoalsViewModel(container().planning) }
         initializer { DebtsViewModel(container().planning) }
-        initializer { DeletedViewModel(container().repository, container().settings) }
+        initializer { DeletedViewModel(container().repository, container().roster, container().settings) }
         initializer { GoalDetailViewModel(createSavedStateHandle(), container().planning) }
         initializer { CategoriesViewModel(container().repository) }
         initializer {
@@ -56,6 +57,13 @@ object AppViewModelProvider {
         initializer { AssistantViewModel(container(), container().assistant) }
         initializer { AssistantSetupViewModel(container().assistant) }
         initializer { EmailSetupViewModel(app()) }
+        initializer { RosterViewModel(container().roster, container().repository, container().accounts) }
+        initializer { com.leftovers.app.ui.screens.RemittanceViewModel(container().remittances) }
+        initializer { com.leftovers.app.ui.screens.RemittanceEditorViewModel(container().remittances, container().accounts) }
+        initializer { com.leftovers.app.ui.screens.RemittanceDetailViewModel(createSavedStateHandle(), container().remittances, container().repository, container().accounts) }
+        initializer { com.leftovers.app.ui.screens.RecipientsViewModel(container().remittances) }
+        initializer { com.leftovers.app.ui.screens.RemittanceHistoryViewModel(container().remittances) }
+        initializer { com.leftovers.app.ui.screens.RemittanceReportsViewModel(container().remittances) }
     }
 }
 

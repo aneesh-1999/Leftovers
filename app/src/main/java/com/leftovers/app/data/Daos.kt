@@ -9,8 +9,11 @@ import kotlinx.coroutines.flow.Flow
 private const val SELECT_ITEMS = """
     SELECT t.id, t.amountMinor, t.type, t.categoryId, t.epochDay, t.note, t.createdAt,
            c.name AS categoryName, c.emoji AS categoryEmoji, c.color AS categoryColor,
-           t.accountId, t.receiptPath, c.addsToBudget
-    FROM transactions t INNER JOIN categories c ON c.id = t.categoryId
+           t.accountId, t.receiptPath, c.addsToBudget,
+           a.currency AS accountCurrency, a.name AS accountName
+    FROM transactions t 
+    INNER JOIN categories c ON c.id = t.categoryId
+    LEFT JOIN accounts a ON a.id = t.accountId
 """
 
 private const val NEWEST_FIRST = " ORDER BY t.epochDay DESC, t.createdAt DESC"
@@ -68,8 +71,11 @@ interface TransactionDao {
 interface RecurringDao {
     @Query(
         """
-        SELECT r.*, c.name AS categoryName, c.emoji AS categoryEmoji, c.color AS categoryColor
-        FROM recurring r INNER JOIN categories c ON c.id = r.categoryId
+        SELECT r.*, c.name AS categoryName, c.emoji AS categoryEmoji, c.color AS categoryColor,
+               a.currency AS accountCurrency
+        FROM recurring r 
+        INNER JOIN categories c ON c.id = r.categoryId
+        LEFT JOIN accounts a ON a.id = r.accountId
         ORDER BY r.active DESC, r.dayOfMonth
         """,
     )
@@ -122,6 +128,9 @@ interface GoalDao {
 interface CategoryDao {
     @Query("SELECT * FROM categories ORDER BY id")
     fun observeAll(): Flow<List<Category>>
+
+    @Query("SELECT * FROM categories ORDER BY id")
+    suspend fun getAll(): List<Category>
 
     @Query("SELECT * FROM categories WHERE id = :id")
     suspend fun getById(id: Long): Category?
@@ -254,6 +263,149 @@ interface DeletedDao {
 
     @Query("DELETE FROM deleted_transactions WHERE id IN (:ids)")
     suspend fun delete(ids: List<Long>)
+
+    // Deleted Shifts
+    @Query("SELECT * FROM deleted_shifts ORDER BY deletedAt DESC")
+    fun observeShifts(): Flow<List<DeletedShift>>
+
+    @Query("SELECT COUNT(*) FROM deleted_shifts")
+    fun countShifts(): Flow<Int>
+
+    @Upsert
+    suspend fun upsertShift(shift: DeletedShift)
+
+    @Query("SELECT * FROM deleted_shifts WHERE id IN (:ids)")
+    suspend fun getShiftsByIds(ids: List<Long>): List<DeletedShift>
+
+    @Query("SELECT * FROM deleted_shifts WHERE deletedAt < :before")
+    suspend fun olderShiftsThan(before: Long): List<DeletedShift>
+
+    @Query("SELECT * FROM deleted_shifts")
+    suspend fun getAllShifts(): List<DeletedShift>
+
+    @Query("DELETE FROM deleted_shifts WHERE id IN (:ids)")
+    suspend fun deleteShifts(ids: List<Long>)
+
+    // Deleted Leaves
+    @Query("SELECT * FROM deleted_leave_entries ORDER BY deletedAt DESC")
+    fun observeLeaves(): Flow<List<DeletedLeaveEntry>>
+
+    @Query("SELECT COUNT(*) FROM deleted_leave_entries")
+    fun countLeaves(): Flow<Int>
+
+    @Upsert
+    suspend fun upsertLeave(leave: DeletedLeaveEntry)
+
+    @Query("SELECT * FROM deleted_leave_entries WHERE id IN (:ids)")
+    suspend fun getLeavesByIds(ids: List<Long>): List<DeletedLeaveEntry>
+
+    @Query("SELECT * FROM deleted_leave_entries WHERE deletedAt < :before")
+    suspend fun olderLeavesThan(before: Long): List<DeletedLeaveEntry>
+
+    @Query("SELECT * FROM deleted_leave_entries")
+    suspend fun getAllLeaves(): List<DeletedLeaveEntry>
+
+    @Query("DELETE FROM deleted_leave_entries WHERE id IN (:ids)")
+    suspend fun deleteLeaves(ids: List<Long>)
+}
+
+@Dao
+interface ShiftDao {
+    @Query("SELECT * FROM shifts ORDER BY startEpochMillis ASC")
+    fun observeAll(): Flow<List<Shift>>
+
+    @Query("SELECT * FROM shifts WHERE startEpochMillis >= :startMillis AND startEpochMillis <= :endMillis ORDER BY startEpochMillis ASC")
+    fun observeBetween(startMillis: Long, endMillis: Long): Flow<List<Shift>>
+
+    @Query("SELECT * FROM shifts WHERE id = :id")
+    suspend fun getById(id: Long): Shift?
+
+    @Upsert
+    suspend fun upsert(shift: Shift): Long
+
+    @Delete
+    suspend fun delete(shift: Shift)
+
+    @Query("DELETE FROM shifts WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("UPDATE shifts SET status = :status, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateStatus(id: Long, status: ShiftStatus, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("SELECT * FROM shifts")
+    suspend fun getAll(): List<Shift>
+}
+
+@Dao
+interface WorkplaceDao {
+    @Query("SELECT * FROM workplaces WHERE archived = 0 ORDER BY name ASC")
+    fun observeActive(): Flow<List<Workplace>>
+
+    @Query("SELECT * FROM workplaces ORDER BY archived ASC, name ASC")
+    fun observeAll(): Flow<List<Workplace>>
+
+    @Query("SELECT * FROM workplaces WHERE id = :id")
+    suspend fun getById(id: Long): Workplace?
+
+    @Upsert
+    suspend fun upsert(workplace: Workplace): Long
+
+    @Delete
+    suspend fun delete(workplace: Workplace)
+
+    @Query("UPDATE workplaces SET archived = :archived, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setArchived(id: Long, archived: Boolean, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("SELECT * FROM workplaces")
+    suspend fun getAll(): List<Workplace>
+}
+
+@Dao
+interface LeaveDao {
+    @Query("SELECT * FROM leave_entries ORDER BY startDateEpochDay ASC")
+    fun observeAll(): Flow<List<LeaveEntry>>
+
+    @Query("SELECT * FROM leave_entries WHERE startDateEpochDay <= :endEpochDay AND endDateEpochDay >= :startEpochDay ORDER BY startDateEpochDay ASC")
+    fun observeBetween(startEpochDay: Long, endEpochDay: Long): Flow<List<LeaveEntry>>
+
+    @Query("SELECT * FROM leave_entries WHERE id = :id")
+    suspend fun getById(id: Long): LeaveEntry?
+
+    @Upsert
+    suspend fun upsert(entry: LeaveEntry): Long
+
+    @Delete
+    suspend fun delete(entry: LeaveEntry)
+
+    @Query("DELETE FROM leave_entries WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("SELECT * FROM leave_entries")
+    suspend fun getAll(): List<LeaveEntry>
+}
+
+@Dao
+interface WorkplacePaymentDao {
+    @Query("SELECT * FROM workplace_payments ORDER BY paymentEpochDay DESC")
+    fun observeAll(): Flow<List<WorkplacePayment>>
+
+    @Query("SELECT * FROM workplace_payments WHERE workplaceId = :workplaceId ORDER BY paymentEpochDay DESC")
+    fun observeForWorkplace(workplaceId: Long): Flow<List<WorkplacePayment>>
+
+    @Query("SELECT * FROM workplace_payments WHERE workplaceId = :workplaceId AND payPeriodMonth = :month ORDER BY paymentEpochDay DESC")
+    fun observeForPeriod(workplaceId: Long, month: String): Flow<List<WorkplacePayment>>
+
+    @Query("SELECT * FROM workplace_payments WHERE id = :id")
+    suspend fun getById(id: Long): WorkplacePayment?
+
+    @Upsert
+    suspend fun upsert(payment: WorkplacePayment): Long
+
+    @Delete
+    suspend fun delete(payment: WorkplacePayment)
+
+    @Query("SELECT * FROM workplace_payments")
+    suspend fun getAll(): List<WorkplacePayment>
 }
 
 /** Raw table access for backup and restore. */
@@ -267,23 +419,46 @@ interface BackupDao {
     @Query("SELECT * FROM accounts") suspend fun accounts(): List<Account>
     @Query("SELECT * FROM transfers") suspend fun transfers(): List<Transfer>
     @Query("SELECT * FROM debts") suspend fun debts(): List<Debt>
+    @Query("SELECT * FROM shifts") suspend fun shifts(): List<Shift>
+    @Query("SELECT * FROM workplaces") suspend fun workplaces(): List<Workplace>
+    @Query("SELECT * FROM leave_entries") suspend fun leaveEntries(): List<LeaveEntry>
+    @Query("SELECT * FROM workplace_payments") suspend fun workplacePayments(): List<WorkplacePayment>
+    @Query("SELECT * FROM recipients") suspend fun recipients(): List<Recipient>
+    @Query("SELECT * FROM remittances") suspend fun remittances(): List<Remittance>
+    @Query("SELECT * FROM remittance_status_history") suspend fun remittanceStatusHistory(): List<RemittanceStatusHistory>
 
     @Query("DELETE FROM goal_deposits") suspend fun clearDeposits()
     @Query("DELETE FROM debts") suspend fun clearDebts()
     @Query("DELETE FROM deleted_transactions") suspend fun clearDeleted()
+    @Query("DELETE FROM deleted_shifts") suspend fun clearDeletedShifts()
+    @Query("DELETE FROM deleted_leave_entries") suspend fun clearDeletedLeaves()
     @Query("DELETE FROM goals") suspend fun clearGoals()
     @Query("DELETE FROM transfers") suspend fun clearTransfers()
     @Query("DELETE FROM transactions") suspend fun clearTransactions()
     @Query("DELETE FROM recurring") suspend fun clearRecurring()
     @Query("DELETE FROM accounts") suspend fun clearAccounts()
     @Query("DELETE FROM categories") suspend fun clearCategories()
+    @Query("DELETE FROM shifts") suspend fun clearShifts()
+    @Query("DELETE FROM workplaces") suspend fun clearWorkplaces()
+    @Query("DELETE FROM leave_entries") suspend fun clearLeaveEntries()
+    @Query("DELETE FROM workplace_payments") suspend fun clearWorkplacePayments()
+    @Query("DELETE FROM remittance_status_history") suspend fun clearRemittanceStatusHistory()
+    @Query("DELETE FROM remittances") suspend fun clearRemittances()
+    @Query("DELETE FROM recipients") suspend fun clearRecipients()
 
-    @androidx.room.Insert suspend fun insertCategories(items: List<Category>)
-    @androidx.room.Insert suspend fun insertTransactions(items: List<Transaction>)
-    @androidx.room.Insert suspend fun insertRecurring(items: List<Recurring>)
-    @androidx.room.Insert suspend fun insertGoals(items: List<Goal>)
-    @androidx.room.Insert suspend fun insertDeposits(items: List<GoalDeposit>)
-    @androidx.room.Insert suspend fun insertAccounts(items: List<Account>)
-    @androidx.room.Insert suspend fun insertTransfers(items: List<Transfer>)
-    @androidx.room.Insert suspend fun insertDebts(items: List<Debt>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertCategories(items: List<Category>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertTransactions(items: List<Transaction>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertRecurring(items: List<Recurring>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertGoals(items: List<Goal>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertDeposits(items: List<GoalDeposit>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertAccounts(items: List<Account>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertTransfers(items: List<Transfer>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertDebts(items: List<Debt>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertShifts(items: List<Shift>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertWorkplaces(items: List<Workplace>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertLeaveEntries(items: List<LeaveEntry>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertWorkplacePayments(items: List<WorkplacePayment>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertRecipients(items: List<Recipient>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertRemittances(items: List<Remittance>)
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertRemittanceStatusHistory(items: List<RemittanceStatusHistory>)
 }
