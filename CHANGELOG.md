@@ -18,6 +18,13 @@ All notable changes to Leftovers. Download any version from
 - Tab switching is back to the slide and fade from before, without the blank moment: a tab opened for the
   first time now shows its content straight away instead of an empty screen while it loads
 
+## 1.7.0
+
+- Permanent cloud deletion: users can permanently erase their backup snapshots from Firebase Cloud Firestore and delete their cloud accounts with complete data isolation and privacy protection
+- Firebase Cloud Backup & Restore: secure Google and Email/password sign-in with automatic daily cloud backup and one-tap restore
+- App size & startup optimization: enabled R8 full mode, trimmed unused language resources, and stripped redundant logging
+- Updated attribution to "Made by Aneesh" and refreshed storage status badge
+
 ## 1.6.0
 
 - Detected payments go to the account the message names, by its last digits or by name: "in your HBL A/C",

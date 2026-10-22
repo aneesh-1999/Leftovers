@@ -48,6 +48,10 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
                         DebtReminders.deliverDebtReminder(context)
                         AlarmScheduler.scheduleDebtReminder(context, true)
                     }
+                    AlarmScheduler.ACTION_CREDIT_CARDS -> {
+                        com.leftovers.app.data.creditcard.CreditCardReminders.deliverPaymentReminders(context)
+                        AlarmScheduler.scheduleCreditCardReminder(context, true)
+                    }
                 }
             } catch (_: Exception) {
             } finally {

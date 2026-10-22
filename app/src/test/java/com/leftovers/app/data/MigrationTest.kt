@@ -36,7 +36,7 @@ class MigrationTest {
             close()
         }
 
-        val db = helper.runMigrationsAndValidate(name, 19, true, *ALL_MIGRATIONS)
+        val db = helper.runMigrationsAndValidate(name, 23, true, *ALL_MIGRATIONS)
 
         db.query("SELECT amountMinor, note, accountId FROM transactions WHERE id = 1").use {
             it.moveToFirst()
@@ -103,6 +103,46 @@ class MigrationTest {
             it.moveToFirst()
             assertEquals(0, it.getInt(0))
         }
+        db.query("SELECT COUNT(*) FROM investment_assets").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM investment_transactions").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM market_price_snapshots").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM watchlist_items").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM credit_cards").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM credit_card_statements").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM credit_card_transactions").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM statement_payment_allocations").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM room_expenses").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM debts WHERE accountId IS NULL").use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
     }
 
     @Test fun eachStepFromVersion5Validates() {
@@ -121,5 +161,9 @@ class MigrationTest {
         helper.runMigrationsAndValidate(name, 17, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 18, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 19, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 20, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 21, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 22, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 23, true, *ALL_MIGRATIONS).close()
     }
 }

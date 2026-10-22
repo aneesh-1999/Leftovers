@@ -56,9 +56,14 @@ class BackupManager(
         const val MAX_PHOTO_BYTES = 40L * 1024 * 1024
     }
 
-    suspend fun export(target: Uri): Result<Int> = withContext(Dispatchers.IO) {
-        runCatching {
-            val transactions = dao.transactions()
+    data class BackupPayload(
+        val jsonString: String,
+        val totalItems: Int,
+        val isEncrypted: Boolean,
+    )
+
+    suspend fun createBackupPayload(encryptIfPasswordSet: Boolean = true): BackupPayload = withContext(Dispatchers.IO) {
+        val transactions = dao.transactions()
             val s = settings.settings.first()
             val debtList = dao.debts()
             val shiftList = dao.shifts()
@@ -93,8 +98,8 @@ class BackupManager(
                 put("version", 1)
                 put("exportedAt", System.currentTimeMillis())
                 put("settings", JSONObject().apply {
-                    put("currency", s.currencyCode)
-                    put("userName", s.userName)
+                    val effectiveName = s.userName.ifBlank { s.cloudUserDisplayName.orEmpty() }
+                    put("userName", effectiveName)
                     put("userPhoto", photoRef(s.userPhotoPath, forceInclude = true))
                     put("themeMode", s.themeMode.name)
                     put("dynamicColor", s.dynamicColor)
@@ -159,6 +164,7 @@ class BackupManager(
                         .put("day", d.epochDay).put("settled", d.settled).put("createdAt", d.createdAt)
                         .put("dueDate", d.dueDateEpochDay ?: JSONObject.NULL)
                         .put("reminderEnabled", d.reminderEnabled)
+                        .put("accountId", d.accountId ?: JSONObject.NULL)
                         .put("receipts", JSONArray(d.photos.map { photoRef(it) }.filter { it != JSONObject.NULL }))
                 }))
                 put("workplaces", JSONArray(workplaceList.map { w ->
@@ -232,11 +238,23 @@ class BackupManager(
                 }))
                 if (photos.length() > 0) put("photos", photos)
             }
-            val text = password.get()?.let { BackupCrypto.encrypt(json.toString(), it).toString(2) } ?: json.toString(2)
-            context.contentResolver.openOutputStream(target, "wt")?.use { it.write(text.toByteArray()) }
+        val pwd = if (encryptIfPasswordSet) password.get() else null
+        val isEnc = pwd != null
+        val text = pwd?.let { BackupCrypto.encrypt(json.toString(), it).toString(2) } ?: json.toString(2)
+        val totalExported = transactions.size + debtList.size + shiftList.size + workplaceList.size + leaveList.size + paymentList.size + remittanceList.size
+        BackupPayload(
+            jsonString = text,
+            totalItems = totalExported,
+            isEncrypted = isEnc,
+        )
+    }
+
+    suspend fun export(target: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            val payload = createBackupPayload(encryptIfPasswordSet = true)
+            context.contentResolver.openOutputStream(target, "wt")?.use { it.write(payload.jsonString.toByteArray()) }
                 ?: error("Couldn't open the file")
-            val totalExported = transactions.size + debtList.size + shiftList.size + workplaceList.size + leaveList.size + paymentList.size + remittanceList.size
-            totalExported
+            payload.totalItems
         }
     }
 
@@ -248,6 +266,12 @@ class BackupManager(
         runCatching {
             val text = context.contentResolver.openInputStream(source)?.use { it.readBytes().decodeToString() }
                 ?: error("Couldn't open the file")
+            restoreFromJsonText(text, typedPassword).getOrThrow()
+        }
+    }
+
+    suspend fun restoreFromJsonText(text: String, typedPassword: String? = null): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
             var json = JSONObject(text)
             if (BackupCrypto.isEncrypted(json)) {
                 val key = typedPassword ?: password.get() ?: throw BackupPasswordException("This backup has a password")
@@ -340,6 +364,7 @@ class BackupManager(
                     receiptPath = photosToPath(names.mapNotNull(::restorePhoto)),
                     dueDateEpochDay = it.longOrNull("dueDate"),
                     reminderEnabled = it.optBoolean("reminderEnabled", false),
+                    accountId = it.longOrNull("accountId") ?: it.longOrNull("account"),
                 )
             }
             val workplaces = json.optJSONArray("workplaces")?.objects().orEmpty().map {
@@ -509,8 +534,11 @@ class BackupManager(
             ReceiptStore.deleteAllExcept(context, (transactions.mapNotNull { it.receiptPath } + debts.flatMap { it.photos } + remittances.mapNotNull { it.receiptPath } + listOfNotNull(userPhoto)).toSet())
 
             json.optJSONObject("settings")?.let { s ->
+                val currentSettings = settings.settings.first()
                 val currency = s.optString("currency", "EUR")
-                val userName = s.optString("userName", "")
+                val userName = s.optString("userName", "").ifBlank {
+                    currentSettings.userName.ifBlank { currentSettings.cloudUserDisplayName.orEmpty() }
+                }
                 val theme = com.leftovers.app.data.ThemeMode.entries.firstOrNull { it.name == s.optString("themeMode") } ?: com.leftovers.app.data.ThemeMode.SYSTEM
                 val dynamicColor = s.optBoolean("dynamicColor", false)
                 val plan = BudgetPlan(

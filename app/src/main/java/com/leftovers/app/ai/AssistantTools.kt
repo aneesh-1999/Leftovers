@@ -34,6 +34,13 @@ import com.leftovers.app.data.RemittanceCalculations
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import com.leftovers.app.data.creditcard.CreditCard
+import com.leftovers.app.data.creditcard.CreditCardTransaction
+import com.leftovers.app.data.creditcard.CreditCardTxType
+import com.leftovers.app.data.creditcard.CreditCardWithSummary
+import com.leftovers.app.data.creditcard.StatementStatus
+import com.leftovers.app.data.Debt
+import com.leftovers.app.data.openBalances
 
 /** One parameter of a command, described once and rendered for each provider. */
 data class Param(val name: String, val type: String, val description: String, val required: Boolean = false, val enum: List<String>? = null)
@@ -76,6 +83,10 @@ enum class ChangeKind(val title: String, val done: String) {
     UPDATE_REMITTANCE("Update remittance", "Remittance updated"),
     DELETE_REMITTANCE("Delete remittance", "Remittance deleted"),
     RECIPIENT("Recipient", "Recipient saved"),
+    CREDIT_CARD_PAYMENT("Credit card payment", "Payment recorded"),
+    CREDIT_CARD_ENTRY("Credit card entry", "Entry recorded"),
+    DEBT("Money owed", "Saved"),
+    SETTLE_DEBT("Settle debt", "Settled"),
 }
 
 /** A change the AI proposed, waiting for the user's Apply or Cancel. */
@@ -156,6 +167,26 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
         add(ToolSpec(
             "list_recipients", "List saved remittance recipients with destination country, preferred currency, provider, bank or digital wallet details, and lifetime transfer totals.",
             listOf(Param("include_archived", "string", "true or false", enum = listOf("true", "false"))),
+        ))
+        add(ToolSpec("get_credit_cards_overview", "Overview of credit cards, outstanding liability balance, available credit, credit limit, and upcoming payment due dates. Call this when asked about credit cards, card balances, or card due dates.", emptyList()))
+        add(ToolSpec(
+            "list_credit_card_transactions", "Find transactions on credit cards (purchases, refunds, payments, fees) with optional filters for card nickname, type, or date range.",
+            listOf(
+                Param("card_name", "string", "Card nickname to filter by"),
+                Param("type", "string", "purchase, refund, fee, or payment", enum = listOf("purchase", "refund", "fee", "payment")),
+                Param("from", "string", "Start date YYYY-MM-DD"),
+                Param("to", "string", "End date YYYY-MM-DD"),
+                Param("limit", "integer", "How many transactions to return (max $MAX_ENTRIES)"),
+            ),
+        ))
+        add(ToolSpec("get_debts_overview", "Summary of money owed: who owes money to the user (lent), who the user owes money to (borrowed), and open net balances by person. Call this when asked about debts, money owed, or who owes what.", emptyList()))
+        add(ToolSpec(
+            "list_debts", "List individual money owed (debts) entries with filters for person name or settled status.",
+            listOf(
+                Param("person", "string", "Person's name"),
+                Param("settled", "string", "true, false, or all (default false)", enum = listOf("true", "false", "all")),
+                Param("limit", "integer", "How many entries to return (max $MAX_ENTRIES)"),
+            ),
         ))
         if (privacy.allowChanges) {
             add(ToolSpec(
@@ -312,6 +343,45 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
                 ),
                 changesData = true,
             ))
+            add(ToolSpec(
+                "record_credit_card_payment", "Record a payment made towards a credit card liability. Reduces card balance and optionally deducts from a source bank account.",
+                listOf(
+                    Param("card_name", "string", "Card nickname from get_credit_cards_overview", required = true),
+                    Param("amount", "number", "Payment amount in the card's currency, e.g. 250.00", required = true),
+                    Param("date", "string", "Payment date YYYY-MM-DD (defaults to today)"),
+                    Param("source_account", "string", "Source bank account to deduct payment from (optional)"),
+                    Param("notes", "string", "Optional payment note or reference"),
+                ),
+                changesData = true,
+            ))
+            add(ToolSpec(
+                "add_credit_card_entry", "Record a purchase, refund, or fee on a credit card.",
+                listOf(
+                    Param("card_name", "string", "Card nickname", required = true),
+                    Param("amount", "number", "Amount, e.g. 45.99", required = true),
+                    Param("description", "string", "Description of entry or merchant name", required = true),
+                    Param("type", "string", "purchase, refund, fee", required = true, enum = listOf("purchase", "refund", "fee")),
+                    Param("category", "string", "Category name (e.g. Groceries, Dining)"),
+                    Param("date", "string", "Date YYYY-MM-DD (defaults to today)"),
+                ),
+                changesData = true,
+            ))
+            add(ToolSpec(
+                "add_debt", "Record money lent to someone (they owe you) or borrowed from someone (you owe them).",
+                listOf(
+                    Param("person", "string", "Person's name", required = true),
+                    Param("amount", "number", "Amount, e.g. 50.00", required = true),
+                    Param("direction", "string", "they_owe_me (user lent money) or i_owe_them (user borrowed money)", required = true, enum = listOf("they_owe_me", "i_owe_them")),
+                    Param("note", "string", "Short note or reason"),
+                    Param("due_date", "string", "Expected repayment date YYYY-MM-DD"),
+                ),
+                changesData = true,
+            ))
+            add(ToolSpec(
+                "settle_debt", "Mark all open debts with a person as settled.",
+                listOf(Param("person", "string", "Person's name", required = true)),
+                changesData = true,
+            ))
         }
     }
 
@@ -341,6 +411,12 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
         val pendingTransfers = allRemittances.filter { it.status.isPending }
         val monthSentEur = monthRemittances.filter { it.sendCurrency.equals("EUR", ignoreCase = true) }.sumOf { it.sendAmountMinor }
 
+        val activeCards = container.creditCards.activeCardsWithSummary.first()
+        val allDebts = container.planning.debts.first()
+        val openDebts = allDebts.openBalances()
+        val owedToUserMinor = openDebts.filter { it.netMinor > 0 }.sumOf { it.netMinor }
+        val userOwesMinor = openDebts.filter { it.netMinor < 0 }.sumOf { kotlin.math.abs(it.netMinor) }
+
         fun formatShiftTime(epochMillis: Long): String =
             java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
 
@@ -356,6 +432,21 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
             append("Workplaces: ${if (workplaces.isEmpty()) "None added yet" else workplaces.joinToString { "${it.name} (€${it.hourlyRateDisplay}/h)" }}.\n")
             append("Remittance Recipients: ${if (recipients.isEmpty()) "None saved yet" else recipients.joinToString { "${it.name}${it.relationship?.let { r -> " ($r)" } ?: ""}" }}.\n")
             append("Remittance Snapshot: This month sent €%.2f across %d transfer(s); %d transfer(s) currently pending.\n".format(major(monthSentEur), monthRemittances.size, pendingTransfers.size))
+            if (activeCards.isNotEmpty()) {
+                val nextDue = activeCards.mapNotNull { it.latestStatement }.filter { it.remainingBalanceMinor > 0L }.minByOrNull { it.statement.dueEpochDay }
+                val dueInfo = nextDue?.let { "next due ${LocalDate.ofEpochDay(it.statement.dueEpochDay)} (${major(it.remainingBalanceMinor)})" } ?: "no due statement"
+                append("Credit Cards: ${activeCards.size} active (${activeCards.joinToString { "${it.card.nickname}: balance ${major(it.currentBalanceMinor)} ${it.card.currency}" }}), $dueInfo.\n")
+            } else {
+                append("Credit Cards: No credit cards added.\n")
+            }
+            if (openDebts.isNotEmpty()) {
+                val topDebts = openDebts.take(4).joinToString { p ->
+                    if (p.netMinor >= 0) "${p.person} owes ${major(p.netMinor)}" else "owes ${p.person} ${major(kotlin.math.abs(p.netMinor))}"
+                }
+                append("Money Owed (Debts): People owe user ${major(owedToUserMinor)} $currency; user owes others ${major(userOwesMinor)} $currency across ${openDebts.size} person(s). Open balances: $topDebts.\n")
+            } else {
+                append("Money Owed (Debts): No open debts.\n")
+            }
             append("Standard Shift Presets: Morning (07:00–15:30, 30m break), Midday (09:00–17:30, 30m break), Evening (15:00–23:30, 30m break), Night (22:00–06:00, 30m break, overnight).\n")
             if (todayShifts.isNotEmpty()) {
                 append("Today's shifts: ${todayShifts.joinToString { "${it.title} (${formatShiftTime(it.startEpochMillis)}–${formatShiftTime(it.endEpochMillis)}, ${it.workplace ?: "work"})" }}.\n")
@@ -377,13 +468,15 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
 
     private fun rules(currency: String): String = buildString {
         append("Use the tools to look things up; never guess amounts, dates or ids. Prefer summarize for questions about totals, ")
-        append("and fetch only the entries you need. You already know categories, accounts, workplaces, saved recipients, and upcoming shifts, ")
+        append("and fetch only the entries you need. You already know categories, accounts, workplaces, saved recipients, credit cards, money owed, and upcoming shifts, ")
         append("so you can answer questions about today/tomorrow schedule, next shift, or workplace rates directly. ")
         append("For in-depth roster analysis, hours totals, or past shifts, call get_roster_overview or list_shifts. ")
         append("For remittances (money sent home, e.g. to Nepal in NPR from EUR), call get_remittance_overview or list_remittances. ")
+        append("For credit cards (balances, limits, statements, payments), call get_credit_cards_overview or list_credit_card_transactions. ")
+        append("For money owed (debts lent or borrowed), call get_debts_overview or list_debts. ")
         append("Always keep sending currency (e.g. EUR) and receiving currency (e.g. NPR) clearly distinct; do not mix them. ")
         if (privacy.allowChanges) {
-            append("When the user asks for a change or to schedule a shift, record a remittance transfer, or log spending, call the matching tool directly: ")
+            append("When the user asks for a change or to schedule a shift, record a remittance transfer, record a credit card payment, add a card purchase or charge, log money lent or borrowed, or settle debts with someone, call the matching tool directly: ")
             append("the app shows each change to the user with Apply and Cancel, so don't ask for permission in text first. ")
             append("When the user asks to record a remittance (e.g. 'Sent €500 to Mother via Wise at rate 142.50'), ")
             append("calculate expected receiving NPR = send amount * exchange rate if the rate is given. ")
@@ -437,6 +530,28 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
                     JSONObject().put("name", c.name).also { j -> c.budgetMinor?.let { j.put("monthly_limit", major(it)) } }
                 }))
                 o.put("income_categories", JSONArray(categories.filter { it.type == TxType.INCOME }.map { it.name }))
+
+                val activeCards = container.creditCards.activeCardsWithSummary.first()
+                val totalCardLiability = activeCards.sumOf { it.currentBalanceMinor }
+                val cardsJson = JSONArray(activeCards.map {
+                    JSONObject()
+                        .put("nickname", scrub(it.card.nickname))
+                        .put("balance", major(it.currentBalanceMinor))
+                        .put("currency", it.card.currency)
+                        .put("status", it.status.label)
+                })
+                o.put("credit_cards_summary", JSONObject().put("total_balance", major(totalCardLiability)).put("cards_count", activeCards.size).put("cards", cardsJson))
+
+                val allDebts = container.planning.debts.first()
+                val openDebts = allDebts.openBalances()
+                val owedToUser = openDebts.filter { it.netMinor > 0 }.sumOf { it.netMinor }
+                val userOwes = openDebts.filter { it.netMinor < 0 }.sumOf { kotlin.math.abs(it.netMinor) }
+                o.put("debts_summary", JSONObject()
+                    .put("total_receivable_owed_to_user", major(owedToUser))
+                    .put("total_payable_user_owes", major(userOwes))
+                    .put("open_people_count", openDebts.size)
+                )
+
                 Prepared.Answer(o.toString(), "your overview")
             }
             "summarize" -> {
@@ -679,6 +794,115 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
                         .put("last_transfer_date", item.lastTransferDateEpochDay?.let { LocalDate.ofEpochDay(it).toString() } ?: JSONObject.NULL)
                         .put("archived", r.archived)
                 }).toString(), "${list.size} recipients")
+            }
+            "get_credit_cards_overview" -> {
+                val cards = container.creditCards.activeCardsWithSummary.first()
+                Prepared.Answer(JSONArray(cards.map { item ->
+                    val c = item.card
+                    val latest = item.latestStatement
+                    JSONObject()
+                        .put("id", c.id)
+                        .put("nickname", scrub(c.nickname))
+                        .put("bank_issuer", c.bankIssuer)
+                        .put("network", c.network)
+                        .put("currency", c.currency)
+                        .put("current_balance", major(item.currentBalanceMinor))
+                        .put("available_credit", item.availableCreditMinor?.let { major(it) } ?: JSONObject.NULL)
+                        .put("credit_limit", if (c.creditLimitMinor > 0) major(c.creditLimitMinor) else JSONObject.NULL)
+                        .put("status", item.status.label)
+                        .put("billing_cycle_closing_day", if (c.billingCycleClosingDay in 1..31) c.billingCycleClosingDay else JSONObject.NULL)
+                        .put("payment_due_day", if (c.paymentDueDay in 1..31) c.paymentDueDay else JSONObject.NULL)
+                        .put("latest_statement_due_date", latest?.let { LocalDate.ofEpochDay(it.statement.dueEpochDay).toString() } ?: JSONObject.NULL)
+                        .put("latest_statement_remaining_balance", latest?.let { major(it.remainingBalanceMinor) } ?: JSONObject.NULL)
+                        .put("days_until_due", latest?.daysUntilDue ?: JSONObject.NULL)
+                }).toString(), "${cards.size} credit cards")
+            }
+            "list_credit_card_transactions" -> {
+                val cardName = a.optString("card_name").trim().takeIf { it.isNotBlank() }
+                val typeStr = a.optString("type").trim().takeIf { it.isNotBlank() }
+                val from = date(a, "from")
+                val to = date(a, "to")
+                val limit = a.optInt("limit", MAX_ENTRIES).coerceIn(1, MAX_ENTRIES)
+
+                val allCards = container.creditCards.getActiveCardsSync()
+                val cardMap = allCards.associateBy { it.id }
+                val targetCard = cardName?.let { name -> allCards.find { it.nickname.contains(name, ignoreCase = true) } }
+
+                val allTxs = container.creditCards.getAllTransactionsSync()
+                    .filter { tx ->
+                        (targetCard == null || tx.cardId == targetCard.id) &&
+                        (typeStr == null || tx.type.name.equals(typeStr, ignoreCase = true)) &&
+                        (from == null || tx.dateEpochDay >= from.toEpochDay()) &&
+                        (to == null || tx.dateEpochDay <= to.toEpochDay())
+                    }
+                    .sortedByDescending { it.dateEpochDay }
+                    .take(limit)
+
+                Prepared.Answer(JSONArray(allTxs.map { tx ->
+                    val card = cardMap[tx.cardId]
+                    JSONObject()
+                        .put("id", tx.id)
+                        .put("card_name", card?.nickname?.let(::scrub) ?: "Card #${tx.cardId}")
+                        .put("amount", major(tx.amountMinor))
+                        .put("currency", card?.currency ?: s.currencyCode)
+                        .put("type", tx.type.name.lowercase())
+                        .put("description", scrub(tx.description))
+                        .put("category", tx.category)
+                        .put("date", LocalDate.ofEpochDay(tx.dateEpochDay).toString())
+                }).toString(), "${allTxs.size} card transactions")
+            }
+            "get_debts_overview" -> {
+                val debts = container.planning.debts.first()
+                val open = debts.openBalances()
+                val totalReceivable = open.filter { it.netMinor > 0 }.sumOf { it.netMinor }
+                val totalPayable = open.filter { it.netMinor < 0 }.sumOf { kotlin.math.abs(it.netMinor) }
+
+                val o = JSONObject()
+                    .put("total_receivable_owed_to_user", major(totalReceivable))
+                    .put("total_payable_user_owes", major(totalPayable))
+                    .put("open_people_count", open.size)
+                    .put("balances", JSONArray(open.map { p ->
+                        JSONObject()
+                            .put("person", scrub(p.person))
+                            .put("net_balance", major(p.netMinor))
+                            .put("relationship", if (p.netMinor > 0) "owes_user" else if (p.netMinor < 0) "user_owes_person" else "settled")
+                            .put("open_entries_count", p.entries.size)
+                            .put("entries", JSONArray(p.entries.map { e ->
+                                JSONObject()
+                                    .put("id", e.id)
+                                    .put("amount", major(kotlin.math.abs(e.amountMinor)))
+                                    .put("type", if (e.amountMinor >= 0) "lent" else "borrowed")
+                                    .put("date", LocalDate.ofEpochDay(e.epochDay).toString())
+                                    .put("due_date", e.dueDate?.toString() ?: JSONObject.NULL)
+                                    .put("note", if (e.note.isNotBlank() && privacy.shareNotes) scrub(e.note) else JSONObject.NULL)
+                            }))
+                    }))
+                Prepared.Answer(o.toString(), "debts overview")
+            }
+            "list_debts" -> {
+                val personQuery = a.optString("person").trim().takeIf { it.isNotBlank() }
+                val settledStr = a.optString("settled").trim().takeIf { it.isNotBlank() } ?: "false"
+                val limit = a.optInt("limit", MAX_ENTRIES).coerceIn(1, MAX_ENTRIES)
+
+                val debts = container.planning.debts.first()
+                    .filter { d ->
+                        (personQuery == null || d.person.contains(personQuery, ignoreCase = true)) &&
+                        (settledStr == "all" || (settledStr == "true" && d.settled) || (settledStr == "false" && !d.settled))
+                    }
+                    .sortedByDescending { it.createdAt }
+                    .take(limit)
+
+                Prepared.Answer(JSONArray(debts.map { d ->
+                    JSONObject()
+                        .put("id", d.id)
+                        .put("person", scrub(d.person))
+                        .put("amount", major(kotlin.math.abs(d.amountMinor)))
+                        .put("type", if (d.amountMinor >= 0) "lent_they_owe_me" else "borrowed_i_owe_them")
+                        .put("date", LocalDate.ofEpochDay(d.epochDay).toString())
+                        .put("due_date", d.dueDate?.toString() ?: JSONObject.NULL)
+                        .put("settled", d.settled)
+                        .put("note", if (d.note.isNotBlank() && privacy.shareNotes) scrub(d.note) else JSONObject.NULL)
+                }).toString(), "${debts.size} debts")
             }
             else -> {
                 if (!privacy.allowChanges) throw IllegalStateException("Changes are turned off in Settings → AI assistant")
@@ -1098,6 +1322,106 @@ class AssistantTools(private val container: AppContainer, private val privacy: A
             ProposedChange(ChangeKind.RECIPIENT, desc) {
                 container.remittances.saveRecipient(recipient)
                 "Recipient saved"
+            }
+        }
+        "record_credit_card_payment" -> {
+            val cardName = a.getString("card_name").trim()
+            val allCards = container.creditCards.getActiveCardsSync()
+            val card = allCards.find { it.nickname.contains(cardName, ignoreCase = true) }
+                ?: throw IllegalArgumentException("No credit card matching '$cardName'")
+            val amountMinor = positiveMinor(a, "amount")
+            val cardMoney = Money(card.currency)
+            val day = date(a, "date") ?: LocalDate.now()
+            val sourceAccName = a.optString("source_account").trim().takeIf { it.isNotBlank() }
+            val sourceAccount = sourceAccName?.let { findAccount(accounts, it) }
+            val notes = a.optString("notes").trim().take(80)
+
+            val summary = "Record ${cardMoney.format(amountMinor)} payment to ${card.nickname}" +
+                (sourceAccount?.let { " from ${it.name}" } ?: "") +
+                " on ${label(day)}" + (if (notes.isNotEmpty()) " · \"$notes\"" else "")
+
+            ProposedChange(ChangeKind.CREDIT_CARD_PAYMENT, summary) {
+                container.creditCards.recordPayment(
+                    cardId = card.id,
+                    amountMinor = amountMinor,
+                    currency = card.currency,
+                    paymentEpochDay = day.toEpochDay(),
+                    sourceBankAccountId = sourceAccount?.id,
+                    notes = notes,
+                )
+                "Payment recorded"
+            }
+        }
+        "add_credit_card_entry" -> {
+            val cardName = a.getString("card_name").trim()
+            val allCards = container.creditCards.getActiveCardsSync()
+            val card = allCards.find { it.nickname.contains(cardName, ignoreCase = true) }
+                ?: throw IllegalArgumentException("No credit card matching '$cardName'")
+            val amountMinor = positiveMinor(a, "amount")
+            val cardMoney = Money(card.currency)
+            val desc = a.getString("description").trim().take(80)
+            val typeStr = a.getString("type").trim().lowercase()
+            val txType = when (typeStr) {
+                "refund" -> CreditCardTxType.REFUND
+                "fee" -> CreditCardTxType.FEE
+                else -> CreditCardTxType.PURCHASE
+            }
+            val cat = a.optString("category").takeIf { it.isNotBlank() }
+            val day = date(a, "date") ?: LocalDate.now()
+
+            val summary = "Record ${cardMoney.format(amountMinor)} ${txType.label.lowercase()} on ${card.nickname}: $desc (${label(day)})"
+
+            ProposedChange(ChangeKind.CREDIT_CARD_ENTRY, summary) {
+                container.creditCards.recordCardTransaction(
+                    CreditCardTransaction(
+                        cardId = card.id,
+                        amountMinor = amountMinor,
+                        type = txType,
+                        description = desc,
+                        category = cat.orEmpty(),
+                        dateEpochDay = day.toEpochDay(),
+                    ),
+                )
+                "Card entry recorded"
+            }
+        }
+        "add_debt" -> {
+            val person = a.getString("person").trim()
+            if (person.isBlank()) throw IllegalArgumentException("Person name is required")
+            val amount = positiveMinor(a, "amount")
+            val direction = a.getString("direction").trim().lowercase()
+            val theyOweMe = direction == "they_owe_me" || direction == "lent"
+            val signedAmount = if (theyOweMe) amount else -amount
+            val note = a.optString("note").trim().take(80)
+            val dueDate = date(a, "due_date")
+
+            val summary = if (theyOweMe) {
+                "Lent ${money.format(amount)} to $person" + (if (note.isNotEmpty()) " · \"$note\"" else "") + (dueDate?.let { " · Due ${label(it)}" } ?: "")
+            } else {
+                "Borrowed ${money.format(amount)} from $person" + (if (note.isNotEmpty()) " · \"$note\"" else "") + (dueDate?.let { " · Due ${label(it)}" } ?: "")
+            }
+
+            ProposedChange(ChangeKind.DEBT, summary) {
+                container.planning.saveDebt(
+                    Debt(
+                        person = person,
+                        amountMinor = signedAmount,
+                        note = note,
+                        epochDay = LocalDate.now().toEpochDay(),
+                        dueDateEpochDay = dueDate?.toEpochDay(),
+                        reminderEnabled = dueDate != null,
+                    ),
+                )
+                "Money owed saved"
+            }
+        }
+        "settle_debt" -> {
+            val person = a.getString("person").trim()
+            if (person.isBlank()) throw IllegalArgumentException("Person name is required")
+
+            ProposedChange(ChangeKind.SETTLE_DEBT, "Settle all open debts with $person") {
+                container.planning.settle(person)
+                "Debts with $person settled"
             }
         }
         else -> throw IllegalArgumentException("Unknown command $name")

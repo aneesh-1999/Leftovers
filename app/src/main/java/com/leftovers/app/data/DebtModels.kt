@@ -5,7 +5,10 @@ import androidx.room.PrimaryKey
 import java.time.LocalDate
 
 /** Money lent to or borrowed from someone. Kept apart from spending, so it never touches the budget. */
-@Entity(tableName = "debts")
+@Entity(
+    tableName = "debts",
+    indices = [androidx.room.Index("accountId")],
+)
 data class Debt(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val person: String,
@@ -19,6 +22,8 @@ data class Debt(
     val receiptPath: String? = null,
     val dueDateEpochDay: Long? = null,
     val reminderEnabled: Boolean = false,
+    /** Optional account the money came from or went to (e.g. Cash, Bank); null when unlinked. */
+    val accountId: Long? = null,
 ) {
     val photos: List<String> get() = receiptPath?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
     val dueDate: LocalDate? get() = dueDateEpochDay?.let { LocalDate.ofEpochDay(it) }

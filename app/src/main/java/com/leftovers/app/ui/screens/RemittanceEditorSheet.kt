@@ -690,7 +690,7 @@ fun QuickAddRecipientDialog(
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                GlassTextField(name, { name = it }, placeholder = "e.g. Sita Dallakoti (Mother)", label = "Recipient Name *")
+                GlassTextField(name, { name = it }, placeholder = "e.g. Sita Sharma (Mother)", label = "Recipient Name *")
 
                 Text("Relationship", style = MaterialTheme.typography.labelSmall, color = c.textSecondary)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

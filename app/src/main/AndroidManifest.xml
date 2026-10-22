@@ -11,6 +11,18 @@
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
+    <queries>
+        <package android:name="com.revolut.revolut" />
+        <package android:name="com.revolut.business" />
+        <package android:name="com.f1soft.esewa" />
+        <package android:name="com.esewa.mobile" />
+        <package android:name="com.khalti" />
+        <package android:name="com.f1soft.banksmart.siddhartha" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+    </queries>
+
     <!-- Predictive back is off: a back swipe acts like the back button (one smooth animation after the
          swipe), instead of scrubbing two screens under the frosted blur frame by frame, which stuttered. -->
     <application
@@ -108,6 +120,16 @@
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".util.detection.PaymentNotificationListenerService"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
 

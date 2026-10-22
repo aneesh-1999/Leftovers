@@ -120,5 +120,6 @@ object Lucide {
     val ZoomIn: ImageVector by lazy { lucide("zoom-in", "m21 21-4.34-4.34", "M11 8v6", "M8 11h6", "M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0") }
     val ZoomOut: ImageVector by lazy { lucide("zoom-out", "m21 21-4.34-4.34", "M8 11h6", "M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0") }
     val Image: ImageVector by lazy { lucide("image", "M21 3H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z", "M9 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z", "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21") }
+    val Cloud: ImageVector by lazy { lucide("cloud", "M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z") }
 }
 

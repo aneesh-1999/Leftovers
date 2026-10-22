@@ -345,9 +345,22 @@ fun HomeScreen(
                                 ListRow(
                                     title = s.merchant.ifBlank { if (s.isIncome) "Money in" else "Bank payment" },
                                     subtitle = java.time.LocalDate.ofEpochDay(s.epochDay).friendlyLabel() + " · " +
-                                        s.sender.ifBlank { if (s.source == SmsSuggestion.SOURCE_EMAIL) "email" else "bank SMS" },
+                                        s.sender.ifBlank {
+                                            when (s.source) {
+                                                SmsSuggestion.SOURCE_EMAIL -> "email"
+                                                SmsSuggestion.SOURCE_NOTIFICATION -> "notification"
+                                                SmsSuggestion.SOURCE_ROOM_EXPENSE -> "Room Expense"
+                                                else -> "bank SMS"
+                                            }
+                                        },
                                     leading = {
-                                        IconTile(if (s.source == SmsSuggestion.SOURCE_EMAIL) Lucide.Mail else Lucide.Smartphone, c.textPrimary, size = 42.dp)
+                                        val icon = when (s.source) {
+                                            SmsSuggestion.SOURCE_EMAIL -> Lucide.Mail
+                                            SmsSuggestion.SOURCE_NOTIFICATION -> Lucide.Bell
+                                            SmsSuggestion.SOURCE_ROOM_EXPENSE -> Lucide.Building2
+                                            else -> Lucide.Smartphone
+                                        }
+                                        IconTile(icon, if (s.source == SmsSuggestion.SOURCE_ROOM_EXPENSE) c.accent else c.textPrimary, size = 42.dp)
                                     },
                                     trailing = {
                                         Row(verticalAlignment = Alignment.CenterVertically) {

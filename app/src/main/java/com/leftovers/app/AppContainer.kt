@@ -46,8 +46,15 @@ class AppContainer(private val context: Context) {
     val settings = SettingsRepository(context)
     val repository = TransactionRepository(database.transactionDao(), database.categoryDao(), database.recurringDao(), database.deletedDao())
     val planning = PlanningRepository(database)
-    val accounts = AccountRepository(database.accountDao(), database.transferDao(), database.transactionDao())
+    val accounts = AccountRepository(database.accountDao(), database.transferDao(), database.transactionDao(), database.debtDao())
     val sms = SmsRepository(database.smsDao(), database.transactionDao())
+    val detectionPipeline = com.leftovers.app.data.detection.TransactionDetectionPipeline(
+        context = context,
+        transactionRepository = repository,
+        accountRepository = accounts,
+        smsRepository = sms,
+        settingsRepository = settings,
+    )
     val roster = RosterRepository(
         database.shiftDao(),
         database.workplaceDao(),
@@ -62,7 +69,29 @@ class AppContainer(private val context: Context) {
         database.transactionDao(),
         database.categoryDao(),
     )
+    val investments = com.leftovers.app.data.investment.InvestmentRepository(
+        database.investmentDao(),
+        com.leftovers.app.data.investment.provider.CompositeMarketDataService(database.investmentDao()),
+    )
+    val creditCards = com.leftovers.app.data.creditcard.CreditCardRepository(
+        database.creditCardDao(),
+        database.accountDao(),
+        database.transferDao(),
+        database.transactionDao(),
+        database.categoryDao(),
+    )
+    val roomExpenses = com.leftovers.app.data.roomexpense.RoomExpenseRepository(
+        context,
+        database.roomExpenseDao(),
+        database.transactionDao(),
+        database.categoryDao(),
+        settings,
+        sms,
+    )
+    val roomExpenseDao = database.roomExpenseDao()
     val backup = BackupManager(context, database, settings, BackupPassword(context))
+    val authManager = com.leftovers.app.data.cloud.FirebaseAuthManager(context, settings, scope)
+    val cloudBackup = com.leftovers.app.data.cloud.CloudBackupRepository(context, authManager, backup, settings)
     val budgetAlerts = BudgetAlertManager(context, repository, settings)
     val assistant = AssistantSettings(context)
     val emailAccount = EmailAccount(context)
@@ -73,6 +102,7 @@ class AppContainer(private val context: Context) {
      */
     suspend fun resetEverything() = withContext(Dispatchers.IO) {
         AutoBackup.schedule(context, false)
+        com.leftovers.app.data.cloud.CloudBackupScheduler.schedule(context, false)
         EmailSync.schedule(context, false)
         database.clearAllTables()
         SeedCategories.onCreate(database.openHelper.writableDatabase)
@@ -80,6 +110,7 @@ class AppContainer(private val context: Context) {
         emailAccount.clear()
         assistant.disconnect()
         backup.password.set(null)
+        authManager.signOut()
         DetectionLog.clear(context)
         settings.clearAll()
     }
@@ -128,6 +159,11 @@ class AppContainer(private val context: Context) {
                 .collect { (on, days) -> AutoBackup.schedule(context, on, days) }
         }
         scope.launch {
+            settings.settings.map { it.cloudBackupEnabled }
+                .distinctUntilChanged()
+                .collect { com.leftovers.app.data.cloud.CloudBackupScheduler.schedule(context, it) }
+        }
+        scope.launch {
             settings.settings.map { it.billReminders }
                 .distinctUntilChanged()
                 .collect { BillReminders.schedule(context, it) }
@@ -158,6 +194,19 @@ class AppContainer(private val context: Context) {
         scope.launch {
             planning.debts.collectLatest {
                 com.leftovers.app.util.AlarmScheduler.scheduleDebtReminder(context, true)
+            }
+        }
+        // Reschedule credit card bill reminders whenever settings change
+        scope.launch {
+            settings.settings.map { it.creditCardRemindersEnabled }
+                .distinctUntilChanged()
+                .collect { com.leftovers.app.data.creditcard.CreditCardReminders.schedule(context, it) }
+        }
+        // Keep credit card alarms in sync with cards / statements
+        scope.launch {
+            creditCards.activeCardsWithSummary.collectLatest {
+                val enabled = settings.settings.first().creditCardRemindersEnabled
+                com.leftovers.app.util.AlarmScheduler.scheduleCreditCardReminder(context, enabled)
             }
         }
     }

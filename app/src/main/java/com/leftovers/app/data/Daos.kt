@@ -33,6 +33,12 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE id = :id")
     suspend fun getById(id: Long): Transaction?
 
+    @Query("SELECT * FROM transactions WHERE note LIKE '%' || :noteSub || '%' LIMIT 1")
+    suspend fun findByNoteContaining(noteSub: String): Transaction?
+
+    @Query("SELECT * FROM transactions WHERE amountMinor = :amountMinor AND epochDay = :epochDay AND type = :type LIMIT 1")
+    suspend fun findByAmountAndDay(amountMinor: Long, epochDay: Long, type: TxType): Transaction?
+
     @Upsert
     suspend fun upsert(transaction: Transaction)
 
@@ -161,7 +167,8 @@ interface AccountDao {
             + COALESCE((SELECT SUM(CASE WHEN t.type = 'INCOME' THEN t.amountMinor ELSE -t.amountMinor END)
                         FROM transactions t WHERE t.accountId = a.id), 0)
             + COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE toAccountId = a.id), 0)
-            - COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE fromAccountId = a.id), 0) AS balanceMinor
+            - COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE fromAccountId = a.id), 0)
+            - COALESCE((SELECT SUM(d.amountMinor) FROM debts d WHERE d.accountId = a.id AND d.settled = 0), 0) AS balanceMinor
         FROM accounts a ORDER BY a.id
         """,
     )
@@ -203,6 +210,9 @@ interface SmsDao {
     @androidx.room.Insert
     suspend fun insert(suggestion: SmsSuggestion)
 
+    @Query("SELECT * FROM sms_suggestions WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): SmsSuggestion?
+
     @Query("DELETE FROM sms_suggestions WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -230,6 +240,15 @@ interface SmsDao {
     @Query("DELETE FROM seen_messages WHERE seenAt < :before")
     suspend fun forgetSeenBefore(before: Long)
 
+    @Query("SELECT * FROM sms_suggestions")
+    suspend fun getAll(): List<SmsSuggestion>
+
+    @Query("SELECT * FROM sms_suggestions WHERE amountMinor = :amountMinor AND epochDay = :epochDay LIMIT 1")
+    suspend fun findByAmountAndDay(amountMinor: Long, epochDay: Long): SmsSuggestion?
+
+    @Query("DELETE FROM sms_suggestions WHERE source = 'room_expense' AND receivedAt < :before")
+    suspend fun deleteRoomExpenseSuggestionsBefore(before: Long): Int
+
     /** Older versions stored whole messages; anything that isn't a 64-char hash gets cleared. */
     @Query("UPDATE sms_suggestions SET body = '' WHERE length(body) != 64")
     suspend fun scrubRawBodies()
@@ -253,6 +272,12 @@ interface DebtDao {
 
     @Query("UPDATE debts SET settled = 1 WHERE settled = 0 AND LOWER(TRIM(person)) = LOWER(TRIM(:person))")
     suspend fun settle(person: String)
+
+    @Query("SELECT COUNT(*) FROM debts WHERE accountId = :accountId")
+    suspend fun countForAccount(accountId: Long): Int
+
+    @Query("UPDATE debts SET accountId = :toId WHERE accountId = :fromId")
+    suspend fun moveAccount(fromId: Long, toId: Long)
 }
 
 @Dao

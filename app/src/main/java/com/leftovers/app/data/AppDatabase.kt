@@ -7,6 +7,20 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
+import com.leftovers.app.data.investment.InvestmentAsset
+import com.leftovers.app.data.investment.InvestmentDao
+import com.leftovers.app.data.investment.InvestmentTransaction
+import com.leftovers.app.data.investment.MarketPriceHistory
+import com.leftovers.app.data.investment.MarketPriceSnapshot
+import com.leftovers.app.data.investment.WatchlistItem
+import com.leftovers.app.data.creditcard.CreditCard
+import com.leftovers.app.data.creditcard.CreditCardDao
+import com.leftovers.app.data.creditcard.CreditCardStatement
+import com.leftovers.app.data.creditcard.CreditCardTransaction
+import com.leftovers.app.data.creditcard.StatementPaymentAllocation
+import com.leftovers.app.data.roomexpense.RoomExpense
+import com.leftovers.app.data.roomexpense.RoomExpenseDao
+
 @Database(
     entities = [
         Category::class, Transaction::class, Recurring::class, Goal::class, GoalDeposit::class,
@@ -15,8 +29,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Shift::class, Workplace::class, LeaveEntry::class, WorkplacePayment::class,
         DeletedShift::class, DeletedLeaveEntry::class,
         Recipient::class, Remittance::class, RemittanceStatusHistory::class,
+        InvestmentAsset::class, InvestmentTransaction::class, MarketPriceSnapshot::class,
+        MarketPriceHistory::class, WatchlistItem::class,
+        CreditCard::class, CreditCardStatement::class, CreditCardTransaction::class,
+        StatementPaymentAllocation::class,
+        RoomExpense::class,
     ],
-    version = 19,
+    version = 23,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -37,6 +56,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun recipientDao(): RecipientDao
     abstract fun remittanceDao(): RemittanceDao
     abstract fun remittanceStatusHistoryDao(): RemittanceStatusHistoryDao
+    abstract fun investmentDao(): InvestmentDao
+    abstract fun creditCardDao(): CreditCardDao
+    abstract fun roomExpenseDao(): RoomExpenseDao
+
 
     companion object {
         fun build(context: Context): AppDatabase =
@@ -44,6 +67,239 @@ abstract class AppDatabase : RoomDatabase() {
                 .addCallback(SeedCategories)
                 .addMigrations(*ALL_MIGRATIONS)
                 .build()
+    }
+}
+
+/**
+ * v23 adds optional accountId to debts so money lent/borrowed can be linked to an account
+ * (e.g. Cash or Bank) and automatically deducted/adjusted from the account's balance.
+ */
+private val MIGRATION_22_23 = object : Migration(22, 23) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `debts` ADD COLUMN `accountId` INTEGER")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_debts_accountId` ON `debts` (`accountId`)")
+    }
+}
+
+/**
+ * v22 introduces the Shared Room Expenses cache:
+ * - room_expenses: local cache for the shared household Firestore ledger (ROOM-EXPANCE)
+ */
+private val MIGRATION_21_22 = object : Migration(21, 22) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `room_expenses` (" +
+                "`id` TEXT PRIMARY KEY NOT NULL, " +
+                "`title` TEXT NOT NULL, " +
+                "`amount` REAL NOT NULL, " +
+                "`paidBy` TEXT NOT NULL, " +
+                "`splitType` TEXT NOT NULL, " +
+                "`category` TEXT NOT NULL, " +
+                "`timestamp` INTEGER NOT NULL, " +
+                "`splitOzric` REAL NOT NULL DEFAULT 0.0, " +
+                "`splitPawan` REAL NOT NULL DEFAULT 0.0, " +
+                "`paidOzric` REAL NOT NULL DEFAULT 0.0, " +
+                "`paidPawan` REAL NOT NULL DEFAULT 0.0, " +
+                "`isCoin` INTEGER NOT NULL DEFAULT 0, " +
+                "`isSettlement` INTEGER NOT NULL DEFAULT 0, " +
+                "`isLendBorrow` INTEGER NOT NULL DEFAULT 0, " +
+                "`paymentMethod` TEXT, " +
+                "`itemizedDetails` TEXT, " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`status` TEXT NOT NULL DEFAULT 'confirmed', " +
+                "`createdBy` TEXT, " +
+                "`deleteRequested` INTEGER NOT NULL DEFAULT 0, " +
+                "`deleteRequestedBy` TEXT, " +
+                "`lastSyncedAt` INTEGER NOT NULL DEFAULT 0)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_room_expenses_timestamp` ON `room_expenses` (`timestamp`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_room_expenses_isSettlement` ON `room_expenses` (`isSettlement`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_room_expenses_isCoin` ON `room_expenses` (`isCoin`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_room_expenses_isLendBorrow` ON `room_expenses` (`isLendBorrow`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_room_expenses_status` ON `room_expenses` (`status`)")
+    }
+}
+
+/**
+ * v21 introduces the Credit Card Manager & Payment Reminders feature:
+ * - credit_cards: card profiles, limits, issuer, cycle days, min payment formula
+ * - credit_card_statements: periodic confirmed billing statements with due dates and balances
+ * - credit_card_transactions: purchases, payments, refunds, fees, interest, reversals
+ * - statement_payment_allocations: explicit allocation of payments to specific statements
+ */
+private val MIGRATION_20_21 = object : Migration(20, 21) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `credit_cards` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`nickname` TEXT NOT NULL, " +
+                "`bankIssuer` TEXT NOT NULL, " +
+                "`network` TEXT NOT NULL DEFAULT '', " +
+                "`lastFourDigits` TEXT NOT NULL DEFAULT '', " +
+                "`currency` TEXT NOT NULL DEFAULT 'EUR', " +
+                "`creditLimitMinor` INTEGER NOT NULL DEFAULT 0, " +
+                "`billingCycleClosingDay` INTEGER NOT NULL DEFAULT 0, " +
+                "`paymentDueDay` INTEGER NOT NULL DEFAULT 0, " +
+                "`paymentDueDaysAfterClosing` INTEGER NOT NULL DEFAULT 0, " +
+                "`minPaymentPercentage` REAL NOT NULL DEFAULT 0.0, " +
+                "`minPaymentFlatMinor` INTEGER NOT NULL DEFAULT 0, " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`isArchived` INTEGER NOT NULL DEFAULT 0, " +
+                "`color` INTEGER NOT NULL DEFAULT 0, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_cards_isArchived` ON `credit_cards` (`isArchived`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `credit_card_statements` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`cardId` INTEGER NOT NULL, " +
+                "`closingEpochDay` INTEGER NOT NULL, " +
+                "`dueEpochDay` INTEGER NOT NULL, " +
+                "`statementBalanceMinor` INTEGER NOT NULL, " +
+                "`minPaymentDueMinor` INTEGER NOT NULL, " +
+                "`currency` TEXT NOT NULL DEFAULT 'EUR', " +
+                "`reference` TEXT NOT NULL DEFAULT '', " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL, " +
+                "FOREIGN KEY(`cardId`) REFERENCES `credit_cards`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_statements_cardId` ON `credit_card_statements` (`cardId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_statements_dueEpochDay` ON `credit_card_statements` (`dueEpochDay`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_statements_closingEpochDay` ON `credit_card_statements` (`closingEpochDay`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `credit_card_transactions` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`cardId` INTEGER NOT NULL, " +
+                "`statementId` INTEGER, " +
+                "`type` TEXT NOT NULL, " +
+                "`dateEpochDay` INTEGER NOT NULL, " +
+                "`amountMinor` INTEGER NOT NULL, " +
+                "`currency` TEXT NOT NULL DEFAULT 'EUR', " +
+                "`description` TEXT NOT NULL, " +
+                "`category` TEXT NOT NULL DEFAULT '', " +
+                "`notes` TEXT NOT NULL DEFAULT '', " +
+                "`linkedFinanceTxId` INTEGER, " +
+                "`linkedAccountId` INTEGER, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL, " +
+                "FOREIGN KEY(`cardId`) REFERENCES `credit_cards`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                "FOREIGN KEY(`statementId`) REFERENCES `credit_card_statements`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_transactions_cardId` ON `credit_card_transactions` (`cardId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_transactions_statementId` ON `credit_card_transactions` (`statementId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_transactions_dateEpochDay` ON `credit_card_transactions` (`dateEpochDay`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_transactions_type` ON `credit_card_transactions` (`type`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `statement_payment_allocations` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`statementId` INTEGER NOT NULL, " +
+                "`transactionId` INTEGER NOT NULL, " +
+                "`amountMinor` INTEGER NOT NULL, " +
+                "`allocatedAt` INTEGER NOT NULL, " +
+                "FOREIGN KEY(`statementId`) REFERENCES `credit_card_statements`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                "FOREIGN KEY(`transactionId`) REFERENCES `credit_card_transactions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_statement_payment_allocations_statementId` ON `statement_payment_allocations` (`statementId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_statement_payment_allocations_transactionId` ON `statement_payment_allocations` (`transactionId`)")
+    }
+}
+
+/**
+ * v20 introduces the Investment Portfolio feature:
+ * - investment_assets: master record of investment assets (NEPSE stocks, Gold, Silver)
+ * - investment_transactions: ledger of buy, sell, fee, and valuation transactions
+ * - market_price_snapshots: latest cached market quotes with timestamps and sources
+ * - market_price_history: historical price points for performance charts
+ * - watchlist_items: user watchlist for tracking stocks/metals without holding them
+ */
+private val MIGRATION_19_20 = object : Migration(19, 20) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `investment_assets` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`type` TEXT NOT NULL, " +
+                "`symbol` TEXT NOT NULL, " +
+                "`name` TEXT NOT NULL, " +
+                "`currency` TEXT NOT NULL, " +
+                "`unit` TEXT NOT NULL, " +
+                "`purity` TEXT, " +
+                "`category` TEXT, " +
+                "`notes` TEXT NOT NULL, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_investment_assets_symbol_type` ON `investment_assets` (`symbol`, `type`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_investment_assets_type` ON `investment_assets` (`type`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `investment_transactions` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`assetId` INTEGER NOT NULL, " +
+                "`type` TEXT NOT NULL, " +
+                "`epochDay` INTEGER NOT NULL, " +
+                "`quantity` REAL NOT NULL, " +
+                "`unitPriceMinor` INTEGER NOT NULL, " +
+                "`feeMinor` INTEGER NOT NULL, " +
+                "`totalAmountMinor` INTEGER NOT NULL, " +
+                "`currency` TEXT NOT NULL, " +
+                "`unit` TEXT NOT NULL, " +
+                "`notes` TEXT NOT NULL, " +
+                "`linkedAccountId` INTEGER, " +
+                "`createdAt` INTEGER NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_investment_transactions_assetId` ON `investment_transactions` (`assetId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_investment_transactions_epochDay` ON `investment_transactions` (`epochDay`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `market_price_snapshots` (" +
+                "`symbol` TEXT PRIMARY KEY NOT NULL, " +
+                "`price` REAL NOT NULL, " +
+                "`previousClose` REAL, " +
+                "`change` REAL, " +
+                "`percentChange` REAL, " +
+                "`high` REAL, " +
+                "`low` REAL, " +
+                "`volume` INTEGER, " +
+                "`turnover` REAL, " +
+                "`trades` INTEGER, " +
+                "`marketCap` REAL, " +
+                "`companyName` TEXT, " +
+                "`source` TEXT NOT NULL, " +
+                "`isManual` INTEGER NOT NULL, " +
+                "`timestamp` INTEGER NOT NULL, " +
+                "`tradingDate` TEXT, " +
+                "`currency` TEXT NOT NULL)",
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_market_price_snapshots_symbol` ON `market_price_snapshots` (`symbol`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_market_price_snapshots_timestamp` ON `market_price_snapshots` (`timestamp`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `market_price_history` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`symbol` TEXT NOT NULL, " +
+                "`price` REAL NOT NULL, " +
+                "`tradingDate` TEXT NOT NULL, " +
+                "`timestamp` INTEGER NOT NULL, " +
+                "`source` TEXT NOT NULL, " +
+                "`isClosing` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_market_price_history_symbol_tradingDate` ON `market_price_history` (`symbol`, `tradingDate`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_market_price_history_symbol_timestamp` ON `market_price_history` (`symbol`, `timestamp`)")
+
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `watchlist_items` (" +
+                "`symbol` TEXT PRIMARY KEY NOT NULL, " +
+                "`name` TEXT NOT NULL, " +
+                "`assetType` TEXT NOT NULL, " +
+                "`addedAt` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_watchlist_items_symbol` ON `watchlist_items` (`symbol`)")
     }
 }
 
@@ -507,4 +763,5 @@ val DefaultCategories = listOf(
 
 /** Every upgrade step, oldest first; also used by the migration tests. */
 internal val ALL_MIGRATIONS: Array<Migration>
-    get() = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19)
+    get() = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
+

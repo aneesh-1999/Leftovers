@@ -32,9 +32,9 @@ object AppViewModelProvider {
         initializer { HomeViewModel(container().repository, container().settings, container().planning, container().sms, container().accounts) }
         initializer {
             val c = container()
-            EditorViewModel(createSavedStateHandle(), app(), c.repository, c.accounts, c.settings, c.sms, c.planning, c.budgetAlerts)
+            EditorViewModel(createSavedStateHandle(), app(), c.repository, c.accounts, c.settings, c.sms, c.planning, c.budgetAlerts, c.roomExpenseDao)
         }
-        initializer { AccountsViewModel(container().accounts, container().settings, container().repository) }
+        initializer { AccountsViewModel(container().accounts, container().settings, container().repository, container().planning) }
         initializer { RecapViewModel(createSavedStateHandle(), container().repository, container().planning, container().roster, container().remittances, container().settings) }
         initializer { HistoryViewModel(container().repository, container().accounts, container().planning) }
         initializer { StatsViewModel(container().repository, container().settings) }
@@ -46,7 +46,7 @@ object AppViewModelProvider {
             SubscriptionsViewModel(c.planning, c.repository, c.accounts, c.settings) { c.syncRecurring() }
         }
         initializer { GoalsViewModel(container().planning) }
-        initializer { DebtsViewModel(container().planning) }
+        initializer { DebtsViewModel(container().planning, container().accounts) }
         initializer { DeletedViewModel(container().repository, container().roster, container().settings) }
         initializer { GoalDetailViewModel(createSavedStateHandle(), container().planning) }
         initializer { CategoriesViewModel(container().repository) }
@@ -64,8 +64,25 @@ object AppViewModelProvider {
         initializer { com.leftovers.app.ui.screens.RecipientsViewModel(container().remittances) }
         initializer { com.leftovers.app.ui.screens.RemittanceHistoryViewModel(container().remittances) }
         initializer { com.leftovers.app.ui.screens.RemittanceReportsViewModel(container().remittances) }
+        initializer {
+            val c = container()
+            com.leftovers.app.ui.screens.InvestmentViewModel(c.investments, c.accounts, c.repository)
+        }
+        initializer {
+            val c = container()
+            com.leftovers.app.ui.screens.creditcard.CreditCardViewModel(c.creditCards, c.accounts, c.repository, c.settings)
+        }
+        initializer {
+            val c = container()
+            com.leftovers.app.ui.screens.roomexpense.RoomExpenseViewModel(c.roomExpenses, c.settings)
+        }
+        initializer {
+            val c = container()
+            com.leftovers.app.ui.screens.CloudBackupViewModel(c.authManager, c.cloudBackup, c.settings, c.backup)
+        }
     }
 }
+
 
 private fun CreationExtras.app() = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as LeftoversApp
 

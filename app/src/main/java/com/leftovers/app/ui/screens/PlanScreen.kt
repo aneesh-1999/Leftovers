@@ -118,6 +118,9 @@ fun PlanScreen(
     onOpenDebts: () -> Unit,
     onOpenRoster: () -> Unit,
     onOpenRemittance: () -> Unit = {},
+    onOpenInvestment: () -> Unit = {},
+    onOpenCreditCards: () -> Unit = {},
+    onOpenRoomExpenses: () -> Unit = {},
     viewModel: PlanViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -267,12 +270,37 @@ fun PlanScreen(
                             trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
                             onClick = onOpenRemittance,
                         )
+                        RowDivider()
+                        ListRow(
+                            "Investments",
+                            subtitle = "NEPSE shares, Gold & Silver",
+                            leading = { IconTile(Lucide.TrendingUp, c.accent, size = 42.dp) },
+                            trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
+                            onClick = onOpenInvestment,
+                        )
+                        RowDivider()
+                        ListRow(
+                            "Credit Cards",
+                            subtitle = "Cards, statements & payment reminders",
+                            leading = { IconTile(Lucide.CreditCard, c.accent, size = 42.dp) },
+                            trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
+                            onClick = onOpenCreditCards,
+                        )
+                        RowDivider()
+                        ListRow(
+                            "Room Expenses",
+                            subtitle = "Shared household ledger & roommate balances",
+                            leading = { IconTile(Lucide.House, c.accent, size = 42.dp) },
+                            trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
+                            onClick = onOpenRoomExpenses,
+                        )
                     }
                 }
             }
         }
     }
 }
+
 
 @Composable
 private fun planSummary(plan: BudgetPlan): String {

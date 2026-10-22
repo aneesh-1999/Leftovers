@@ -103,6 +103,9 @@ import com.leftovers.app.ui.screens.RemittanceDetailScreen
 import com.leftovers.app.ui.screens.RecipientsScreen
 import com.leftovers.app.ui.screens.RemittanceHistoryScreen
 import com.leftovers.app.ui.screens.RemittanceReportsScreen
+import com.leftovers.app.ui.screens.InvestmentScreen
+import com.leftovers.app.ui.screens.creditcard.CreditCardScreen
+import com.leftovers.app.ui.screens.roomexpense.RoomExpenseScreen
 import com.leftovers.app.ui.theme.LocalAppColors
 import kotlinx.coroutines.delay
 
@@ -132,6 +135,9 @@ private object Routes {
     const val REMITTANCE_RECIPIENTS = "remittance/recipients"
     const val REMITTANCE_HISTORY = "remittance/history?recipientId={recipientId}"
     const val REMITTANCE_REPORTS = "remittance/reports"
+    const val INVESTMENT = "investment"
+    const val CREDIT_CARDS = "credit_cards"
+    const val ROOM_EXPENSES = "room_expenses"
 
     fun add(day: Long = -1L, amount: Long = -1L, note: String = "", sms: Long = -1L) =
         "add?day=$day&amount=$amount&note=${Uri.encode(note)}&sms=$sms"
@@ -185,9 +191,11 @@ fun LeftoversNavHost(
     openAdd: Boolean = false,
     openRoster: Boolean = false,
     openDebts: Boolean = false,
+    openCreditCards: Boolean = false,
     onOpenAddHandled: () -> Unit = {},
     onOpenRosterHandled: () -> Unit = {},
     onOpenDebtsHandled: () -> Unit = {},
+    onOpenCreditCardsHandled: () -> Unit = {},
 ) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
@@ -233,6 +241,13 @@ fun LeftoversNavHost(
             nav.switchTab(Routes.PLAN)
             nav.navigate(Routes.DEBTS)
             onOpenDebtsHandled()
+        }
+    }
+    LaunchedEffect(openCreditCards) {
+        if (openCreditCards) {
+            nav.switchTab(Routes.PLAN)
+            nav.navigate(Routes.CREDIT_CARDS)
+            onOpenCreditCardsHandled()
         }
     }
 
@@ -352,8 +367,14 @@ fun LeftoversNavHost(
                             onOpenDebts = { nav.navigate(Routes.DEBTS) },
                             onOpenRoster = { nav.navigate(Routes.ROSTER) },
                             onOpenRemittance = { nav.navigate(Routes.REMITTANCE) },
+                            onOpenInvestment = { nav.navigate(Routes.INVESTMENT) },
+                            onOpenCreditCards = { nav.navigate(Routes.CREDIT_CARDS) },
+                            onOpenRoomExpenses = { nav.navigate(Routes.ROOM_EXPENSES) },
                         )
                     }
+                    screen(Routes.INVESTMENT) { InvestmentScreen(onBack = back) }
+                    screen(Routes.CREDIT_CARDS) { CreditCardScreen(onBack = back) }
+                    screen(Routes.ROOM_EXPENSES) { RoomExpenseScreen(onBack = back) }
                     screen(Routes.ROSTER) { RosterScreen(onBack = back) }
                     screen(Routes.DEBTS) { DebtsScreen(onBack = back) }
                     screen(Routes.DELETED) { DeletedScreen(onBack = back) }

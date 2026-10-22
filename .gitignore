@@ -12,10 +12,18 @@
 # Machine-specific config
 /local.properties
 
-# Signing secrets — never commit these
+# Secrets, credentials & local env
 keystore.properties
 *.jks
 *.keystore
+.env
+.env.*
+*.env
+app/google-services.json
+GoogleService-Info.plist
+.agents/
+skills-lock.json
+docs/*.md
 
 # IDEs and OS files
 .idea/
@@ -23,3 +31,4 @@ keystore.properties
 *.iml
 .DS_Store
 Thumbs.db
+.aider-desk/

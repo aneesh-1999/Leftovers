@@ -18,12 +18,33 @@ today, plan for the things you want, and ask an AI about your money if you'd lik
 
 ![Activity calendar, filters, Money owed and the AI assistant](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row2.png)
 
-<a href="https://github.com/saisaharsh3/Leftovers/releases/latest"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-download.png" height="40" alt="Download the APK"></a>&nbsp;
-<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/saisaharsh3/Leftovers"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-obtainium.png" height="40" alt="Get it on Obtainium"></a>
-
-If Leftovers is useful to you, a ⭐ helps other people find it.
+<a href="https://github.com/aneesh-1999/Leftovers/releases/latest"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-download.png" height="40" alt="Download the APK"></a>&nbsp;
 
 </div>
+
+> [!NOTE]
+> ### 📌 Personal Fork & Modification Notice
+> This repository is a **custom modified version of Leftovers** maintained by **[Aneesh](https://github.com/aneesh-1999)** for personal use and customized financial workflows.
+> 
+> ### ❤️ Heartfelt Credits & Appreciation
+> All original credit, design architecture, and foundation belong to **[C. Sai Saharsh](https://github.com/saisaharsh3)** — the original creator and mastermind behind **[Leftovers](https://github.com/saisaharsh3/Leftovers)**.
+> 
+> **Why the original app is extraordinary:**
+> - **Stunning UI & Aesthetics**: The frosted glassmorphism interface, clean animations, and modern typography set a benchmark for beautiful Android craftsmanship.
+> - **Privacy-First Philosophy**: Truly offline-first with zero tracking, zero ads, and strict data isolation.
+> - **Exceptional Architecture**: Highly modular Kotlin MVVM, unidirectional data flows, and clean Room migrations.
+>
+> If you love this project, please visit and star the original upstream repository: **[github.com/saisaharsh3/Leftovers](https://github.com/saisaharsh3/Leftovers)** ⭐!
+>
+> ---
+> **Custom features added in this personal fork:**
+> - **Firebase Cloud Backup & Restore**: Google & Email Authentication with automatic daily sync and full user data isolation.
+> - **Permanent Cloud Deletion**: Users can permanently erase all cloud backups and their cloud account from Firestore at any time.
+> - **Room Expense & Shared Ledger Sync**: Splitting and reconciliation for household expenses.
+> - **Notification Detection**: Real-time parsing for bank/wallet notifications (eSewa, Revolut, etc.) to confirm transactions in one tap.
+> - **Credit Card Reminders & Investments**: Track statement cycles, credit limits, and stock/crypto portfolios.
+> - **Work Shift & Roster Management**: Glance-based homescreen widgets with automated reminder alarms.
+> - **App Size & Speed Optimizations**: R8 full-mode optimization and stripped unused resources for a 5.2 MB lightweight APK.
 
 ## Why Leftovers?
 
@@ -265,8 +286,13 @@ app/src/main/java/com/leftovers/app/
 
 [![Contributors](https://contrib.rocks/image?repo=saisaharsh3/Leftovers)](https://github.com/saisaharsh3/Leftovers/graphs/contributors)
 
+## Acknowledgements & Credits
+
+- **Original Creator & Architect**: **[C. Sai Saharsh](https://github.com/saisaharsh3)** — Sincere thanks and appreciation for creating the wonderful open-source **[Leftovers](https://github.com/saisaharsh3/Leftovers)** app!
+- **Modified Fork**: Maintained with personalized features by **[Aneesh](https://github.com/aneesh-1999)**.
+
 ## License
 
 [MIT](https://github.com/saisaharsh3/Leftovers/blob/main/LICENSE). Third-party assets are listed in [THIRD_PARTY_NOTICES.md](https://github.com/saisaharsh3/Leftovers/blob/main/THIRD_PARTY_NOTICES.md).
 
-Made by C. Sai Saharsh · [github.com/saisaharsh3](https://github.com/saisaharsh3)
+Original project made by C. Sai Saharsh · [github.com/saisaharsh3](https://github.com/saisaharsh3)

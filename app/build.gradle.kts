@@ -15,6 +15,11 @@ val signing = Properties().apply {
 }
 fun signingValue(key: String, env: String): String? = signing.getProperty(key) ?: System.getenv(env)
 
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+fun localProp(key: String, env: String = key): String = localProps.getProperty(key) ?: System.getenv(env).orEmpty()
+
 android {
     namespace = "com.leftovers.app"
     compileSdk = 37
@@ -23,8 +28,22 @@ android {
         applicationId = "com.leftovers.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 16
-        versionName = "1.6.0"
+        versionCode = 20
+        versionName = "1.7.0"
+        resourceConfigurations += listOf("en")
+
+        // Injected securely from local.properties or CI environment variables (never committed to git)
+        buildConfigField("String", "ROOM_EXPENSE_PROJECT_ID", "\"${localProp("roomExpense.projectId")}\"")
+        buildConfigField("String", "ROOM_EXPENSE_API_KEY", "\"${localProp("roomExpense.apiKey")}\"")
+        buildConfigField("String", "ROOM_EXPENSE_APP_ID", "\"${localProp("roomExpense.appId")}\"")
+        buildConfigField("String", "ROOM_EXPENSE_STORAGE_BUCKET", "\"${localProp("roomExpense.storageBucket")}\"")
+        buildConfigField("String", "ROOM_EXPENSE_DATABASE_ID", "\"${localProp("roomExpense.databaseId")}\"")
+
+        buildConfigField("String", "FIREBASE_PROJECT_ID", "\"${localProp("leftovers.firebase.projectId", "FIREBASE_PROJECT_ID")}\"")
+        buildConfigField("String", "FIREBASE_API_KEY", "\"${localProp("leftovers.firebase.apiKey", "FIREBASE_API_KEY")}\"")
+        buildConfigField("String", "FIREBASE_APP_ID", "\"${localProp("leftovers.firebase.appId", "FIREBASE_APP_ID")}\"")
+        buildConfigField("String", "FIREBASE_STORAGE_BUCKET", "\"${localProp("leftovers.firebase.storageBucket", "FIREBASE_STORAGE_BUCKET")}\"")
+        buildConfigField("String", "FIREBASE_WEB_CLIENT_ID", "\"${localProp("leftovers.firebase.webClientId", "FIREBASE_WEB_CLIENT_ID")}\"")
     }
 
     signingConfigs {
@@ -49,7 +68,7 @@ android {
             signingConfigs.findByName("release")?.let { signingConfig = it }
         }
         release {
-            signingConfigs.findByName("release")?.let { signingConfig = it }
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             // No git commit stamp in the APK, so builds of the same code always match byte for byte.
             vcsInfo.include = false
             isMinifyEnabled = true
@@ -72,6 +91,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
@@ -86,7 +106,14 @@ android {
         resources {
             // The Jakarta Mail jars each carry the same licence files (credited in THIRD_PARTY_NOTICES.md).
             // Their META-INF/javamail.* provider lists are kept: the library needs them at run time.
-            excludes += setOf("META-INF/NOTICE.md", "META-INF/LICENSE.md", "META-INF/NOTICE", "META-INF/LICENSE")
+            excludes += setOf(
+                "META-INF/NOTICE.md",
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE",
+                "META-INF/LICENSE",
+                "META-INF/DEPENDENCIES",
+                "META-INF/INDEX.LIST",
+            )
         }
     }
 
@@ -148,4 +175,12 @@ dependencies {
     implementation(libs.androidx.startup)
     // Email payment detection (IMAP over TLS). Only used when the user connects a mailbox.
     implementation(libs.angus.mail)
+
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.firestore)
+    implementation(libs.firebase.auth)
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
+    implementation(libs.googleid)
 }
+

@@ -67,6 +67,32 @@ data class AppSettings(
     val shiftReminderAdvanceHours: Int = 5,
     /** Prompt user to set an alarm for early morning shifts. */
     val shiftReminderAlarmSuggestion: Boolean = true,
+    /** Whether credit card payment reminders are enabled. */
+    val creditCardRemindersEnabled: Boolean = true,
+    /** Room Expense active roommate profile: "Ozric" or "Pawan". */
+    val roomExpenseRoommate: String = "Ozric",
+    /** Whether to import user's allocated share into personal finance expenses via review confirmation. */
+    val roomExpenseIncludeInPersonal: Boolean = true,
+    /** Last timestamp (epoch millis) when Room Expense successfully synced from Firestore. */
+    val roomExpenseLastSync: Long = 0L,
+    /** Cutoff timestamp (epoch millis). Room expenses created before this are ignored as old payments. */
+    val roomExpenseCutoffTimestamp: Long = 0L,
+    /** Whether notification-based transaction detection is enabled. */
+    val notificationDetection: Boolean = false,
+    /** Whether high-confidence detected transactions can be auto-saved directly (review mode if false). */
+    val notificationAutoSave: Boolean = false,
+    /** Specific package names enabled for notification listening by the user. */
+    val enabledNotificationApps: Set<String> = emptySet(),
+    /** Whether automatic background cloud backup is enabled. */
+    val cloudBackupEnabled: Boolean = false,
+    /** Timestamp of the last successful cloud backup. */
+    val cloudBackupLast: Long = 0L,
+    /** Optional Google OAuth 2.0 Web Client ID configured by the user for Google Sign-In. */
+    val cloudBackupGoogleClientId: String = "",
+    /** Email of the authenticated cloud user, if signed in. */
+    val cloudUserEmail: String? = null,
+    /** Display name of the authenticated cloud user, if signed in. */
+    val cloudUserDisplayName: String? = null,
 )
 
 class SettingsRepository(context: Context) {
@@ -115,8 +141,22 @@ class SettingsRepository(context: Context) {
             shiftReminderNightMinutes = p[SHIFT_REMINDER_NIGHT_TIME] ?: (20 * 60),
             shiftReminderAdvanceHours = p[SHIFT_REMINDER_ADVANCE_HOURS] ?: 5,
             shiftReminderAlarmSuggestion = p[SHIFT_REMINDER_ALARM_SUGGESTION] ?: true,
+            creditCardRemindersEnabled = p[CREDIT_CARD_REMINDERS] ?: true,
+            roomExpenseRoommate = p[ROOM_EXPENSE_ROOMMATE] ?: "Ozric",
+            roomExpenseIncludeInPersonal = p[ROOM_EXPENSE_INCLUDE_IN_PERSONAL] ?: true,
+            roomExpenseLastSync = p[ROOM_EXPENSE_LAST_SYNC] ?: 0L,
+            roomExpenseCutoffTimestamp = p[ROOM_EXPENSE_CUTOFF_TIMESTAMP] ?: 0L,
+            notificationDetection = p[NOTIFICATION_DETECTION] ?: false,
+            notificationAutoSave = p[NOTIFICATION_AUTO_SAVE] ?: false,
+            enabledNotificationApps = p[ENABLED_NOTIFICATION_APPS].orEmpty(),
+            cloudBackupEnabled = p[CLOUD_BACKUP_ENABLED] ?: false,
+            cloudBackupLast = p[CLOUD_BACKUP_LAST] ?: 0L,
+            cloudBackupGoogleClientId = p[CLOUD_BACKUP_GOOGLE_CLIENT_ID].orEmpty(),
+            cloudUserEmail = p[CLOUD_USER_EMAIL],
+            cloudUserDisplayName = p[CLOUD_USER_DISPLAY_NAME],
         )
     }.sharedLive()
+
 
     /** Forgets every setting, as on a fresh install. */
     suspend fun clearAll() = store.edit { it.clear() }
@@ -126,6 +166,10 @@ class SettingsRepository(context: Context) {
         if (userName.isNotBlank()) it[USER_NAME] = userName.trim()
         if (!userPhotoPath.isNullOrBlank()) it[USER_PHOTO] = userPhotoPath
         it[ONBOARDED] = true
+    }
+
+    suspend fun setOnboarded(onboarded: Boolean = true) = store.edit {
+        it[ONBOARDED] = onboarded
     }
 
     suspend fun restoreSettings(
@@ -243,6 +287,7 @@ class SettingsRepository(context: Context) {
     suspend fun setShiftReminderNightMinutes(minutes: Int) = store.edit { it[SHIFT_REMINDER_NIGHT_TIME] = minutes }
     suspend fun setShiftReminderAdvanceHours(hours: Int) = store.edit { it[SHIFT_REMINDER_ADVANCE_HOURS] = hours }
     suspend fun setShiftReminderAlarmSuggestion(enabled: Boolean) = store.edit { it[SHIFT_REMINDER_ALARM_SUGGESTION] = enabled }
+    suspend fun setCreditCardRemindersEnabled(enabled: Boolean) = store.edit { it[CREDIT_CARD_REMINDERS] = enabled }
 
     /** Records that an alert was shown; returns false if it had already been sent. */
     suspend fun markAlertSent(key: String): Boolean {
@@ -261,6 +306,61 @@ class SettingsRepository(context: Context) {
         listOf(MONTHLY_BUDGET, YEARLY_BUDGET).forEach(it::remove)
         listOf(BUDGET_MODE, YEAR_SPLIT, CUSTOM_SPLIT, CARRY_FROM, CARRY_MODE, CARRY_CHOICES).forEach(it::remove)
         it.remove(SENT_ALERTS)
+    }
+
+    suspend fun setRoomExpenseRoommate(roommate: String) = store.edit {
+        it[ROOM_EXPENSE_ROOMMATE] = roommate
+    }
+
+    suspend fun setRoomExpenseIncludeInPersonal(include: Boolean) = store.edit {
+        it[ROOM_EXPENSE_INCLUDE_IN_PERSONAL] = include
+    }
+
+    suspend fun setRoomExpenseLastSync(timestamp: Long) = store.edit {
+        it[ROOM_EXPENSE_LAST_SYNC] = timestamp
+    }
+
+    suspend fun setRoomExpenseCutoffTimestamp(timestamp: Long) = store.edit {
+        it[ROOM_EXPENSE_CUTOFF_TIMESTAMP] = timestamp
+    }
+
+    suspend fun setNotificationDetection(enabled: Boolean) = store.edit {
+        it[NOTIFICATION_DETECTION] = enabled
+    }
+
+    suspend fun setNotificationAutoSave(enabled: Boolean) = store.edit {
+        it[NOTIFICATION_AUTO_SAVE] = enabled
+    }
+
+    suspend fun setEnabledNotificationApps(apps: Set<String>) = store.edit {
+        it[ENABLED_NOTIFICATION_APPS] = apps
+    }
+
+    suspend fun toggleNotificationApp(packageName: String, enabled: Boolean) = store.edit {
+        val current = it[ENABLED_NOTIFICATION_APPS].orEmpty().toMutableSet()
+        if (enabled) {
+            current.add(packageName)
+        } else {
+            current.remove(packageName)
+        }
+        it[ENABLED_NOTIFICATION_APPS] = current
+    }
+
+    suspend fun setCloudBackupEnabled(enabled: Boolean) = store.edit {
+        it[CLOUD_BACKUP_ENABLED] = enabled
+    }
+
+    suspend fun setCloudBackupLast(timestamp: Long) = store.edit {
+        it[CLOUD_BACKUP_LAST] = timestamp
+    }
+
+    suspend fun setCloudBackupGoogleClientId(clientId: String) = store.edit {
+        it[CLOUD_BACKUP_GOOGLE_CLIENT_ID] = clientId.trim()
+    }
+
+    suspend fun setCloudUserInfo(email: String?, displayName: String?) = store.edit {
+        if (email != null) it[CLOUD_USER_EMAIL] = email else it.remove(CLOUD_USER_EMAIL)
+        if (displayName != null) it[CLOUD_USER_DISPLAY_NAME] = displayName else it.remove(CLOUD_USER_DISPLAY_NAME)
     }
 
     private companion object {
@@ -302,6 +402,19 @@ class SettingsRepository(context: Context) {
         val SHIFT_REMINDER_NIGHT_TIME = intPreferencesKey("shift_reminder_night_time")
         val SHIFT_REMINDER_ADVANCE_HOURS = intPreferencesKey("shift_reminder_advance_hours")
         val SHIFT_REMINDER_ALARM_SUGGESTION = booleanPreferencesKey("shift_reminder_alarm_suggestion")
+        val CREDIT_CARD_REMINDERS = booleanPreferencesKey("credit_card_reminders")
+        val ROOM_EXPENSE_ROOMMATE = stringPreferencesKey("room_expense_roommate")
+        val ROOM_EXPENSE_INCLUDE_IN_PERSONAL = booleanPreferencesKey("room_expense_include_in_personal")
+        val ROOM_EXPENSE_LAST_SYNC = longPreferencesKey("room_expense_last_sync")
+        val ROOM_EXPENSE_CUTOFF_TIMESTAMP = longPreferencesKey("room_expense_cutoff_timestamp")
+        val NOTIFICATION_DETECTION = booleanPreferencesKey("notification_detection")
+        val NOTIFICATION_AUTO_SAVE = booleanPreferencesKey("notification_auto_save")
+        val ENABLED_NOTIFICATION_APPS = stringSetPreferencesKey("enabled_notification_apps")
+        val CLOUD_BACKUP_ENABLED = booleanPreferencesKey("cloud_backup_enabled")
+        val CLOUD_BACKUP_LAST = longPreferencesKey("cloud_backup_last")
+        val CLOUD_BACKUP_GOOGLE_CLIENT_ID = stringPreferencesKey("cloud_backup_google_client_id")
+        val CLOUD_USER_EMAIL = stringPreferencesKey("cloud_user_email")
+        val CLOUD_USER_DISPLAY_NAME = stringPreferencesKey("cloud_user_display_name")
         fun defaultCurrencyCode(): String =
             runCatching { Currency.getInstance(Locale.getDefault()).currencyCode }.getOrNull() ?: "USD"
     }

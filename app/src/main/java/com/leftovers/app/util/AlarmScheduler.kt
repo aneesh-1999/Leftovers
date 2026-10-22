@@ -29,6 +29,7 @@ object AlarmScheduler {
     const val ACTION_SHIFT_POST = "com.leftovers.app.ALARM_SHIFT_POST"
     const val ACTION_BILLS = "com.leftovers.app.ALARM_BILLS"
     const val ACTION_DEBTS = "com.leftovers.app.ALARM_DEBTS"
+    const val ACTION_CREDIT_CARDS = "com.leftovers.app.ALARM_CREDIT_CARDS"
 
     private const val RC_DAILY = 201
     private const val RC_SHIFT_NIGHT = 202
@@ -36,6 +37,7 @@ object AlarmScheduler {
     private const val RC_SHIFT_POST = 204
     private const val RC_BILLS = 205
     private const val RC_DEBTS = 206
+    private const val RC_CREDIT_CARDS = 207
 
     private fun getAlarmManager(context: Context): AlarmManager =
         context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -221,6 +223,27 @@ object AlarmScheduler {
         setAlarm(context, triggerMillis, pi)
     }
 
+    fun scheduleCreditCardReminder(context: Context, enabled: Boolean = true) {
+        if (!enabled) {
+            cancelAlarm(context, ACTION_CREDIT_CARDS, RC_CREDIT_CARDS)
+            return
+        }
+        val now = LocalDateTime.now()
+        var next = LocalDate.now().atTime(9, 15)
+        if (!next.isAfter(now)) {
+            next = next.plusDays(1)
+        }
+        val triggerMillis = next.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val intent = Intent(context, ReminderAlarmReceiver::class.java).apply { action = ACTION_CREDIT_CARDS }
+        val pi = PendingIntent.getBroadcast(
+            context,
+            RC_CREDIT_CARDS,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        setAlarm(context, triggerMillis, pi)
+    }
+
     fun rescheduleAll(context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -232,6 +255,7 @@ object AlarmScheduler {
                 scheduleNextShiftPostReminder(context, s.shiftRemindersEnabled)
                 scheduleBillReminder(context, s.billReminders)
                 scheduleDebtReminder(context, true)
+                scheduleCreditCardReminder(context, true)
             } catch (_: Exception) {
             }
         }

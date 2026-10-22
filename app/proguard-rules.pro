@@ -13,3 +13,16 @@
 -dontwarn javax.security.sasl.**
 -dontwarn org.graalvm.**
 -dontwarn javax.security.auth.callback.**
+
+# Optimization passes and access modification for faster execution & smaller code size
+-optimizationpasses 5
+-allowaccessmodification
+-repackageclasses ""
+
+# Strip debug and verbose logging overhead in optimized builds
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int d(...);
+}
+

@@ -103,6 +103,11 @@ import com.leftovers.app.data.PlanningRepository
 import com.leftovers.app.data.Recurring
 import com.leftovers.app.data.SettingsRepository
 import com.leftovers.app.data.SmsRepository
+import com.leftovers.app.data.SmsSuggestion
+import kotlin.math.roundToLong
+import com.leftovers.app.data.roomexpense.RoomExpenseDao
+import com.leftovers.app.data.roomexpense.RoomExpenseRepository
+import com.leftovers.app.data.roomexpense.Roommate
 import com.leftovers.app.data.Transaction
 import com.leftovers.app.data.TransactionItem
 import com.leftovers.app.data.TransactionRepository
@@ -154,10 +159,22 @@ class EditorViewModel(
     private val sms: SmsRepository,
     private val planning: PlanningRepository,
     private val budgetAlerts: BudgetAlertManager,
+    private val roomExpenseDao: RoomExpenseDao,
 ) : ViewModel() {
     private val id: Long = savedState.get<Long>("id") ?: -1L
     private val smsId: Long = savedState.get<Long>("sms") ?: -1L
     val isEditing = id > 0
+
+    var isRoomExpense by mutableStateOf(false)
+        private set
+    var roomExpensePayer by mutableStateOf("")
+        private set
+    var roomExpenseUserShareMinor by mutableStateOf(0L)
+        private set
+    var roomExpenseOtherShareMinor by mutableStateOf(0L)
+        private set
+    var roomExpensePawanPaid by mutableStateOf(false)
+        private set
 
     var amountText by mutableStateOf(savedState.get<Long>("amount")?.takeIf { it > 0 }?.let(AmountInput::fromMinor).orEmpty())
         private set
@@ -271,6 +288,63 @@ class EditorViewModel(
                 val matched = (if (smsId > 0) sms.accountIdFor(smsId)?.takeIf { it in known } else null)
                     ?: fromSms?.let { d -> accountRepository.accounts.first().firstOrNull { it.matchesDigits(d) }?.id }
                 accountId = matched ?: s.homeAccountId?.takeIf { it in known } ?: s.defaultAccountId
+            }
+
+            if (smsId > 0) {
+                val suggestion = sms.getSuggestion(smsId)
+                if (suggestion?.source == SmsSuggestion.SOURCE_ROOM_EXPENSE) {
+                    val docId = suggestion.accountDigits
+                    val roomExpense = docId?.let { roomExpenseDao.getById(it) }
+                    if (roomExpense != null) {
+                        isRoomExpense = true
+                        val s = settings.settings.first()
+                        val activeRoommate = Roommate.fromString(s.roomExpenseRoommate)
+                        val isOzricPaying = roomExpense.paidBy.equals("Ozric", ignoreCase = true) || roomExpense.paidOzric > 0
+                        val userIsPayer = (activeRoommate == Roommate.OZRIC && isOzricPaying) ||
+                                          (activeRoommate == Roommate.PAWAN && !isOzricPaying)
+
+                        roomExpensePayer = roomExpense.paidBy
+                        val userShare = roomExpense.userShare(activeRoommate)
+                        val otherShare = roomExpense.userShare(activeRoommate.other)
+                        val total = roomExpense.amount
+
+                        val totalMinorVal = (total * 100.0).roundToLong()
+                        roomExpenseUserShareMinor = (userShare * 100.0).roundToLong()
+                        roomExpenseOtherShareMinor = (otherShare * 100.0).roundToLong()
+
+                        val stableTag = "${RoomExpenseRepository.SOURCE_PREFIX} [Doc: ${roomExpense.id}]"
+                        note = "$stableTag ${roomExpense.title}".trim()
+                        date = roomExpense.date
+
+                        val cats = repository.categories.first()
+                        val matchingCat = when {
+                            roomExpense.category.contains("Groceries", ignoreCase = true) ->
+                                cats.find { it.name.contains("Groceries", ignoreCase = true) }?.id
+                            roomExpense.category.contains("Household", ignoreCase = true) || roomExpense.category.contains("Supplies", ignoreCase = true) ->
+                                cats.find { it.name.contains("Shopping", ignoreCase = true) || it.name.contains("Bills", ignoreCase = true) }?.id
+                            else -> null
+                        } ?: cats.firstOrNull { it.type == TxType.EXPENSE }?.id
+                        if (matchingCat != null) {
+                            categoryId = matchingCat
+                        }
+
+                        if (userIsPayer) {
+                            amountText = AmountInput.fromMinor(totalMinorVal)
+                            people.clear()
+                            people.add(activeRoommate.other.displayName)
+                            if (roomExpenseUserShareMinor == roomExpenseOtherShareMinor) {
+                                equalSplit = true
+                            } else {
+                                equalSplit = false
+                                customShares[activeRoommate.other.displayName] = AmountInput.fromMinor(roomExpenseOtherShareMinor)
+                            }
+                            roomExpensePawanPaid = false
+                        } else {
+                            amountText = AmountInput.fromMinor(roomExpenseUserShareMinor)
+                            roomExpensePawanPaid = true
+                        }
+                    }
+                }
             }
         }
     }
@@ -391,7 +465,11 @@ class EditorViewModel(
             if (originalReceipt != null && originalReceipt != receiptPath) ReceiptStore.delete(originalReceipt)
             val owedNote = note.trim().ifBlank { categories.value.find { it.id == category }?.name.orEmpty() }
             sharers.forEach { (person, share) ->
-                planning.saveDebt(Debt(person = person, amountMinor = share, note = owedNote, epochDay = savedDate.toEpochDay()))
+                planning.saveDebt(Debt(person = person, amountMinor = share, note = owedNote, epochDay = savedDate.toEpochDay(), accountId = accountId))
+            }
+            if (isRoomExpense && roomExpensePawanPaid) {
+                val otherPerson = Roommate.fromString(settings.settings.first().roomExpenseRoommate).other.displayName
+                planning.saveDebt(Debt(person = otherPerson, amountMinor = -savedAmount, note = owedNote, epochDay = savedDate.toEpochDay(), accountId = accountId))
             }
             if (smsId > 0) sms.dismiss(smsId)
             val repeats = repeatMonthly && !isEditing
@@ -417,6 +495,7 @@ class EditorViewModel(
             onDone(
                 when {
                     isEditing -> "Changes saved"
+                    isRoomExpense && roomExpensePawanPaid -> "${describe(savedAmount)} added · You owe ${Roommate.fromString(settings.settings.first().roomExpenseRoommate).other.displayName} ${describe(savedAmount)}"
                     sharers.isNotEmpty() && sharers.map { it.second }.distinct().size == 1 -> "${describe(savedAmount + parts.sumOf { it.amountMinor })} added · " +
                         "${sharers.joinToString(" and ") { it.first }} ${if (sharers.size == 1) "owes" else "owe"} you ${describe(sharers[0].second)}${if (sharers.size > 1) " each" else ""}"
                     sharers.isNotEmpty() -> "${describe(savedAmount + parts.sumOf { it.amountMinor })} added · " +
@@ -632,6 +711,15 @@ fun EditorScreen(
                         } else {
                             viewModel.people.joinToString(", ") { "$it ${money.format(viewModel.shareOf(it))}" }
                         },
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = c.accent,
+                    modifier = Modifier.padding(top = 10.dp, start = 24.dp, end = 24.dp),
+                )
+            }
+            if (viewModel.isRoomExpense && viewModel.roomExpensePawanPaid) {
+                Text(
+                    "Paid by Pawan · Your share ${money.format(viewModel.roomExpenseUserShareMinor)} will be added to Money Owed (You owe Pawan)",
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.labelMedium,
                     color = c.accent,

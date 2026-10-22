@@ -131,6 +131,8 @@ data class SmsSuggestion(
     companion object {
         const val SOURCE_SMS = "sms"
         const val SOURCE_EMAIL = "email"
+        const val SOURCE_NOTIFICATION = "notification"
+        const val SOURCE_ROOM_EXPENSE = "room_expense"
     }
 }
 

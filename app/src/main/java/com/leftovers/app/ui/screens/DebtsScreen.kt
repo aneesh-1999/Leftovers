@@ -52,6 +52,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leftovers.app.data.AccountRepository
+import com.leftovers.app.data.AccountWithBalance
 import com.leftovers.app.data.Debt
 import com.leftovers.app.data.MAX_DEBT_PHOTOS
 import com.leftovers.app.data.PersonBalance
@@ -59,6 +61,7 @@ import com.leftovers.app.data.PlanningRepository
 import com.leftovers.app.data.openBalances
 import com.leftovers.app.data.photosToPath
 import com.leftovers.app.ui.AppViewModelProvider
+import com.leftovers.app.ui.icons.CategoryIcons
 import com.leftovers.app.ui.components.Chip
 import com.leftovers.app.ui.components.EmptyState
 import com.leftovers.app.ui.components.Glass
@@ -86,7 +89,10 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 
-class DebtsViewModel(private val planning: PlanningRepository) : ViewModel() {
+class DebtsViewModel(
+    private val planning: PlanningRepository,
+    accountRepository: AccountRepository,
+) : ViewModel() {
     val balances: StateFlow<List<PersonBalance>> =
         planning.debts.map { it.openBalances() }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -94,6 +100,9 @@ class DebtsViewModel(private val planning: PlanningRepository) : ViewModel() {
     val people: StateFlow<List<String>> =
         planning.debts.map { all -> all.map { it.person.trim() }.distinctBy { it.lowercase() } }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val accounts: StateFlow<List<AccountWithBalance>> =
+        accountRepository.accounts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun save(debt: Debt) = viewModelScope.launch { planning.saveDebt(debt) }
     fun delete(debt: Debt) = viewModelScope.launch { planning.deleteDebt(debt) }
@@ -108,6 +117,7 @@ private val returnDateFullFormatter = DateTimeFormatter.ofPattern("EEE, MMM d, y
 fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factory = AppViewModelProvider.Factory)) {
     val balances by viewModel.balances.collectAsStateWithLifecycle()
     val people by viewModel.people.collectAsStateWithLifecycle()
+    val accounts by viewModel.accounts.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
     val money = LocalMoney.current
     var editing by remember { mutableStateOf<Debt?>(null) }
@@ -181,8 +191,14 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Column(Modifier.weight(1f)) {
+                                    val account = accounts.firstOrNull { it.id == d.accountId }
+                                    val details = listOfNotNull(
+                                        d.note.ifBlank { null },
+                                        account?.let { if (d.amountMinor > 0) "From ${it.name}" else "To ${it.name}" },
+                                        LocalDate.ofEpochDay(d.epochDay).friendlyLabel(),
+                                    ).joinToString(" · ")
                                     Text(
-                                        listOfNotNull(d.note.ifBlank { null }, LocalDate.ofEpochDay(d.epochDay).friendlyLabel()).joinToString(" · "),
+                                        details,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = c.textSecondary,
                                     )
@@ -232,6 +248,7 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
         DebtEditor(
             initial = debt,
             people = people,
+            accounts = accounts,
             onDismiss = { editing = null },
             onSave = {
                 viewModel.save(it)
@@ -251,12 +268,20 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Unit, onSave: (Debt) -> Unit, onDelete: (() -> Unit)?) {
+private fun DebtEditor(
+    initial: Debt,
+    people: List<String>,
+    accounts: List<AccountWithBalance>,
+    onDismiss: () -> Unit,
+    onSave: (Debt) -> Unit,
+    onDelete: (() -> Unit)?,
+) {
     val c = LocalAppColors.current
     var lent by rememberSaveable { mutableStateOf(initial.amountMinor >= 0) }
     var person by rememberSaveable { mutableStateOf(initial.person) }
     var amountText by rememberSaveable { mutableStateOf(if (initial.amountMinor != 0L) AmountInput.fromMinor(abs(initial.amountMinor)) else "") }
     var note by rememberSaveable { mutableStateOf(initial.note) }
+    var accountId by rememberSaveable { mutableStateOf(initial.accountId) }
     var dueDateEpochDay by rememberSaveable { mutableStateOf(initial.dueDateEpochDay) }
     var reminderEnabled by rememberSaveable { mutableStateOf(initial.reminderEnabled) }
     var showDatePicker by rememberSaveable { mutableStateOf(false) }
@@ -319,6 +344,46 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
             }
             MoneyField(amountText, { amountText = it }, label = "Amount")
             GlassTextField(note, { note = it.take(60) }, placeholder = "e.g. Dinner at Toit", label = "Note")
+
+            // Account selection (optional: link to Cash, Bank, etc. or None)
+            if (accounts.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (lent) "Account (deduct from)" else "Account (deposit into)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = c.textSecondary,
+                        )
+                        val selectedAcc = accounts.firstOrNull { it.id == accountId }
+                        if (selectedAcc != null) {
+                            Text(
+                                selectedAcc.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = c.accent,
+                            )
+                        }
+                    }
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Chip("None", { accountId = null }, selected = accountId == null)
+                        accounts.forEach { a ->
+                            Chip(
+                                text = a.name,
+                                onClick = { accountId = if (accountId == a.id) null else a.id },
+                                icon = CategoryIcons[a.icon],
+                                iconTint = Color(a.color),
+                                selected = accountId == a.id,
+                            )
+                        }
+                    }
+                }
+            }
 
             // Return / Due Date & Reminder Section
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -458,6 +523,7 @@ private fun DebtEditor(initial: Debt, people: List<String>, onDismiss: () -> Uni
                             receiptPath = photosToPath(photos),
                             dueDateEpochDay = dueDateEpochDay,
                             reminderEnabled = reminderEnabled && dueDateEpochDay != null,
+                            accountId = accountId,
                         ),
                     )
                 },

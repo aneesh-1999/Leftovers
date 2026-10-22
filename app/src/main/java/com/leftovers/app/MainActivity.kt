@@ -54,6 +54,7 @@ class MainActivity : FragmentActivity() {
         const val EXTRA_OPEN_ADD = "open_add"
         const val EXTRA_OPEN_ROSTER = "open_roster"
         const val EXTRA_OPEN_DEBTS = "open_debts"
+        const val EXTRA_OPEN_CREDIT_CARDS = "open_credit_cards"
         private const val RELOCK_AFTER_MS = 30_000L
     }
 
@@ -61,6 +62,7 @@ class MainActivity : FragmentActivity() {
     private var openAddRequest by mutableStateOf(false)
     private var openRosterRequest by mutableStateOf(false)
     private var openDebtsRequest by mutableStateOf(false)
+    private var openCreditCardsRequest by mutableStateOf(false)
     private var locked by mutableStateOf(true)
     private var lockChecked by mutableStateOf(false)
     private var backgroundedAt = 0L
@@ -73,6 +75,7 @@ class MainActivity : FragmentActivity() {
         openAddRequest = intent.getBooleanExtra(EXTRA_OPEN_ADD, false)
         openRosterRequest = intent.getBooleanExtra(EXTRA_OPEN_ROSTER, false)
         openDebtsRequest = intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)
+        openCreditCardsRequest = intent.getBooleanExtra(EXTRA_OPEN_CREDIT_CARDS, false) || intent.getBooleanExtra("extra_open_credit_cards", false)
         lifecycleScope.launch {
             locked = container.settings.settings.first().appLock
             lockChecked = true
@@ -142,9 +145,11 @@ class MainActivity : FragmentActivity() {
                                     openAdd = openAddRequest,
                                     openRoster = openRosterRequest,
                                     openDebts = openDebtsRequest,
+                                    openCreditCards = openCreditCardsRequest,
                                     onOpenAddHandled = { openAddRequest = false },
                                     onOpenRosterHandled = { openRosterRequest = false },
                                     onOpenDebtsHandled = { openDebtsRequest = false },
+                                    onOpenCreditCardsHandled = { openCreditCardsRequest = false },
                                 )
                             }
                             AnimatedVisibility(showLock, enter = fadeIn(), exit = fadeOut()) {
@@ -175,6 +180,7 @@ class MainActivity : FragmentActivity() {
         if (intent.getBooleanExtra(EXTRA_OPEN_ADD, false)) openAddRequest = true
         if (intent.getBooleanExtra(EXTRA_OPEN_ROSTER, false)) openRosterRequest = true
         if (intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)) openDebtsRequest = true
+        if (intent.getBooleanExtra(EXTRA_OPEN_CREDIT_CARDS, false) || intent.getBooleanExtra("extra_open_credit_cards", false)) openCreditCardsRequest = true
     }
 
     override fun onStart() {
@@ -185,6 +191,7 @@ class MainActivity : FragmentActivity() {
             runCatching { com.leftovers.app.widget.WeekRosterWidget().updateAll(this@MainActivity) }
             runCatching { com.leftovers.app.widget.SafeToSpendWidget().updateAll(this@MainActivity) }
             runCatching { com.leftovers.app.widget.MonthBudgetWidget().updateAll(this@MainActivity) }
+            runCatching { container.roomExpenses.syncFromFirebase() }
         }
         // Background email checks can be held back for hours to save battery; opening the app catches up.
         container.emailAccount.connection.value?.let { com.leftovers.app.util.EmailSync.checkSoon(this, it.lastCheckedAt) }

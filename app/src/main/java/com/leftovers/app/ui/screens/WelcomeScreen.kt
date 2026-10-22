@@ -8,6 +8,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +49,7 @@ import kotlinx.coroutines.launch
 import com.leftovers.app.ui.components.Chip
 import com.leftovers.app.ui.components.Glass
 import com.leftovers.app.ui.components.PrimaryButton
+import com.leftovers.app.ui.components.SecondaryButton
 import com.leftovers.app.ui.components.SegmentedToggle
 import com.leftovers.app.ui.components.glassBorder
 import com.leftovers.app.ui.icons.Lucide
@@ -56,7 +58,7 @@ import com.leftovers.app.util.Money
 
 enum class OnboardingMode(val label: String) {
     NEW_USER("New user"),
-    RESTORE("Restore backup"),
+    RESTORE("Restore & Sign In"),
 }
 
 private data class FeatureSlide(
@@ -105,6 +107,7 @@ fun WelcomeScreen(
     var restoreStatus by remember { mutableStateOf<String?>(null) }
     var isRestoring by remember { mutableStateOf(false) }
     var passwordDialog by remember { mutableStateOf<Pair<Uri, Boolean>?>(null) }
+    var showCloudBackupSheet by rememberSaveable { mutableStateOf(false) }
 
     val pickPhoto = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -171,17 +174,27 @@ fun WelcomeScreen(
                 )
             }
 
-            if (pagerState.currentPage < 3) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(
-                    onClick = { scope.launch { pagerState.animateScrollToPage(3) } },
+                    onClick = { showCloudBackupSheet = true },
                 ) {
-                    Text("Skip", color = c.accent, fontWeight = FontWeight.SemiBold)
+                    Icon(Lucide.Cloud, contentDescription = null, tint = c.accent, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Sign In", color = c.accent, fontWeight = FontWeight.SemiBold)
                 }
-            } else {
-                TextButton(
-                    onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
-                ) {
-                    Text("Overview", color = c.textSecondary)
+
+                if (pagerState.currentPage < 3) {
+                    TextButton(
+                        onClick = { scope.launch { pagerState.animateScrollToPage(3) } },
+                    ) {
+                        Text("Skip", color = c.textSecondary)
+                    }
+                } else {
+                    TextButton(
+                        onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
+                    ) {
+                        Text("Overview", color = c.textSecondary)
+                    }
                 }
             }
         }
@@ -225,6 +238,7 @@ fun WelcomeScreen(
                     onSelectCurrency = { selected = it },
                     isRestoring = isRestoring,
                     restoreStatus = restoreStatus,
+                    onOpenCloudRestore = { showCloudBackupSheet = true },
                     onChooseBackup = {
                         if (!isRestoring) openBackup.launch(arrayOf("application/json", "application/octet-stream", "*/*"))
                     },
@@ -235,42 +249,68 @@ fun WelcomeScreen(
 
         // Bottom Navigation Bar (for slides 0..2)
         if (pagerState.currentPage < 3) {
-            Row(
+            Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Animated Page Dots
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    repeat(4) { i ->
-                        val active = pagerState.currentPage == i
-                        val width by animateDpAsState(if (active) 24.dp else 8.dp, label = "dotWidth")
-                        val color by animateColorAsState(if (active) c.accent else c.glassStrong, label = "dotColor")
-                        Box(
-                            Modifier
-                                .height(8.dp)
-                                .width(width)
-                                .clip(CircleShape)
-                                .background(color),
-                        )
+                    // Animated Page Dots
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        repeat(4) { i ->
+                            val active = pagerState.currentPage == i
+                            val width by animateDpAsState(if (active) 24.dp else 8.dp, label = "dotWidth")
+                            val color by animateColorAsState(if (active) c.accent else c.glassStrong, label = "dotColor")
+                            Box(
+                                Modifier
+                                    .height(8.dp)
+                                    .width(width)
+                                    .clip(CircleShape)
+                                    .background(color),
+                            )
+                        }
                     }
+
+                    PrimaryButton(
+                        text = "Continue",
+                        onClick = {
+                            scope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                            }
+                        },
+                        icon = Lucide.ChevronRight,
+                        modifier = Modifier.width(140.dp),
+                    )
                 }
 
-                PrimaryButton(
-                    text = "Continue",
-                    onClick = {
-                        scope.launch {
-                            pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                        }
-                    },
-                    icon = Lucide.ChevronRight,
-                    modifier = Modifier.width(150.dp),
-                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Already using Leftovers? ",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textSecondary,
+                    )
+                    Text(
+                        "Restore & Sign In",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = c.accent,
+                        modifier = Modifier.clickable {
+                            showCloudBackupSheet = true
+                        },
+                    )
+                }
             }
         }
     }
@@ -323,6 +363,13 @@ fun WelcomeScreen(
                 photoPath = savedPath
                 cropSourceUri = null
             },
+        )
+    }
+
+    if (showCloudBackupSheet) {
+        CloudBackupSheet(
+            onDismiss = { showCloudBackupSheet = false },
+            isOnboarding = true,
         )
     }
 }
@@ -635,6 +682,7 @@ private fun SetupSlide(
     onSelectCurrency: (String) -> Unit,
     isRestoring: Boolean,
     restoreStatus: String?,
+    onOpenCloudRestore: () -> Unit,
     onChooseBackup: () -> Unit,
     onFinish: () -> Unit,
 ) {
@@ -739,58 +787,126 @@ private fun SetupSlide(
                 onClick = onFinish,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 6.dp),
             )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Already have an account? ",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.textSecondary,
+                )
+                Text(
+                    "Restore & Sign In",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = c.accent,
+                    modifier = Modifier.clickable {
+                        onModeChange(OnboardingMode.RESTORE)
+                    },
+                )
+            }
         } else {
             Column(
                 Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.Center,
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
+                // Card 1: Cloud Restore & Sign In
+                Glass(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    strong = true,
+                ) {
+                    Column(
+                        Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(c.accent.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Lucide.Cloud, contentDescription = null, tint = c.accent, modifier = Modifier.size(28.dp))
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Restore from Cloud",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = c.textPrimary,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Sign in with Google or Email to restore your transactions, rosters, remittances, and settings from cloud backup.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.textSecondary,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        PrimaryButton(
+                            text = "Sign In & Restore from Cloud",
+                            onClick = onOpenCloudRestore,
+                            modifier = Modifier.fillMaxWidth(),
+                            icon = Lucide.Cloud,
+                        )
+                    }
+                }
+
+                // Card 2: Local File Restore
                 Glass(
                     Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(24.dp),
                 ) {
                     Column(
-                        Modifier.padding(24.dp),
+                        Modifier.padding(20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Box(
                             Modifier
-                                .size(64.dp)
+                                .size(48.dp)
                                 .clip(CircleShape)
-                                .background(c.accent.copy(alpha = 0.15f)),
+                                .background(c.textSecondary.copy(alpha = 0.12f)),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(Lucide.Download, contentDescription = null, tint = c.accent, modifier = Modifier.size(32.dp))
+                            Icon(Lucide.Download, contentDescription = null, tint = c.textPrimary, modifier = Modifier.size(24.dp))
                         }
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(10.dp))
                         Text(
-                            "Restore Existing Backup",
-                            style = MaterialTheme.typography.titleMedium,
+                            "Restore from Device File",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
                             color = c.textPrimary,
                         )
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            "Select a Leftovers .json backup file to restore all your history, roster, remittances, and profile preferences.",
+                            "Select a Leftovers .json backup file from your phone storage or downloads.",
                             style = MaterialTheme.typography.bodySmall,
                             color = c.textSecondary,
                             textAlign = TextAlign.Center,
                         )
-                        Spacer(Modifier.height(20.dp))
-                        PrimaryButton(
-                            text = if (isRestoring) "Restoring..." else "Choose Backup File",
+                        Spacer(Modifier.height(14.dp))
+                        SecondaryButton(
+                            text = if (isRestoring) "Restoring..." else "Choose Backup File (.json)",
                             onClick = onChooseBackup,
                             modifier = Modifier.fillMaxWidth(),
-                            enabled = !isRestoring,
+                            icon = Lucide.Download,
                         )
                     }
                 }
 
                 restoreStatus?.let { status ->
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(6.dp))
                     Text(
                         status,
                         style = MaterialTheme.typography.bodyMedium,
@@ -798,6 +914,8 @@ private fun SetupSlide(
                         textAlign = TextAlign.Center,
                     )
                 }
+
+                Spacer(Modifier.height(8.dp))
             }
         }
     }

@@ -52,7 +52,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leftovers.app.data.Account
 import com.leftovers.app.data.AccountRepository
 import com.leftovers.app.data.AccountWithBalance
+import com.leftovers.app.data.Debt
 import com.leftovers.app.data.Palette
+import com.leftovers.app.data.PlanningRepository
 import com.leftovers.app.data.SettingsRepository
 import com.leftovers.app.data.Transfer
 import com.leftovers.app.ui.AppViewModelProvider
@@ -91,32 +93,42 @@ data class BalanceBreakdown(
     val spent: Long,
     val transfersIn: Long,
     val transfersOut: Long,
+    val debtsLent: Long = 0,
+    val debtsBorrowed: Long = 0,
     val entries: Int,
     /** Entries dated before the account was added, whose effect the opening balance may already include. */
     val olderCount: Int,
     val olderNet: Long,
 ) {
-    val balance: Long get() = opening + income - spent + transfersIn - transfersOut
+    val balance: Long get() = opening + income - spent + transfersIn - transfersOut - debtsLent + debtsBorrowed
 }
 
 class AccountsViewModel(
     private val repository: AccountRepository,
     private val settings: SettingsRepository,
     transactions: TransactionRepository,
+    planning: PlanningRepository? = null,
 ) : ViewModel() {
     val allTransactions: StateFlow<List<TransactionItem>> =
         transactions.allTransactions.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val debts: StateFlow<List<Debt>> =
+        (planning?.debts ?: kotlinx.coroutines.flow.flowOf(emptyList())).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun breakdown(account: Account, items: List<TransactionItem>, transferList: List<Transfer>): BalanceBreakdown {
+    fun breakdown(account: Account, items: List<TransactionItem>, transferList: List<Transfer>, debtList: List<Debt> = emptyList()): BalanceBreakdown {
         val mine = items.filter { it.accountId == account.id }
         val addedOn = java.time.Instant.ofEpochMilli(account.createdAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toEpochDay()
         val older = mine.filter { it.epochDay < addedOn }
+        val myDebts = debtList.filter { it.accountId == account.id && !it.settled }
+        val lent = myDebts.filter { it.amountMinor > 0 }.sumOf { it.amountMinor }
+        val borrowed = myDebts.filter { it.amountMinor < 0 }.sumOf { -it.amountMinor }
         return BalanceBreakdown(
             opening = account.openingMinor,
             income = mine.filter { it.type == TxType.INCOME }.sumOf { it.amountMinor },
             spent = mine.filter { it.type == TxType.EXPENSE }.sumOf { it.amountMinor },
             transfersIn = transferList.filter { it.toAccountId == account.id }.sumOf { it.amountMinor },
             transfersOut = transferList.filter { it.fromAccountId == account.id }.sumOf { it.amountMinor },
+            debtsLent = lent,
+            debtsBorrowed = borrowed,
             entries = mine.size,
             olderCount = older.size,
             olderNet = older.sumOf { if (it.type == TxType.INCOME) it.amountMinor else -it.amountMinor },
@@ -297,9 +309,10 @@ fun AccountsScreen(
 
     editing?.let { account ->
         val all by viewModel.allTransactions.collectAsStateWithLifecycle()
+        val debts by viewModel.debts.collectAsStateWithLifecycle()
         AccountEditor(
             initial = account,
-            breakdown = if (account.id != 0L) viewModel.breakdown(account, all, transfers) else null,
+            breakdown = if (account.id != 0L) viewModel.breakdown(account, all, transfers, debts) else null,
             isDefault = account.id == defaultId,
             onDismiss = { editing = null },
             onSave = { a, makeDefault ->
@@ -580,6 +593,8 @@ private fun BalanceBreakdownCard(b: BalanceBreakdown, createdAt: Long) {
             line("Spending", b.spent, "− ", c.negative)
             if (b.transfersIn > 0) line("Transfers in", b.transfersIn, "+ ")
             if (b.transfersOut > 0) line("Transfers out", b.transfersOut, "− ")
+            if (b.debtsLent > 0) line("Money lent", b.debtsLent, "− ", c.negative)
+            if (b.debtsBorrowed > 0) line("Money borrowed", b.debtsBorrowed, "+ ", c.positive)
             RowDivider(inset = 0.dp)
             Spacer(Modifier.height(4.dp))
             line("Balance", b.balance, "")

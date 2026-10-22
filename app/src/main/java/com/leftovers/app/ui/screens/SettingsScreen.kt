@@ -231,8 +231,24 @@ class SettingsViewModel(
         viewModelScope.launch { settingsRepository.setDetectionKeywords(words) }
     }
 
+    fun setNotificationDetection(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setNotificationDetection(enabled) }
+    }
+
+    fun setNotificationAutoSave(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setNotificationAutoSave(enabled) }
+    }
+
+    fun toggleNotificationApp(packageName: String, enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.toggleNotificationApp(packageName, enabled) }
+    }
+
     fun setBillReminders(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setBillReminders(enabled) }
+    }
+
+    fun setCreditCardReminders(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setCreditCardRemindersEnabled(enabled) }
     }
 
     fun setShiftRemindersEnabled(enabled: Boolean) {
@@ -343,6 +359,8 @@ fun SettingsScreen(
     var showAssistant by rememberSaveable { mutableStateOf(false) }
     var showEmail by rememberSaveable { mutableStateOf(false) }
     var showKeywords by rememberSaveable { mutableStateOf(false) }
+    var showNotificationSettings by rememberSaveable { mutableStateOf(false) }
+    var showCloudBackup by rememberSaveable { mutableStateOf(false) }
     val deletedCount by (LocalContext.current.applicationContext as com.leftovers.app.LeftoversApp).container.repository.deletedCount.collectAsStateWithLifecycle(0)
     val emailConnection by (LocalContext.current.applicationContext as com.leftovers.app.LeftoversApp).container.emailAccount.connection.collectAsStateWithLifecycle()
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
@@ -448,6 +466,11 @@ fun SettingsScreen(
                             viewModel.setBillReminders(on)
                         })
                         RowDivider()
+                        ToggleRow(Lucide.CreditCard, "Credit card bill reminders", s.creditCardRemindersEnabled, { on ->
+                            if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            viewModel.setCreditCardReminders(on)
+                        })
+                        RowDivider()
                         ToggleRow(Lucide.Bell, "Daily reminder", s.reminderEnabled, { on ->
                             if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             viewModel.setReminder(on, s.reminderMinutes)
@@ -475,6 +498,25 @@ fun SettingsScreen(
                         ToggleRow(Lucide.Smartphone, "Detect bank SMS", s.smsDetection, { on ->
                             if (on) smsPermission.launch(Manifest.permission.RECEIVE_SMS) else viewModel.setSmsDetection(false)
                         })
+                        RowDivider()
+                        ToggleRow(Lucide.Bell, "Detect app notifications", s.notificationDetection, { on ->
+                            if (on) {
+                                viewModel.setNotificationDetection(true)
+                                if (!com.leftovers.app.util.detection.NotificationAccessHelper.isAccessGranted(context)) {
+                                    showNotificationSettings = true
+                                }
+                            } else {
+                                viewModel.setNotificationDetection(false)
+                            }
+                        })
+                        if (s.notificationDetection) {
+                            RowDivider()
+                            NavRow(
+                                Lucide.SlidersHorizontal,
+                                "Notification apps & settings",
+                                if (s.enabledNotificationApps.isEmpty()) "All supported" else "${s.enabledNotificationApps.size} enabled"
+                            ) { showNotificationSettings = true }
+                        }
                         RowDivider()
                         NavRow(Lucide.Mail, "Detect payments in email", emailConnection?.address ?: "Off") { showEmail = true }
                         if (s.smsDetection || emailConnection != null) {
@@ -522,6 +564,14 @@ fun SettingsScreen(
             item {
                 Glass(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(vertical = 6.dp)) {
+                        NavRow(
+                            Lucide.Cloud,
+                            "Cloud backup & sync",
+                            if (s.cloudUserEmail != null) "Connected (${s.cloudUserDisplayName ?: s.cloudUserEmail})" else "Google Sign-In & Firebase sync",
+                        ) {
+                            showCloudBackup = true
+                        }
+                        RowDivider()
                         NavRow(Lucide.Download, "Back up", "To a file or Google Drive") {
                             createBackup.launch("leftovers-backup-${java.time.LocalDate.now()}.json")
                         }
@@ -600,31 +650,18 @@ fun SettingsScreen(
                 ) {
                     Icon(Lucide.Lock, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Stored only on this device · Leftovers 1.6.0", style = MaterialTheme.typography.bodySmall, color = c.textTertiary, textAlign = TextAlign.Center)
+                    Text("Stored on both device & cloud · Leftovers 1.7.0", style = MaterialTheme.typography.bodySmall, color = c.textTertiary, textAlign = TextAlign.Center)
                 }
             }
             item {
-                val uriHandler = LocalUriHandler.current
-                Glass(Modifier.fillMaxWidth().padding(top = 24.dp)) {
-                    Column(Modifier.padding(vertical = 6.dp)) {
-                        // Opens GitHub's issue forms (bug report or feature request) in the browser.
-                        NavRow(Lucide.MessageCircle, "Report a problem or suggest an idea", "GitHub") {
-                            uriHandler.openUri("https://github.com/saisaharsh3/Leftovers/issues/new/choose")
-                        }
-                    }
-                }
-            }
-            item {
-                val uriHandler = LocalUriHandler.current
                 Text(
-                    "Made by C. Sai Saharsh · GitHub",
+                    "Made by Aneesh",
                     style = MaterialTheme.typography.bodySmall,
                     color = c.textTertiary,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp)
-                        .clickable { uriHandler.openUri("https://github.com/saisaharsh3") }
+                        .padding(top = 16.dp)
                         .padding(vertical = 8.dp),
                 )
             }
@@ -633,6 +670,17 @@ fun SettingsScreen(
         if (showAssistant) AssistantSetupSheet(onDismiss = { showAssistant = false })
         if (showEmail) EmailSetupSheet(onDismiss = { showEmail = false })
         if (showKeywords) DetectionSheet(s.detectionKeywords, viewModel::setDetectionKeywords, onDismiss = { showKeywords = false })
+        if (showNotificationSettings) {
+            NotificationSettingsSheet(
+                settings = s,
+                onToggleAutoSave = viewModel::setNotificationAutoSave,
+                onToggleApp = viewModel::toggleNotificationApp,
+                onDismiss = { showNotificationSettings = false },
+            )
+        }
+        if (showCloudBackup) {
+            CloudBackupSheet(onDismiss = { showCloudBackup = false })
+        }
 
         if (showEditProfile) {
             ProfileEditSheet(

@@ -672,6 +672,8 @@ private fun ChangeCard(item: ChatItem.Change, waiting: Int, onDecide: (Boolean) 
         ChangeKind.UPDATE_REMITTANCE -> Lucide.Pencil
         ChangeKind.DELETE_REMITTANCE -> Lucide.Trash2
         ChangeKind.RECIPIENT -> Lucide.User
+        ChangeKind.CREDIT_CARD_PAYMENT, ChangeKind.CREDIT_CARD_ENTRY -> Lucide.CreditCard
+        ChangeKind.DEBT, ChangeKind.SETTLE_DEBT -> Lucide.HandCoins
     }
     val isDanger = item.kind == ChangeKind.DELETE || item.kind == ChangeKind.DELETE_SHIFT || item.kind == ChangeKind.DELETE_REMITTANCE
     val tint = if (isDanger) c.negative else c.accent
