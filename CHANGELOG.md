@@ -18,6 +18,13 @@ All notable changes to Leftovers. Download any version from
 - Tab switching is back to the slide and fade from before, without the blank moment: a tab opened for the
   first time now shows its content straight away instead of an empty screen while it loads
 
+## 1.7.2
+
+- GitHub API rate-limit resolution: implemented local 15-minute response caching and conditional HTTP requests (ETag / If-None-Match with HTTP 304 Not Modified handling)
+- Rate-limit countdown & retry deadline persistence: parsed X-RateLimit-Reset, Retry-After, and X-RateLimit-Remaining headers, persisting retry deadlines across app restarts in DataStore
+- Rapid-tap protection: added single-flight request mutex and disabled update check buttons with dynamic live wait-time countdown when rate-limited
+- Background & manual check coordination: WorkManager update worker respects shared cache TTL and active rate limits without redundant network requests
+
 ## 1.7.1
 
 - GitHub in-app updater: added App Updates section in Settings to check for new releases directly from GitHub (aneesh-1999/Leftovers)

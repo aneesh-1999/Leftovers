@@ -101,6 +101,14 @@ data class AppSettings(
     val lastUpdateCheckTime: Long = 0L,
     /** Release tag name of the latest notification shown to prevent duplicate alerts. */
     val lastNotifiedUpdateTag: String = "",
+    /** Epoch millis timestamp when GitHub API rate-limit resets, 0 if not rate-limited. */
+    val updateRateLimitResetTime: Long = 0L,
+    /** Cached JSON response body of the latest verified GitHub release. */
+    val updateCachedReleaseJson: String = "",
+    /** Cached HTTP ETag for conditional If-None-Match requests. */
+    val updateCachedEtag: String = "",
+    /** Epoch millis timestamp when the release cache was last saved or refreshed via HTTP 200/304. */
+    val updateCacheTimestamp: Long = 0L,
 )
 
 class SettingsRepository(context: Context) {
@@ -166,6 +174,10 @@ class SettingsRepository(context: Context) {
             updateCheckWifiOnly = p[UPDATE_CHECK_WIFI_ONLY] ?: false,
             lastUpdateCheckTime = p[LAST_UPDATE_CHECK_TIME] ?: 0L,
             lastNotifiedUpdateTag = p[LAST_NOTIFIED_UPDATE_TAG].orEmpty(),
+            updateRateLimitResetTime = p[UPDATE_RATE_LIMIT_RESET_TIME] ?: 0L,
+            updateCachedReleaseJson = p[UPDATE_CACHED_RELEASE_JSON].orEmpty(),
+            updateCachedEtag = p[UPDATE_CACHED_ETAG].orEmpty(),
+            updateCacheTimestamp = p[UPDATE_CACHE_TIMESTAMP] ?: 0L,
         )
     }.sharedLive()
 
@@ -391,6 +403,20 @@ class SettingsRepository(context: Context) {
         it[LAST_NOTIFIED_UPDATE_TAG] = tag
     }
 
+    suspend fun setUpdateRateLimitResetTime(timestamp: Long) = store.edit {
+        it[UPDATE_RATE_LIMIT_RESET_TIME] = timestamp
+    }
+
+    suspend fun setUpdateCache(json: String, etag: String, timestamp: Long) = store.edit {
+        it[UPDATE_CACHED_RELEASE_JSON] = json
+        it[UPDATE_CACHED_ETAG] = etag
+        it[UPDATE_CACHE_TIMESTAMP] = timestamp
+    }
+
+    suspend fun touchUpdateCacheTimestamp(timestamp: Long) = store.edit {
+        it[UPDATE_CACHE_TIMESTAMP] = timestamp
+    }
+
     private companion object {
         val ONBOARDED = booleanPreferencesKey("onboarded")
         val CURRENCY = stringPreferencesKey("currency")
@@ -447,6 +473,10 @@ class SettingsRepository(context: Context) {
         val UPDATE_CHECK_WIFI_ONLY = booleanPreferencesKey("update_check_wifi_only")
         val LAST_UPDATE_CHECK_TIME = longPreferencesKey("last_update_check_time")
         val LAST_NOTIFIED_UPDATE_TAG = stringPreferencesKey("last_notified_update_tag")
+        val UPDATE_RATE_LIMIT_RESET_TIME = longPreferencesKey("update_rate_limit_reset_time")
+        val UPDATE_CACHED_RELEASE_JSON = stringPreferencesKey("update_cached_release_json")
+        val UPDATE_CACHED_ETAG = stringPreferencesKey("update_cached_etag")
+        val UPDATE_CACHE_TIMESTAMP = longPreferencesKey("update_cache_timestamp")
         fun defaultCurrencyCode(): String =
             runCatching { Currency.getInstance(Locale.getDefault()).currencyCode }.getOrNull() ?: "USD"
     }

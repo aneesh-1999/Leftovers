@@ -4,12 +4,16 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Build
+import com.leftovers.app.data.SettingsRepository
 import com.leftovers.app.updater.model.GitHubRelease
 import com.leftovers.app.updater.model.GitHubReleaseAsset
 import com.leftovers.app.updater.model.UpdateCheckStatus
 import com.leftovers.app.updater.util.VersionComparator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,7 +27,27 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.security.MessageDigest
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.coroutines.coroutineContext
+
+/**
+ * Case-insensitive lookup for HTTP headers.
+ */
+fun Map<String, List<String>>.findHeader(name: String): String? {
+    return entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value?.firstOrNull()
+}
+
+/**
+ * Exception indicating GitHub API rate limit was hit, carrying the calculated reset epoch timestamp.
+ */
+class RateLimitedException(
+    val resetEpochMillis: Long,
+    message: String,
+) : IllegalStateException(message)
 
 /**
  * Abstraction for HTTP operations, enabling isolated unit testing without live network.
@@ -67,9 +91,16 @@ class DefaultHttpTransport(
 
         return try {
             val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream ?: conn.inputStream
+            val stream = if (code == 304) {
+                null
+            } else if (code in 200..299) {
+                conn.inputStream
+            } else {
+                conn.errorStream ?: conn.inputStream
+            }
             val body = stream?.let { BufferedReader(InputStreamReader(it)).use { r -> r.readText() } }.orEmpty()
-            HttpResponse(statusCode = code, body = body, headers = conn.headerFields.orEmpty())
+            val safeHeaders = conn.headerFields?.filterKeys { it != null }?.mapKeys { it.key!! } ?: emptyMap()
+            HttpResponse(statusCode = code, body = body, headers = safeHeaders)
         } finally {
             conn.disconnect()
         }
@@ -126,12 +157,20 @@ class DefaultHttpTransport(
  */
 class AppUpdateRepository(
     private val context: Context,
+    private val settingsRepository: SettingsRepository? = null,
     private val httpTransport: HttpTransport = DefaultHttpTransport(),
 ) {
+    private val settingsRepo: SettingsRepository by lazy {
+        settingsRepository ?: SettingsRepository(context)
+    }
+
+    private val checkMutex = Mutex()
+
     companion object {
         const val DEFAULT_REPO_OWNER = "aneesh-1999"
         const val DEFAULT_REPO_NAME = "Leftovers"
         const val GITHUB_API_BASE = "https://api.github.com/repos"
+        const val CACHE_TTL_MILLIS = 15 * 60 * 1000L // 15 minutes
 
         private val ALLOWED_DOMAINS = listOf(
             "github.com",
@@ -142,77 +181,334 @@ class AppUpdateRepository(
         )
 
         private val SHA256_HEX_REGEX = Regex("""(?i)\b([a-f0-9]{64})\b""")
+
+        fun parseRateLimitResetTime(headers: Map<String, List<String>>, now: Long): Long {
+            // 1. Retry-After header (seconds or RFC 1123 date)
+            val retryAfter = headers.findHeader("Retry-After")
+            if (!retryAfter.isNullOrBlank()) {
+                val seconds = retryAfter.trim().toLongOrNull()
+                if (seconds != null && seconds > 0) {
+                    return now + (seconds * 1000L)
+                }
+                val dateMillis = runCatching {
+                    ZonedDateTime.parse(retryAfter.trim(), DateTimeFormatter.RFC_1123_DATE_TIME)
+                        .toInstant().toEpochMilli()
+                }.getOrNull()
+                if (dateMillis != null && dateMillis > now) {
+                    return dateMillis
+                }
+            }
+
+            // 2. X-RateLimit-Reset (epoch seconds)
+            val resetHeader = headers.findHeader("X-RateLimit-Reset")
+            if (!resetHeader.isNullOrBlank()) {
+                val epochSec = resetHeader.trim().toLongOrNull()
+                if (epochSec != null && epochSec > 0) {
+                    val millis = epochSec * 1000L
+                    if (millis > now) return millis
+                }
+            }
+
+            // Fallback 60 seconds
+            return now + 60_000L
+        }
+
+        fun formatRemainingWait(remainingMillis: Long, resetEpochMillis: Long): String {
+            val totalSecs = (remainingMillis / 1000L).coerceAtLeast(1)
+            val mins = totalSecs / 60L
+            val secs = totalSecs % 60L
+            val timeStr = runCatching {
+                val dt = Instant.ofEpochMilli(resetEpochMillis).atZone(ZoneId.systemDefault())
+                dt.format(DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault()))
+            }.getOrNull()
+            val atSuffix = if (timeStr != null) " (resets at $timeStr)" else ""
+            return if (mins > 0) {
+                "$mins min $secs sec$atSuffix"
+            } else {
+                "$secs sec$atSuffix"
+            }
+        }
     }
 
     /**
-     * Queries the GitHub Releases API for the latest published stable release.
+     * Queries the GitHub Releases API for the latest published stable release, reusing cache when valid.
      */
     suspend fun fetchLatestRelease(
         repoOwner: String = DEFAULT_REPO_OWNER,
         repoName: String = DEFAULT_REPO_NAME,
+        forceRefresh: Boolean = false,
     ): Result<GitHubRelease> = withContext(Dispatchers.IO) {
-        runCatching {
-            val url = "$GITHUB_API_BASE/$repoOwner/$repoName/releases/latest"
-            val response = httpTransport.get(url)
+        checkMutex.withLock {
+            val settings = settingsRepo.settings.first()
+            val now = System.currentTimeMillis()
+            val rateLimitReset = settings.updateRateLimitResetTime
+            val isRateLimited = rateLimitReset > now
 
-            when (response.statusCode) {
-                404 -> throw IllegalStateException("No published releases found for repository $repoOwner/$repoName on GitHub.")
-                403 -> {
-                    val resetHeader = response.headers["x-ratelimit-reset"]?.firstOrNull()
-                    val resetMsg = resetHeader?.toLongOrNull()?.let {
-                        val waitMinutes = ((it * 1000 - System.currentTimeMillis()) / 60000).coerceAtLeast(1)
-                        " (resets in ~$waitMinutes min)"
-                    } ?: ""
-                    throw IllegalStateException("GitHub API rate limit reached$resetMsg. Please try again later.")
+            if (isRateLimited) {
+                val remainingMillis = rateLimitReset - now
+                val waitMsg = formatRemainingWait(remainingMillis, rateLimitReset)
+                return@withLock Result.failure(
+                    RateLimitedException(
+                        rateLimitReset,
+                        "GitHub API rate limit reached. Try again in $waitMsg.",
+                    ),
+                )
+            }
+
+            val cacheAge = now - settings.updateCacheTimestamp
+            val isCacheValid = settings.updateCachedReleaseJson.isNotBlank() && cacheAge in 0 until CACHE_TTL_MILLIS
+            if (!forceRefresh && isCacheValid) {
+                val cached = runCatching { parseReleaseJson(settings.updateCachedReleaseJson) }.getOrNull()
+                if (cached != null) return@withLock Result.success(cached)
+            }
+
+            runCatching {
+                val headers = mutableMapOf<String, String>()
+                if (settings.updateCachedEtag.isNotBlank()) {
+                    headers["If-None-Match"] = settings.updateCachedEtag
                 }
-                in 200..299 -> parseReleaseJson(response.body)
-                else -> throw IllegalStateException("GitHub API returned error code ${response.statusCode}")
+
+                val url = "$GITHUB_API_BASE/$repoOwner/$repoName/releases/latest"
+                val response = httpTransport.get(url, headers)
+
+                when (response.statusCode) {
+                    304 -> {
+                        settingsRepo.touchUpdateCacheTimestamp(now)
+                        settingsRepo.setLastUpdateCheckTime(now)
+                        val remaining = response.headers.findHeader("X-RateLimit-Remaining")
+                        if (remaining == "0") {
+                            val reset = parseRateLimitResetTime(response.headers, now)
+                            settingsRepo.setUpdateRateLimitResetTime(reset)
+                        } else {
+                            settingsRepo.setUpdateRateLimitResetTime(0L)
+                        }
+                        parseReleaseJson(settings.updateCachedReleaseJson)
+                    }
+                    in 200..299 -> {
+                        val release = parseReleaseJson(response.body)
+                        val etag = response.headers.findHeader("ETag").orEmpty()
+                        settingsRepo.setUpdateCache(response.body, etag, now)
+                        settingsRepo.setLastUpdateCheckTime(now)
+
+                        val remaining = response.headers.findHeader("X-RateLimit-Remaining")
+                        if (remaining == "0") {
+                            val reset = parseRateLimitResetTime(response.headers, now)
+                            settingsRepo.setUpdateRateLimitResetTime(reset)
+                        } else {
+                            settingsRepo.setUpdateRateLimitResetTime(0L)
+                        }
+                        release
+                    }
+                    403, 429 -> {
+                        val resetTime = parseRateLimitResetTime(response.headers, now)
+                        settingsRepo.setUpdateRateLimitResetTime(resetTime)
+                        settingsRepo.setLastUpdateCheckTime(now)
+                        val waitMsg = formatRemainingWait(resetTime - now, resetTime)
+                        throw RateLimitedException(resetTime, "GitHub API rate limit reached. Try again in $waitMsg.")
+                    }
+                    404 -> throw IllegalStateException("No published releases found for repository $repoOwner/$repoName on GitHub.")
+                    else -> throw IllegalStateException("GitHub API returned error code ${response.statusCode}")
+                }
             }
         }
     }
 
     /**
      * Checks if a newer update is available compared to the current version.
+     * Reuses valid cached responses (for >= 15 min), applies ETag conditional requests (HTTP 304),
+     * and respects rate limits across app restarts.
      */
     suspend fun checkForUpdates(
         currentVersionName: String,
         currentVersionCode: Long,
         repoOwner: String = DEFAULT_REPO_OWNER,
         repoName: String = DEFAULT_REPO_NAME,
+        forceRefresh: Boolean = false,
     ): UpdateCheckStatus = withContext(Dispatchers.IO) {
-        val result = fetchLatestRelease(repoOwner, repoName)
-        val now = System.currentTimeMillis()
+        checkMutex.withLock {
+            val settings = settingsRepo.settings.first()
+            val now = System.currentTimeMillis()
+            val rateLimitReset = settings.updateRateLimitResetTime
+            val isRateLimited = rateLimitReset > now
+            val cachedRelease = runCatching {
+                if (settings.updateCachedReleaseJson.isNotBlank()) parseReleaseJson(settings.updateCachedReleaseJson) else null
+            }.getOrNull()
 
-        result.fold(
-            onSuccess = { release ->
-                if (release.apkAsset == null) {
+            // 1. If currently rate limited:
+            if (isRateLimited) {
+                val remainingMillis = rateLimitReset - now
+                val waitMsg = formatRemainingWait(remainingMillis, rateLimitReset)
+                return@withLock UpdateCheckStatus.Failed(
+                    error = "GitHub API rate limit reached. Try again in $waitMsg.",
+                    isRateLimited = true,
+                    rateLimitResetTime = rateLimitReset,
+                    checkedAt = if (settings.lastUpdateCheckTime > 0) settings.lastUpdateCheckTime else now,
+                    cachedRelease = cachedRelease,
+                )
+            }
+
+            // 2. Reuse valid cached release data if within 15 minutes and not forced
+            val cacheAge = now - settings.updateCacheTimestamp
+            val isCacheValid = settings.updateCachedReleaseJson.isNotBlank() && cacheAge in 0 until CACHE_TTL_MILLIS
+            if (!forceRefresh && isCacheValid && cachedRelease != null) {
+                return@withLock if (cachedRelease.apkAsset == null) {
                     UpdateCheckStatus.Failed(
-                        error = "Release ${release.displayVersion} exists but does not contain an Android APK (.apk asset).",
-                        checkedAt = now,
+                        error = "Release ${cachedRelease.displayVersion} exists but does not contain an Android APK (.apk asset).",
+                        checkedAt = settings.updateCacheTimestamp,
+                        cachedRelease = cachedRelease,
                     )
-                } else if (VersionComparator.isUpdateAvailable(currentVersionName, currentVersionCode, release)) {
+                } else if (VersionComparator.isUpdateAvailable(currentVersionName, currentVersionCode, cachedRelease)) {
                     UpdateCheckStatus.UpdateAvailable(
                         currentVersion = currentVersionName,
-                        latestVersion = release.displayVersion,
-                        release = release,
-                        checkedAt = now,
+                        latestVersion = cachedRelease.displayVersion,
+                        release = cachedRelease,
+                        checkedAt = settings.updateCacheTimestamp,
+                        fromCache = true,
                     )
                 } else {
                     UpdateCheckStatus.UpToDate(
                         currentVersion = currentVersionName,
-                        checkedAt = now,
+                        checkedAt = settings.updateCacheTimestamp,
+                        fromCache = true,
+                        release = cachedRelease,
                     )
                 }
-            },
-            onFailure = { error ->
-                val isRateLimit = error.message?.contains("rate limit", ignoreCase = true) == true
+            }
+
+            // 3. Perform network request using conditional headers (ETag) if available
+            try {
+                val headers = mutableMapOf<String, String>()
+                if (settings.updateCachedEtag.isNotBlank()) {
+                    headers["If-None-Match"] = settings.updateCachedEtag
+                }
+
+                val url = "$GITHUB_API_BASE/$repoOwner/$repoName/releases/latest"
+                val response = httpTransport.get(url, headers)
+
+                when (response.statusCode) {
+                    304 -> {
+                        settingsRepo.touchUpdateCacheTimestamp(now)
+                        settingsRepo.setLastUpdateCheckTime(now)
+                        val remaining = response.headers.findHeader("X-RateLimit-Remaining")
+                        if (remaining == "0") {
+                            val reset = parseRateLimitResetTime(response.headers, now)
+                            settingsRepo.setUpdateRateLimitResetTime(reset)
+                        } else {
+                            settingsRepo.setUpdateRateLimitResetTime(0L)
+                        }
+
+                        val release = cachedRelease
+                        if (release == null) {
+                            settingsRepo.setUpdateCache("", "", 0L)
+                            return@withLock UpdateCheckStatus.Failed(
+                                error = "Cached release data unavailable.",
+                                checkedAt = now,
+                            )
+                        }
+
+                        if (release.apkAsset == null) {
+                            UpdateCheckStatus.Failed(
+                                error = "Release ${release.displayVersion} exists but does not contain an Android APK (.apk asset).",
+                                checkedAt = now,
+                                cachedRelease = release,
+                            )
+                        } else if (VersionComparator.isUpdateAvailable(currentVersionName, currentVersionCode, release)) {
+                            UpdateCheckStatus.UpdateAvailable(
+                                currentVersion = currentVersionName,
+                                latestVersion = release.displayVersion,
+                                release = release,
+                                checkedAt = now,
+                                fromCache = true,
+                            )
+                        } else {
+                            UpdateCheckStatus.UpToDate(
+                                currentVersion = currentVersionName,
+                                checkedAt = now,
+                                fromCache = true,
+                                release = release,
+                            )
+                        }
+                    }
+
+                    in 200..299 -> {
+                        val release = parseReleaseJson(response.body)
+                        val etag = response.headers.findHeader("ETag").orEmpty()
+                        settingsRepo.setUpdateCache(response.body, etag, now)
+                        settingsRepo.setLastUpdateCheckTime(now)
+
+                        val remaining = response.headers.findHeader("X-RateLimit-Remaining")
+                        if (remaining == "0") {
+                            val reset = parseRateLimitResetTime(response.headers, now)
+                            settingsRepo.setUpdateRateLimitResetTime(reset)
+                        } else {
+                            settingsRepo.setUpdateRateLimitResetTime(0L)
+                        }
+
+                        if (release.apkAsset == null) {
+                            UpdateCheckStatus.Failed(
+                                error = "Release ${release.displayVersion} exists but does not contain an Android APK (.apk asset).",
+                                checkedAt = now,
+                                cachedRelease = release,
+                            )
+                        } else if (VersionComparator.isUpdateAvailable(currentVersionName, currentVersionCode, release)) {
+                            UpdateCheckStatus.UpdateAvailable(
+                                currentVersion = currentVersionName,
+                                latestVersion = release.displayVersion,
+                                release = release,
+                                checkedAt = now,
+                                fromCache = false,
+                            )
+                        } else {
+                            UpdateCheckStatus.UpToDate(
+                                currentVersion = currentVersionName,
+                                checkedAt = now,
+                                fromCache = false,
+                                release = release,
+                            )
+                        }
+                    }
+
+                    403, 429 -> {
+                        val resetTime = parseRateLimitResetTime(response.headers, now)
+                        settingsRepo.setUpdateRateLimitResetTime(resetTime)
+                        settingsRepo.setLastUpdateCheckTime(now)
+                        val waitMsg = formatRemainingWait(resetTime - now, resetTime)
+                        UpdateCheckStatus.Failed(
+                            error = "GitHub API rate limit reached. Try again in $waitMsg.",
+                            isRateLimited = true,
+                            rateLimitResetTime = resetTime,
+                            checkedAt = now,
+                            cachedRelease = cachedRelease,
+                        )
+                    }
+
+                    404 -> {
+                        settingsRepo.setLastUpdateCheckTime(now)
+                        UpdateCheckStatus.Failed(
+                            error = "No published releases found for repository $repoOwner/$repoName on GitHub.",
+                            checkedAt = now,
+                            cachedRelease = cachedRelease,
+                        )
+                    }
+
+                    else -> {
+                        settingsRepo.setLastUpdateCheckTime(now)
+                        UpdateCheckStatus.Failed(
+                            error = "GitHub API returned error code ${response.statusCode}",
+                            checkedAt = now,
+                            cachedRelease = cachedRelease,
+                        )
+                    }
+                }
+            } catch (e: Exception) {
                 UpdateCheckStatus.Failed(
-                    error = error.message ?: "Failed to connect to GitHub",
-                    isRateLimited = isRateLimit,
+                    error = e.message ?: "Failed to connect to GitHub",
+                    isRateLimited = false,
                     checkedAt = now,
+                    cachedRelease = cachedRelease,
                 )
-            },
-        )
+            }
+        }
     }
 
     /**

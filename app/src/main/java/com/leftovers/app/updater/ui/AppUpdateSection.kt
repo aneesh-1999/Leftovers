@@ -122,9 +122,23 @@ fun AppUpdateSection(
 
             // Error display if update check failed
             if (state.checkStatus is UpdateCheckStatus.Failed) {
-                val error = (state.checkStatus as UpdateCheckStatus.Failed).error
+                val failed = state.checkStatus as UpdateCheckStatus.Failed
+                val isRateLimited = failed.isRateLimited || state.rateLimitRemainingSeconds > 0
+                val message = if (isRateLimited && state.rateLimitRemainingSeconds > 0) {
+                    val mins = state.rateLimitRemainingSeconds / 60
+                    val secs = state.rateLimitRemainingSeconds % 60
+                    val exactTime = runCatching {
+                        Instant.ofEpochMilli(state.rateLimitResetTime).atZone(ZoneId.systemDefault())
+                            .format(DateTimeFormatter.ofPattern("h:mm:ss a", Locale.getDefault()))
+                    }.getOrNull()
+                    val suffix = if (exactTime != null) " (resets at $exactTime)" else ""
+                    val waitStr = if (mins > 0) "$mins min $secs sec$suffix" else "$secs sec$suffix"
+                    "GitHub API rate limit reached. Next check allowed in $waitStr."
+                } else {
+                    failed.error
+                }
                 Text(
-                    text = error,
+                    text = message,
                     style = MaterialTheme.typography.bodySmall,
                     color = c.negative,
                     modifier = Modifier
@@ -147,11 +161,25 @@ fun AppUpdateSection(
                     onInstall = { viewModel.installDownloadedApk(context) },
                 )
             } else {
-                // Check for updates button
+                // Check for updates button with rate-limit and in-progress protection
+                val isChecking = state.checkStatus is UpdateCheckStatus.Checking
+                val isRateLimited = state.isRateLimited
+                val remainingSec = state.rateLimitRemainingSeconds
+                val buttonText = when {
+                    isChecking -> "Checking GitHub..."
+                    isRateLimited && remainingSec > 0 -> {
+                        val m = remainingSec / 60
+                        val s = remainingSec % 60
+                        if (m > 0) "Rate limited (retry in ${m}m ${s}s)" else "Rate limited (retry in ${s}s)"
+                    }
+                    isRateLimited -> "Rate limited"
+                    else -> "Check for updates"
+                }
+
                 PrimaryButton(
-                    text = if (state.checkStatus is UpdateCheckStatus.Checking) "Checking GitHub..." else "Check for updates",
-                    onClick = viewModel::checkForUpdates,
-                    enabled = state.checkStatus !is UpdateCheckStatus.Checking,
+                    text = buttonText,
+                    onClick = { viewModel.checkForUpdates(forceRefresh = true) },
+                    enabled = !isChecking && !isRateLimited,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -226,12 +254,21 @@ private fun StatusBadge(status: UpdateCheckStatus) {
             null,
             "Checking...",
         )
-        is UpdateCheckStatus.Failed -> Tuple4(
-            c.negative.copy(alpha = 0.15f),
-            c.negative,
-            Lucide.CircleAlert,
-            "Check failed",
-        )
+        is UpdateCheckStatus.Failed -> if (status.isRateLimited) {
+            Tuple4(
+                c.negative.copy(alpha = 0.15f),
+                c.negative,
+                Lucide.Clock,
+                "Rate limited",
+            )
+        } else {
+            Tuple4(
+                c.negative.copy(alpha = 0.15f),
+                c.negative,
+                Lucide.CircleAlert,
+                "Check failed",
+            )
+        }
         is UpdateCheckStatus.Idle -> Tuple4(
             c.glass,
             c.textTertiary,

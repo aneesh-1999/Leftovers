@@ -22,6 +22,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 
+import com.leftovers.app.updater.util.VersionComparator
+import kotlinx.coroutines.delay
+
 data class AppUpdateUiState(
     val currentVersionName: String,
     val currentVersionCode: Long,
@@ -33,7 +36,13 @@ data class AppUpdateUiState(
     val releaseNotesToView: GitHubRelease? = null,
     val promptInstallPermission: Boolean = false,
     val downloadedApkFile: File? = null,
-)
+    val rateLimitResetTime: Long = 0L,
+    val rateLimitRemainingSeconds: Long = 0L,
+) {
+    val isRateLimited: Boolean
+        get() = rateLimitRemainingSeconds > 0L ||
+            (checkStatus is UpdateCheckStatus.Failed && checkStatus.isRateLimited && checkStatus.rateLimitResetTime > System.currentTimeMillis())
+}
 
 class AppUpdateViewModel(
     private val appContext: Context,
@@ -45,16 +54,68 @@ class AppUpdateViewModel(
         appContext.packageManager.getPackageInfo(appContext.packageName, 0)
     }.getOrNull()
 
-    val currentVersionName: String = packageInfo?.versionName ?: "1.7.0"
-    val currentVersionCode: Long = packageInfo?.let { PackageInfoCompat.getLongVersionCode(it) } ?: 20L
+    val currentVersionName: String = packageInfo?.versionName ?: "1.7.2"
+    val currentVersionCode: Long = packageInfo?.let { PackageInfoCompat.getLongVersionCode(it) } ?: 22L
 
     private val checkStatusFlow = MutableStateFlow<UpdateCheckStatus>(UpdateCheckStatus.Idle)
     private val downloadStatusFlow = MutableStateFlow<DownloadStatus>(DownloadStatus.Idle)
     private val releaseNotesFlow = MutableStateFlow<GitHubRelease?>(null)
     private val promptPermissionFlow = MutableStateFlow(false)
     private val downloadedApkFlow = MutableStateFlow<File?>(null)
+    private val rateLimitRemainingSecondsFlow = MutableStateFlow(0L)
 
     private var downloadJob: Job? = null
+    private var rateLimitTickerJob: Job? = null
+    private var isInitialized = false
+
+    init {
+        // Load persisted cache and rate-limit state immediately on startup
+        viewModelScope.launch {
+            settingsRepository.settings.collect { settings ->
+                if (!isInitialized) {
+                    isInitialized = true
+                    val now = System.currentTimeMillis()
+                    val rateLimitReset = settings.updateRateLimitResetTime
+                    val cachedRelease = runCatching {
+                        if (settings.updateCachedReleaseJson.isNotBlank()) {
+                            updateRepository.parseReleaseJson(settings.updateCachedReleaseJson)
+                        } else null
+                    }.getOrNull()
+
+                    if (rateLimitReset > now) {
+                        val remainingSec = ((rateLimitReset - now) / 1000L).coerceAtLeast(1L)
+                        rateLimitRemainingSecondsFlow.value = remainingSec
+                        val waitMsg = AppUpdateRepository.formatRemainingWait(rateLimitReset - now, rateLimitReset)
+                        checkStatusFlow.value = UpdateCheckStatus.Failed(
+                            error = "GitHub API rate limit reached. Try again in $waitMsg.",
+                            isRateLimited = true,
+                            rateLimitResetTime = rateLimitReset,
+                            checkedAt = if (settings.lastUpdateCheckTime > 0) settings.lastUpdateCheckTime else now,
+                            cachedRelease = cachedRelease,
+                        )
+                        startRateLimitTicker(rateLimitReset)
+                    } else if (cachedRelease != null && checkStatusFlow.value is UpdateCheckStatus.Idle) {
+                        if (VersionComparator.isUpdateAvailable(currentVersionName, currentVersionCode, cachedRelease)) {
+                            checkStatusFlow.value = UpdateCheckStatus.UpdateAvailable(
+                                currentVersion = currentVersionName,
+                                latestVersion = cachedRelease.displayVersion,
+                                release = cachedRelease,
+                                checkedAt = settings.updateCacheTimestamp,
+                                fromCache = true,
+                            )
+                        } else if (settings.lastUpdateCheckTime > 0L) {
+                            checkStatusFlow.value = UpdateCheckStatus.UpToDate(
+                                currentVersion = currentVersionName,
+                                checkedAt = settings.updateCacheTimestamp,
+                                fromCache = true,
+                                release = cachedRelease,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     val uiState: StateFlow<AppUpdateUiState> = combine(
         settingsRepository.settings,
@@ -63,6 +124,7 @@ class AppUpdateViewModel(
         releaseNotesFlow,
         promptPermissionFlow,
         downloadedApkFlow,
+        rateLimitRemainingSecondsFlow,
     ) { args: Array<Any?> ->
         val settings = args[0] as com.leftovers.app.data.AppSettings
         val checkStatus = args[1] as UpdateCheckStatus
@@ -70,6 +132,7 @@ class AppUpdateViewModel(
         val releaseNotes = args[3] as GitHubRelease?
         val promptPermission = args[4] as Boolean
         val downloadedApk = args[5] as File?
+        val remainingSec = args[6] as Long
 
         AppUpdateUiState(
             currentVersionName = currentVersionName,
@@ -82,6 +145,8 @@ class AppUpdateViewModel(
             releaseNotesToView = releaseNotes,
             promptInstallPermission = promptPermission,
             downloadedApkFile = downloadedApk,
+            rateLimitResetTime = settings.updateRateLimitResetTime,
+            rateLimitRemainingSeconds = remainingSec,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -92,19 +157,59 @@ class AppUpdateViewModel(
         ),
     )
 
+    private fun startRateLimitTicker(resetTimeMillis: Long) {
+        rateLimitTickerJob?.cancel()
+        rateLimitTickerJob = viewModelScope.launch {
+            while (true) {
+                val now = System.currentTimeMillis()
+                val remainingSec = ((resetTimeMillis - now) / 1000L).coerceAtLeast(0L)
+                rateLimitRemainingSecondsFlow.value = remainingSec
+                if (remainingSec <= 0L) {
+                    settingsRepository.setUpdateRateLimitResetTime(0L)
+                    if (checkStatusFlow.value is UpdateCheckStatus.Failed &&
+                        (checkStatusFlow.value as UpdateCheckStatus.Failed).isRateLimited
+                    ) {
+                        val cached = (checkStatusFlow.value as UpdateCheckStatus.Failed).cachedRelease
+                        if (cached != null && VersionComparator.isUpdateAvailable(currentVersionName, currentVersionCode, cached)) {
+                            checkStatusFlow.value = UpdateCheckStatus.UpdateAvailable(
+                                currentVersion = currentVersionName,
+                                latestVersion = cached.displayVersion,
+                                release = cached,
+                                checkedAt = System.currentTimeMillis(),
+                                fromCache = true,
+                            )
+                        } else {
+                            checkStatusFlow.value = UpdateCheckStatus.Idle
+                        }
+                    }
+                    break
+                }
+                delay(1000L)
+            }
+        }
+    }
+
     /**
-     * Checks GitHub for updates. Prevents concurrent requests.
+     * Checks GitHub for updates. Reuses valid cache, prevents duplicate requests, and respects rate limits.
      */
-    fun checkForUpdates() {
-        if (checkStatusFlow.value is UpdateCheckStatus.Checking) return
+    fun checkForUpdates(forceRefresh: Boolean = false) {
+        val currentCheck = checkStatusFlow.value
+        if (currentCheck is UpdateCheckStatus.Checking) return
+        if (uiState.value.isRateLimited) return
 
         checkStatusFlow.value = UpdateCheckStatus.Checking
 
         viewModelScope.launch {
-            val result = updateRepository.checkForUpdates(currentVersionName, currentVersionCode)
-            val now = System.currentTimeMillis()
-            settingsRepository.setLastUpdateCheckTime(now)
+            val result = updateRepository.checkForUpdates(
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode,
+                forceRefresh = forceRefresh,
+            )
             checkStatusFlow.value = result
+
+            if (result is UpdateCheckStatus.Failed && result.isRateLimited && result.rateLimitResetTime > System.currentTimeMillis()) {
+                startRateLimitTicker(result.rateLimitResetTime)
+            }
         }
     }
 

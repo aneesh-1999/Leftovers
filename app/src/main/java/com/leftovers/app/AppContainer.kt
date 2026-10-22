@@ -95,7 +95,7 @@ class AppContainer(private val context: Context) {
     val budgetAlerts = BudgetAlertManager(context, repository, settings)
     val assistant = AssistantSettings(context)
     val emailAccount = EmailAccount(context)
-    val updater = com.leftovers.app.updater.repository.AppUpdateRepository(context)
+    val updater = com.leftovers.app.updater.repository.AppUpdateRepository(context, settings)
 
     /**
      * Wipes everything back to a fresh install: all data and photos, settings, the connected AI and email,

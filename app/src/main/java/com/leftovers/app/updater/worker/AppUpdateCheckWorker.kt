@@ -44,16 +44,21 @@ class AppUpdateCheckWorker(
             return Result.success()
         }
 
+        val now = System.currentTimeMillis()
+        if (now < settings.updateRateLimitResetTime) {
+            // Respect active rate-limit deadline: skip background network check
+            return Result.success()
+        }
+
         val packageInfo = runCatching {
             appContext.packageManager.getPackageInfo(appContext.packageName, 0)
         }.getOrNull() ?: return Result.failure()
 
-        val versionName = packageInfo.versionName ?: "1.7.0"
+        val versionName = packageInfo.versionName ?: "1.7.2"
         val versionCode = PackageInfoCompat.getLongVersionCode(packageInfo)
 
         val checkStatus = container.updater.checkForUpdates(versionName, versionCode)
-        val now = System.currentTimeMillis()
-        container.settings.setLastUpdateCheckTime(now)
+        container.settings.setLastUpdateCheckTime(System.currentTimeMillis())
 
         if (checkStatus is UpdateCheckStatus.UpdateAvailable) {
             val release = checkStatus.release

@@ -57,17 +57,25 @@ data class VersionInfo(
 sealed interface UpdateCheckStatus {
     data object Idle : UpdateCheckStatus
     data object Checking : UpdateCheckStatus
-    data class UpToDate(val currentVersion: String, val checkedAt: Long) : UpdateCheckStatus
+    data class UpToDate(
+        val currentVersion: String,
+        val checkedAt: Long,
+        val fromCache: Boolean = false,
+        val release: GitHubRelease? = null,
+    ) : UpdateCheckStatus
     data class UpdateAvailable(
         val currentVersion: String,
         val latestVersion: String,
         val release: GitHubRelease,
         val checkedAt: Long,
+        val fromCache: Boolean = false,
     ) : UpdateCheckStatus
     data class Failed(
         val error: String,
         val isRateLimited: Boolean = false,
+        val rateLimitResetTime: Long = 0L,
         val checkedAt: Long = System.currentTimeMillis(),
+        val cachedRelease: GitHubRelease? = null,
     ) : UpdateCheckStatus
 }
 

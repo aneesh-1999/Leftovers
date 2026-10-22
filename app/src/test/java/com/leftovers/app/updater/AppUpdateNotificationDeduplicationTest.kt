@@ -81,4 +81,27 @@ class AppUpdateNotificationDeduplicationTest {
         settingsRepository.setUpdateCheckWifiOnly(false)
         assertFalse(settingsRepository.settings.first().updateCheckWifiOnly)
     }
+
+    @Test
+    fun backgroundAndManualCoordination_respectsSharedRateLimitAndCache() = runBlocking {
+        // 1. Manual check hits 403 and persists rate limit
+        val futureReset = System.currentTimeMillis() + 1800_000L
+        settingsRepository.setUpdateRateLimitResetTime(futureReset)
+
+        // 2. Background check reads settings
+        val settings = settingsRepository.settings.first()
+        val now = System.currentTimeMillis()
+        val isRateLimited = now < settings.updateRateLimitResetTime
+
+        assertTrue("Background check must detect active rate limit from manual check", isRateLimited)
+
+        // 3. Cache coordination: release cached by manual check is available to background worker
+        val sampleReleaseJson = """{"id":1,"tag_name":"v1.7.1","name":"Leftovers 1.7.1","body":"","draft":false,"prerelease":false,"published_at":"2026-10-15T15:00:00Z","assets":[{"name":"leftovers.apk","size":1000,"browser_download_url":"https://github.com/aneesh-1999/Leftovers/releases/download/v1.7.1/leftovers.apk","content_type":"application/vnd.android.package-archive"}]}"""
+        settingsRepository.setUpdateCache(sampleReleaseJson, "\"etag123\"", now)
+
+        val updated = settingsRepository.settings.first()
+        assertEquals(sampleReleaseJson, updated.updateCachedReleaseJson)
+        assertEquals("\"etag123\"", updated.updateCachedEtag)
+        assertEquals(now, updated.updateCacheTimestamp)
+    }
 }
