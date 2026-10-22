@@ -26,6 +26,7 @@ class LeftoversApp : Application(), Configuration.Provider {
         DebtReminders.createChannel(this)
         ShiftReminders.createChannel(this)
         com.leftovers.app.data.creditcard.CreditCardReminders.createChannel(this)
+        com.leftovers.app.updater.worker.AppUpdateCheckWorker.createChannel(this)
         DebtReminders.schedule(this, true)
         com.leftovers.app.data.creditcard.CreditCardReminders.schedule(this, true)
         AlarmScheduler.rescheduleAll(this)

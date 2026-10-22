@@ -93,6 +93,14 @@ data class AppSettings(
     val cloudUserEmail: String? = null,
     /** Display name of the authenticated cloud user, if signed in. */
     val cloudUserDisplayName: String? = null,
+    /** Whether automatic background checks for GitHub releases are enabled. */
+    val autoUpdateChecks: Boolean = true,
+    /** Whether automatic background update checks/downloads should only happen on unmetered Wi-Fi. */
+    val updateCheckWifiOnly: Boolean = false,
+    /** Timestamp in epoch millis when updates were last checked. */
+    val lastUpdateCheckTime: Long = 0L,
+    /** Release tag name of the latest notification shown to prevent duplicate alerts. */
+    val lastNotifiedUpdateTag: String = "",
 )
 
 class SettingsRepository(context: Context) {
@@ -154,6 +162,10 @@ class SettingsRepository(context: Context) {
             cloudBackupGoogleClientId = p[CLOUD_BACKUP_GOOGLE_CLIENT_ID].orEmpty(),
             cloudUserEmail = p[CLOUD_USER_EMAIL],
             cloudUserDisplayName = p[CLOUD_USER_DISPLAY_NAME],
+            autoUpdateChecks = p[AUTO_UPDATE_CHECKS] ?: true,
+            updateCheckWifiOnly = p[UPDATE_CHECK_WIFI_ONLY] ?: false,
+            lastUpdateCheckTime = p[LAST_UPDATE_CHECK_TIME] ?: 0L,
+            lastNotifiedUpdateTag = p[LAST_NOTIFIED_UPDATE_TAG].orEmpty(),
         )
     }.sharedLive()
 
@@ -363,6 +375,22 @@ class SettingsRepository(context: Context) {
         if (displayName != null) it[CLOUD_USER_DISPLAY_NAME] = displayName else it.remove(CLOUD_USER_DISPLAY_NAME)
     }
 
+    suspend fun setAutoUpdateChecks(enabled: Boolean) = store.edit {
+        it[AUTO_UPDATE_CHECKS] = enabled
+    }
+
+    suspend fun setUpdateCheckWifiOnly(wifiOnly: Boolean) = store.edit {
+        it[UPDATE_CHECK_WIFI_ONLY] = wifiOnly
+    }
+
+    suspend fun setLastUpdateCheckTime(timestamp: Long) = store.edit {
+        it[LAST_UPDATE_CHECK_TIME] = timestamp
+    }
+
+    suspend fun setLastNotifiedUpdateTag(tag: String) = store.edit {
+        it[LAST_NOTIFIED_UPDATE_TAG] = tag
+    }
+
     private companion object {
         val ONBOARDED = booleanPreferencesKey("onboarded")
         val CURRENCY = stringPreferencesKey("currency")
@@ -415,6 +443,10 @@ class SettingsRepository(context: Context) {
         val CLOUD_BACKUP_GOOGLE_CLIENT_ID = stringPreferencesKey("cloud_backup_google_client_id")
         val CLOUD_USER_EMAIL = stringPreferencesKey("cloud_user_email")
         val CLOUD_USER_DISPLAY_NAME = stringPreferencesKey("cloud_user_display_name")
+        val AUTO_UPDATE_CHECKS = booleanPreferencesKey("auto_update_checks")
+        val UPDATE_CHECK_WIFI_ONLY = booleanPreferencesKey("update_check_wifi_only")
+        val LAST_UPDATE_CHECK_TIME = longPreferencesKey("last_update_check_time")
+        val LAST_NOTIFIED_UPDATE_TAG = stringPreferencesKey("last_notified_update_tag")
         fun defaultCurrencyCode(): String =
             runCatching { Currency.getInstance(Locale.getDefault()).currencyCode }.getOrNull() ?: "USD"
     }

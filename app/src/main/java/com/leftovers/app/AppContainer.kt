@@ -95,6 +95,7 @@ class AppContainer(private val context: Context) {
     val budgetAlerts = BudgetAlertManager(context, repository, settings)
     val assistant = AssistantSettings(context)
     val emailAccount = EmailAccount(context)
+    val updater = com.leftovers.app.updater.repository.AppUpdateRepository(context)
 
     /**
      * Wipes everything back to a fresh install: all data and photos, settings, the connected AI and email,
@@ -208,6 +209,14 @@ class AppContainer(private val context: Context) {
                 val enabled = settings.settings.first().creditCardRemindersEnabled
                 com.leftovers.app.util.AlarmScheduler.scheduleCreditCardReminder(context, enabled)
             }
+        }
+        // Reschedule automatic update checks whenever settings change
+        scope.launch {
+            settings.settings.map { it.autoUpdateChecks to it.updateCheckWifiOnly }
+                .distinctUntilChanged()
+                .collect { (enabled, wifiOnly) ->
+                    com.leftovers.app.updater.worker.AppUpdateCheckWorker.schedulePeriodicCheck(context, enabled, wifiOnly)
+                }
         }
     }
 

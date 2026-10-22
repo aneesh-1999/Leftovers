@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Only used when the user turns on bank SMS detection. -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <!-- Required to launch Android package installer when updating the app from GitHub releases. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <queries>

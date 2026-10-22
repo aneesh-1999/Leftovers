@@ -343,6 +343,7 @@ fun SettingsScreen(
     onOpenAccounts: () -> Unit,
     onOpenDeleted: () -> Unit,
     viewModel: SettingsViewModel = viewModel(factory = AppViewModelProvider.Factory),
+    updateViewModel: com.leftovers.app.updater.ui.AppUpdateViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
@@ -640,6 +641,11 @@ fun SettingsScreen(
                 }
             }
 
+            item { SectionHeader("App updates") }
+            item {
+                com.leftovers.app.updater.ui.AppUpdateSection(viewModel = updateViewModel)
+            }
+
             item {
                 Row(
                     Modifier
@@ -650,7 +656,7 @@ fun SettingsScreen(
                 ) {
                     Icon(Lucide.Lock, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Stored on both device & cloud · Leftovers 1.7.0", style = MaterialTheme.typography.bodySmall, color = c.textTertiary, textAlign = TextAlign.Center)
+                    Text("Stored on both device & cloud · Leftovers 1.7.1", style = MaterialTheme.typography.bodySmall, color = c.textTertiary, textAlign = TextAlign.Center)
                 }
             }
             item {

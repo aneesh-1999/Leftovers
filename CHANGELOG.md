@@ -18,6 +18,13 @@ All notable changes to Leftovers. Download any version from
 - Tab switching is back to the slide and fade from before, without the blank moment: a tab opened for the
   first time now shows its content straight away instead of an empty screen while it loads
 
+## 1.7.1
+
+- GitHub in-app updater: added App Updates section in Settings to check for new releases directly from GitHub (aneesh-1999/Leftovers)
+- Download & install updates: streaming APK download with live progress, cancellation support, SHA-256 integrity verification, and secure FileProvider package installation
+- Background update checks: optional automatic daily check via WorkManager with unmetered Wi-Fi constraints and notification deduplication
+- Release notes viewer: view full release notes and changelog before updating
+
 ## 1.7.0
 
 - Permanent cloud deletion: users can permanently erase their backup snapshots from Firebase Cloud Firestore and delete their cloud accounts with complete data isolation and privacy protection

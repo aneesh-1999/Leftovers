@@ -223,27 +223,33 @@ On Windows use `gradlew.bat`. If Gradle can't find the SDK, create `local.proper
    Both files are git-ignored.
 3. Run `./gradlew assembleRelease`. The APK is in `app/build/outputs/apk/release/`.
 
-### Publishing a GitHub release
+### Publishing a GitHub release & In-App Updater Workflow
 
-Pushing a tag such as `v1.2.0` runs the [release workflow](https://github.com/saisaharsh3/Leftovers/blob/main/.github/workflows/release.yml), which runs
-the tests, builds a signed APK and attaches it to a GitHub release. It needs these repository secrets
-(**Settings → Secrets and variables → Actions**):
+Leftovers features a built-in GitHub Releases updater in **Settings → App updates**. To publish updates that the app can detect, verify, and install seamlessly:
 
-| Secret | Value |
-| --- | --- |
-| `SIGNING_KEYSTORE_BASE64` | `base64 -w0 release.jks` (PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("release.jks"))`) |
-| `SIGNING_STORE_PASSWORD` | keystore password |
-| `SIGNING_KEY_ALIAS` | `leftovers` |
-| `SIGNING_KEY_PASSWORD` | key password |
-
-Bump `versionCode` and `versionName` in `app/build.gradle.kts`, rename `## Unreleased` in `CHANGELOG.md` to the
-version (e.g. `## 1.2.0`; the release page shows that section), and add a short
-`fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` for F-Droid. Then:
-
-```bash
-git tag v1.2.0
-git push origin v1.2.0
-```
+1. **Increment version**: Bump `versionCode` (e.g. `21`) and `versionName` (e.g. `"1.7.1"`) in `app/build.gradle.kts`.
+2. **Build and sign release APK**:
+   ```bash
+   ./gradlew assembleRelease
+   ```
+   *Important*: Always sign every release with the **same keystore** (`release.jks`). Android will reject updates signed by a different certificate.
+3. **Generate SHA-256 checksum**:
+   ```bash
+   shasum -a 256 app/build/outputs/apk/release/leftovers-1.7.1-release.apk > app/build/outputs/apk/release/leftovers-1.7.1-release.apk.sha256
+   ```
+4. **Publish GitHub Release**:
+   - Create a git tag such as `v1.7.1`:
+     ```bash
+     git tag v1.7.1
+     git push origin v1.7.1
+     ```
+   - Draft a stable GitHub release with tag `v1.7.1`.
+   - Attach the signed `.apk` and the `.sha256` checksum file.
+   - The release notes can also include the SHA-256 hash (e.g. `SHA-256: 4f7c...`).
+   - *Drafts and prereleases are safely ignored* by the updater until published.
+5. **Security & Data Safety**:
+   - The in-app updater validates official GitHub domains, verifies package identity (`com.leftovers.app`), checks the SHA-256 checksum, and delegates the final signature confirmation to Android Package Installer. Existing user transaction history and database records are preserved across updates.
+   - Never commit keystores, passwords, or personal credentials into git.
 
 ### Tech stack
 

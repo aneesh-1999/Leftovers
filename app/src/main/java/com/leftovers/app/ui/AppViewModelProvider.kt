@@ -80,6 +80,10 @@ object AppViewModelProvider {
             val c = container()
             com.leftovers.app.ui.screens.CloudBackupViewModel(c.authManager, c.cloudBackup, c.settings, c.backup)
         }
+        initializer {
+            val c = container()
+            com.leftovers.app.updater.ui.AppUpdateViewModel(app(), c.updater, c.settings)
+        }
     }
 }
 
