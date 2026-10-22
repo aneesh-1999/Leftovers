@@ -107,6 +107,10 @@ class FirebaseAuthManager(
 
             Log.d(TAG, "Starting Google Sign-In with serverClientId=$serverClientId")
 
+            if (serverClientId.isBlank()) {
+                return@withContext AuthResult.Error("Google Web Client ID is not configured. Please configure it in Cloud Settings.")
+            }
+
             val googleIdOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(false)
                 .setServerClientId(serverClientId)

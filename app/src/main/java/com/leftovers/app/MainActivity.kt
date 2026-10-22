@@ -121,8 +121,13 @@ class MainActivity : FragmentActivity() {
                             when {
                                 !s.onboarded -> WelcomeScreen(
                                     defaultCurrency = s.currencyCode,
-                                    onDone = { code, name, photo ->
-                                        scope.launch { container.settings.completeOnboarding(code, name, photo) }
+                                    onDone = { code, name, photo, enableCloud ->
+                                        scope.launch {
+                                            container.settings.completeOnboarding(code, name, photo)
+                                            if (enableCloud) {
+                                                container.settings.setCloudBackupEnabled(true)
+                                            }
+                                        }
                                     },
                                     onRestore = { uri, password, onNeedPassword, onResult ->
                                         scope.launch {

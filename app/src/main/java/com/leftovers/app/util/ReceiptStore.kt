@@ -111,6 +111,24 @@ object ReceiptStore {
         out.absolutePath
     }
 
+    /** Downloads an image from a URL (e.g. Google profile picture) and saves it to private storage; returns its path. */
+    suspend fun downloadUrlToLocal(context: Context, urlString: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = java.net.URL(urlString)
+            val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                instanceFollowRedirects = true
+            }
+            conn.inputStream.use { input ->
+                val bitmap = BitmapFactory.decodeStream(input) ?: return@runCatching null
+                val out = File(dir(context), "receipt-${UUID.randomUUID()}.jpg")
+                out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+                out.absolutePath
+            }
+        }.getOrNull()
+    }
+
     fun delete(path: String?) {
         if (path != null) runCatching { File(path).delete() }
     }

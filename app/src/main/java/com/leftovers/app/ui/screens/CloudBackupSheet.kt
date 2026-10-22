@@ -110,8 +110,9 @@ class CloudBackupViewModel(
 
     fun onUserSignedIn(
         isOnboarding: Boolean,
-        onNeedPassword: () -> Unit,
-        onGoToApp: () -> Unit,
+        onNeedPassword: () -> Unit = {},
+        onGoToApp: () -> Unit = {},
+        onNewUserReady: (CloudUser) -> Unit = {},
     ) {
         if (!isOnboarding) {
             refreshLatestBackup()
@@ -143,10 +144,11 @@ class CloudBackupViewModel(
                             )
                         }
                     } else {
-                        // No backup found - complete onboarding with Google name and enter app
-                        _statusMessage.value = "No prior backup found. Setting up your profile..."
-                        enterApp(onGoToApp)
+                        // No backup found - user is a new user!
+                        // Do NOT bypass onboarding. Notify caller so user completes profile and currency setup.
+                        _statusMessage.value = "Signed in! No prior backup found. Please complete your profile and currency setup."
                         _isBusy.value = false
+                        currentUser.value?.let { onNewUserReady(it) }
                     }
                 },
                 onFailure = { err ->
@@ -176,6 +178,7 @@ class CloudBackupViewModel(
         isOnboarding: Boolean = false,
         onNeedPassword: () -> Unit = {},
         onGoToApp: () -> Unit = {},
+        onNewUserReady: (CloudUser) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isBusy.value = true
@@ -184,7 +187,12 @@ class CloudBackupViewModel(
                 is AuthResult.Success -> {
                     _statusMessage.value = "Signed in as ${res.user.displayName ?: res.user.email}"
                     if (isOnboarding) {
-                        onUserSignedIn(isOnboarding = true, onNeedPassword = onNeedPassword, onGoToApp = onGoToApp)
+                        onUserSignedIn(
+                            isOnboarding = true,
+                            onNeedPassword = onNeedPassword,
+                            onGoToApp = onGoToApp,
+                            onNewUserReady = onNewUserReady,
+                        )
                     } else {
                         refreshLatestBackup()
                         _isBusy.value = false
@@ -207,6 +215,7 @@ class CloudBackupViewModel(
         isOnboarding: Boolean = false,
         onNeedPassword: () -> Unit = {},
         onGoToApp: () -> Unit = {},
+        onNewUserReady: (CloudUser) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isBusy.value = true
@@ -215,7 +224,12 @@ class CloudBackupViewModel(
                 is AuthResult.Success -> {
                     _statusMessage.value = "Signed in successfully"
                     if (isOnboarding) {
-                        onUserSignedIn(isOnboarding = true, onNeedPassword = onNeedPassword, onGoToApp = onGoToApp)
+                        onUserSignedIn(
+                            isOnboarding = true,
+                            onNeedPassword = onNeedPassword,
+                            onGoToApp = onGoToApp,
+                            onNewUserReady = onNewUserReady,
+                        )
                     } else {
                         refreshLatestBackup()
                         _isBusy.value = false
@@ -238,6 +252,7 @@ class CloudBackupViewModel(
         isOnboarding: Boolean = false,
         onNeedPassword: () -> Unit = {},
         onGoToApp: () -> Unit = {},
+        onNewUserReady: (CloudUser) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isBusy.value = true
@@ -246,7 +261,12 @@ class CloudBackupViewModel(
                 is AuthResult.Success -> {
                     _statusMessage.value = "Account created and signed in"
                     if (isOnboarding) {
-                        onUserSignedIn(isOnboarding = true, onNeedPassword = onNeedPassword, onGoToApp = onGoToApp)
+                        onUserSignedIn(
+                            isOnboarding = true,
+                            onNeedPassword = onNeedPassword,
+                            onGoToApp = onGoToApp,
+                            onNewUserReady = onNewUserReady,
+                        )
                     } else {
                         refreshLatestBackup()
                         _isBusy.value = false
@@ -368,6 +388,7 @@ class CloudBackupViewModel(
 fun CloudBackupSheet(
     onDismiss: () -> Unit,
     isOnboarding: Boolean = false,
+    onNewUserContinue: ((CloudUser) -> Unit)? = null,
     viewModel: CloudBackupViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val context = LocalContext.current
@@ -502,6 +523,10 @@ fun CloudBackupSheet(
                                 isOnboarding = isOnboarding || !s.onboarded,
                                 onNeedPassword = { showPasswordPromptDialog = true },
                                 onGoToApp = onDismiss,
+                                onNewUserReady = { newUser ->
+                                    onNewUserContinue?.invoke(newUser)
+                                    onDismiss()
+                                },
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -575,8 +600,9 @@ fun CloudBackupSheet(
                     }
                 }
 
-                // If currently in onboarding or not yet onboarded, show direct Go to App entry card
+                // If currently in onboarding or not yet onboarded, show appropriate action
                 if (!s.onboarded || isOnboarding) {
+                    val b = latestBackup
                     Glass(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -588,24 +614,58 @@ fun CloudBackupSheet(
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Text(
-                                    "Ready to Enter Leftovers",
+                                    if (b != null) "Cloud Backup Found" else "Connected to Google",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = c.textPrimary,
                                 )
                             }
                             Text(
-                                "You are signed in as ${currentUser.displayName ?: currentUser.email}. Tap 'Go to App' to start using Leftovers, or restore your previous cloud backup below.",
+                                if (b != null) {
+                                    val dt = Instant.ofEpochMilli(b.timestamp).atZone(ZoneId.systemDefault())
+                                    val formattedDate = dt.format(DateTimeFormatter.ofPattern("MMM d, yyyy 'at' h:mm a"))
+                                    "We found a cloud backup (${b.totalItems} entries) from $formattedDate. You can restore it now, or start fresh with a new profile."
+                                } else {
+                                    "You are signed in as ${currentUser.displayName ?: currentUser.email}. No prior backups were found. Tap below to set up your profile, photo, and currency!"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = c.textSecondary,
                             )
-                            PrimaryButton(
-                                text = "Go to App",
-                                onClick = {
-                                    viewModel.enterApp { onDismiss() }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                            if (b != null) {
+                                PrimaryButton(
+                                    text = if (b.isEncrypted) "Enter Password & Restore" else "Restore Cloud Backup",
+                                    onClick = {
+                                        if (b.isEncrypted) {
+                                            showPasswordPromptDialog = true
+                                        } else {
+                                            viewModel.restoreFromCloud(
+                                                onNeedPassword = { showPasswordPromptDialog = true },
+                                                onSuccess = { onDismiss() },
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    icon = Lucide.Download,
+                                )
+                                SecondaryButton(
+                                    text = "Start Fresh as New User",
+                                    onClick = {
+                                        onNewUserContinue?.invoke(currentUser)
+                                        onDismiss()
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } else {
+                                PrimaryButton(
+                                    text = "Continue to Profile & Currency Setup",
+                                    onClick = {
+                                        onNewUserContinue?.invoke(currentUser)
+                                        onDismiss()
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    icon = Lucide.ChevronRight,
+                                )
+                            }
                         }
                     }
                 }
@@ -863,6 +923,10 @@ fun CloudBackupSheet(
                                     isOnboarding = isOnboarding || !s.onboarded,
                                     onNeedPassword = { showPasswordPromptDialog = true },
                                     onGoToApp = onDismiss,
+                                    onNewUserReady = { newUser ->
+                                        onNewUserContinue?.invoke(newUser)
+                                        onDismiss()
+                                    },
                                 )
                             } else {
                                 viewModel.signInWithEmail(
@@ -871,6 +935,10 @@ fun CloudBackupSheet(
                                     isOnboarding = isOnboarding || !s.onboarded,
                                     onNeedPassword = { showPasswordPromptDialog = true },
                                     onGoToApp = onDismiss,
+                                    onNewUserReady = { newUser ->
+                                        onNewUserContinue?.invoke(newUser)
+                                        onDismiss()
+                                    },
                                 )
                             }
                         }

@@ -18,6 +18,14 @@ All notable changes to Leftovers. Download any version from
 - Tab switching is back to the slide and fade from before, without the blank moment: a tab opened for the
   first time now shows its content straight away instead of an empty screen while it loads
 
+## 1.7.3
+
+- Seamless onboarding & Google link: new users can enter their name, set/crop a profile photo, pick their currency (with popular quick-selection pills), and optionally link their Google account for cloud backup directly from onboarding
+- Fixed premature onboarding bypass: signing in with Google when no cloud backup exists no longer skips setup with defaults; pre-fills Google profile details and keeps currency selection active
+- Automatic Google profile avatar sync: downloads and caches Google profile photo to private storage for offline-first display
+- Cloud backup found detection: prompts user to restore existing cloud backup or start fresh with their Google account linked
+- CredentialManager resilience: added validation for Google Web Client ID to prevent empty client ID exceptions
+
 ## 1.7.2
 
 - GitHub API rate-limit resolution: implemented local 15-minute response caching and conditional HTTP requests (ETag / If-None-Match with HTTP 304 Not Modified handling)
