@@ -109,6 +109,8 @@ data class AppSettings(
     val updateCachedEtag: String = "",
     /** Epoch millis timestamp when the release cache was last saved or refreshed via HTTP 200/304. */
     val updateCacheTimestamp: Long = 0L,
+    /** Custom remittance and money transfer providers saved by the user. */
+    val customRemittanceProviders: Set<String> = emptySet(),
 )
 
 class SettingsRepository(context: Context) {
@@ -178,8 +180,13 @@ class SettingsRepository(context: Context) {
             updateCachedReleaseJson = p[UPDATE_CACHED_RELEASE_JSON].orEmpty(),
             updateCachedEtag = p[UPDATE_CACHED_ETAG].orEmpty(),
             updateCacheTimestamp = p[UPDATE_CACHE_TIMESTAMP] ?: 0L,
+            customRemittanceProviders = p[CUSTOM_REMITTANCE_PROVIDERS] ?: emptySet(),
         )
     }.sharedLive()
+
+    val customRemittanceProviders: Flow<List<String>> = store.data.map { p ->
+        p[CUSTOM_REMITTANCE_PROVIDERS]?.toList()?.sorted() ?: emptyList()
+    }
 
 
     /** Forgets every setting, as on a fresh install. */
@@ -417,7 +424,33 @@ class SettingsRepository(context: Context) {
         it[UPDATE_CACHE_TIMESTAMP] = timestamp
     }
 
+    suspend fun addCustomRemittanceProvider(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        store.edit { p ->
+            val current = p[CUSTOM_REMITTANCE_PROVIDERS] ?: emptySet()
+            p[CUSTOM_REMITTANCE_PROVIDERS] = current + trimmed
+        }
+    }
+
+    suspend fun updateCustomRemittanceProvider(oldName: String, newName: String) {
+        val trimmedNew = newName.trim()
+        if (trimmedNew.isEmpty()) return
+        store.edit { p ->
+            val current = p[CUSTOM_REMITTANCE_PROVIDERS] ?: emptySet()
+            p[CUSTOM_REMITTANCE_PROVIDERS] = (current - oldName) + trimmedNew
+        }
+    }
+
+    suspend fun deleteCustomRemittanceProvider(name: String) {
+        store.edit { p ->
+            val current = p[CUSTOM_REMITTANCE_PROVIDERS] ?: emptySet()
+            p[CUSTOM_REMITTANCE_PROVIDERS] = current - name
+        }
+    }
+
     private companion object {
+        val CUSTOM_REMITTANCE_PROVIDERS = stringSetPreferencesKey("custom_remittance_providers")
         val ONBOARDED = booleanPreferencesKey("onboarded")
         val CURRENCY = stringPreferencesKey("currency")
         val USER_NAME = stringPreferencesKey("user_name")

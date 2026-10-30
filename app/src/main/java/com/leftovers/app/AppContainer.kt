@@ -68,6 +68,8 @@ class AppContainer(private val context: Context) {
         database.remittanceStatusHistoryDao(),
         database.transactionDao(),
         database.categoryDao(),
+        settings,
+        database,
     )
     val investments = com.leftovers.app.data.investment.InvestmentRepository(
         database.investmentDao(),

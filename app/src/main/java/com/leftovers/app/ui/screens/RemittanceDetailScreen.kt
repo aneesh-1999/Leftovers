@@ -152,7 +152,7 @@ class RemittanceDetailViewModel(
     fun deleteRemittance(onDeleted: () -> Unit) {
         val rem = state.value.remittance ?: return
         viewModelScope.launch {
-            remittanceRepo.deleteRemittance(rem)
+            remittanceRepo.deleteRemittance(rem, deleteLinkedFinanceTx = true)
             onDeleted()
         }
     }

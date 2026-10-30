@@ -10,6 +10,19 @@ import com.leftovers.app.ui.components.pressable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.leftovers.app.data.LeaveEntry
+import com.leftovers.app.data.RosterRepository
+import com.leftovers.app.data.Shift
+import com.leftovers.app.data.ShiftStatus
+import com.leftovers.app.data.Workplace
+import kotlinx.coroutines.flow.flowOf
+import java.time.DayOfWeek
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.TemporalAdjusters
+import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -124,6 +137,9 @@ data class HomeUiState(
     val accounts: List<AccountWithBalance> = emptyList(),
     /** The account Home is showing, or null for all of them. */
     val selectedAccount: AccountWithBalance? = null,
+    val shifts: List<Shift> = emptyList(),
+    val leaves: List<LeaveEntry> = emptyList(),
+    val workplaces: Map<Long, Workplace> = emptyMap(),
 )
 
 class HomeViewModel(
@@ -132,14 +148,24 @@ class HomeViewModel(
     planning: PlanningRepository,
     private val sms: SmsRepository,
     accounts: AccountRepository,
+    roster: RosterRepository? = null,
 ) : ViewModel() {
+    private val rosterFlow = if (roster != null) {
+        combine(roster.shifts, roster.leaves, roster.workplaces) { shifts, leaves, workplaces ->
+            Triple(shifts, leaves, workplaces.associateBy { it.id })
+        }
+    } else {
+        flowOf(Triple(emptyList<Shift>(), emptyList<LeaveEntry>(), emptyMap<Long, Workplace>()))
+    }
+
     val state: StateFlow<HomeUiState> = combine(
         combine(repository.allTransactions, accounts.accounts, ::Pair),
         settings.settings,
         planning.recurring,
         planning.goals,
-        sms.suggestions,
-    ) { (all, accountList), s, recurring, goals, suggestions ->
+        combine(sms.suggestions, rosterFlow, ::Pair),
+    ) { (all, accountList), s, recurring, goals, (suggestions, rosterData) ->
+        val (shifts, leaves, workplaces) = rosterData
         val month = YearMonth.now()
         val todayDate = LocalDate.now()
         val defaultAccountIds = accountList.filter { it.currency == null || it.currency.equals(s.currencyCode, ignoreCase = true) }.map { it.id }.toSet()
@@ -182,6 +208,9 @@ class HomeViewModel(
             forecast = if (selected == null) forecastMonthEnd(defaultBalance, defaultCurrencyAll, recurring, todayDate) else null,
             accounts = accountList,
             selectedAccount = selected,
+            shifts = shifts,
+            leaves = leaves,
+            workplaces = workplaces,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
@@ -214,6 +243,7 @@ fun HomeScreen(
     onOpenRecap: (YearMonth) -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenAssistant: () -> Unit,
+    onOpenRoster: (dateEpochDay: Long?, shiftId: Long?) -> Unit = { _, _ -> },
     viewModel: HomeViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -332,6 +362,18 @@ fun HomeScreen(
                             Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
                         }
                     }
+                }
+            }
+
+            if (state.shifts.isNotEmpty() || state.workplaces.isNotEmpty()) {
+                item {
+                    DashboardWeeklyRosterCard(
+                        shifts = state.shifts,
+                        leaves = state.leaves,
+                        workplaces = state.workplaces,
+                        onOpenRoster = onOpenRoster,
+                        modifier = Modifier.padding(top = 12.dp).appear(2),
+                    )
                 }
             }
 
@@ -617,6 +659,298 @@ private fun AccountSwitch(accounts: List<AccountWithBalance>, selected: AccountW
                         onSelect(a.id)
                         open = false
                     },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardWeeklyRosterCard(
+    shifts: List<Shift>,
+    leaves: List<LeaveEntry>,
+    workplaces: Map<Long, Workplace>,
+    onOpenRoster: (dateEpochDay: Long?, shiftId: Long?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAppColors.current
+    val today = remember { LocalDate.now() }
+    var weekOffset by rememberSaveable { mutableStateOf(0) }
+    var selectedDate by rememberSaveable { mutableStateOf(today) }
+
+    val baseDate = remember(weekOffset) { today.plusWeeks(weekOffset.toLong()) }
+    val startOfWeek = remember(baseDate) { baseDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)) }
+    val endOfWeek = remember(startOfWeek) { startOfWeek.plusDays(6) }
+
+    val activeDate = remember(selectedDate, startOfWeek, endOfWeek, weekOffset) {
+        if (selectedDate.isBefore(startOfWeek) || selectedDate.isAfter(endOfWeek)) {
+            if (weekOffset == 0) today else startOfWeek
+        } else {
+            selectedDate
+        }
+    }
+
+    val monthDayFormat = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
+    val fullDayFormat = remember { DateTimeFormatter.ofPattern("EEEE, MMM d", Locale.US) }
+    val timeFormat = remember { DateTimeFormatter.ofPattern("HH:mm", Locale.US) }
+
+    val weekShifts = remember(shifts, startOfWeek, endOfWeek) {
+        shifts.filter { s ->
+            val d = s.startDate
+            !d.isBefore(startOfWeek) && !d.isAfter(endOfWeek) && s.status != ShiftStatus.CANCELLED
+        }
+    }
+
+    val totalMinutes = remember(weekShifts) { weekShifts.sumOf { it.netWorkingMinutes } }
+    val totalHours = totalMinutes / 60
+    val totalMins = totalMinutes % 60
+    val totalHoursStr = if (totalMins > 0) "${totalHours}h ${totalMins}m" else "${totalHours}h"
+    val rangeText = "${startOfWeek.format(monthDayFormat)} – ${endOfWeek.format(monthDayFormat)}"
+
+    val selectedDayShifts = remember(weekShifts, activeDate) {
+        weekShifts.filter { it.startDate == activeDate }
+    }
+    val selectedDayLeaves = remember(leaves, activeDate) {
+        leaves.filter { it.containsDate(activeDate) }
+    }
+    val primaryShift = selectedDayShifts.firstOrNull()
+
+    Glass(modifier = modifier.fillMaxWidth(), strong = true) {
+        Column(Modifier.padding(16.dp)) {
+            // Header Row: Title & Range on left, Navigation on right
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .pressable({ onOpenRoster(activeDate.toEpochDay(), primaryShift?.id) }),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "WEEK ROSTER",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = c.accent,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Icon(
+                            Lucide.ArrowUpRight,
+                            contentDescription = null,
+                            tint = c.accent,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
+                    Text(
+                        rangeText,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = c.textPrimary,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (weekOffset != 0) {
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(c.glassStrong)
+                                .pressable({
+                                    weekOffset = 0
+                                    selectedDate = today
+                                })
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Text("Today", style = MaterialTheme.typography.labelSmall, color = c.accent)
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
+
+                    RoundButton(
+                        icon = Lucide.ChevronLeft,
+                        contentDescription = "Previous week",
+                        onClick = {
+                            weekOffset -= 1
+                            selectedDate = startOfWeek.minusWeeks(1)
+                        },
+                        size = 32.dp,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    RoundButton(
+                        icon = Lucide.ChevronRight,
+                        contentDescription = "Next week",
+                        onClick = {
+                            weekOffset += 1
+                            selectedDate = startOfWeek.plusWeeks(1)
+                        },
+                        size = 32.dp,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(c.glassStrong)
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            "${weekShifts.size} shifts · $totalHoursStr",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = c.accent,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // 7 Days Strip (Mo, Tu, We, Th, Fr, Sa, Su)
+            val dayNames = listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                (0L..6L).forEach { offset ->
+                    val dayDate = startOfWeek.plusDays(offset)
+                    val isToday = dayDate == today
+                    val isSelected = dayDate == activeDate
+                    val dayShifts = weekShifts.filter { it.startDate == dayDate }
+                    val dayLeaves = leaves.filter { it.containsDate(dayDate) }
+                    val pShift = dayShifts.firstOrNull()
+                    val isDone = dayShifts.any { it.status == ShiftStatus.COMPLETED }
+
+                    val shiftTag = when {
+                        pShift != null -> {
+                            val h = pShift.netWorkingMinutes / 60.0
+                            if (h % 1.0 == 0.0) "${h.toInt()}h" else String.format(Locale.US, "%.1fh", h)
+                        }
+                        dayLeaves.isNotEmpty() -> "Off"
+                        else -> "—"
+                    }
+
+                    val bgColor: Color = when {
+                        isToday -> c.accent
+                        isSelected -> c.glassStrong
+                        dayShifts.isNotEmpty() -> c.glass
+                        else -> Color.Transparent
+                    }
+
+                    val textColor = when {
+                        isToday -> Color(0xFF151A04)
+                        isSelected -> c.accent
+                        dayShifts.isNotEmpty() -> c.textPrimary
+                        else -> c.textTertiary
+                    }
+
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(bgColor)
+                            .pressable({
+                                if (isSelected) {
+                                    onOpenRoster(dayDate.toEpochDay(), pShift?.id)
+                                } else {
+                                    selectedDate = dayDate
+                                }
+                            })
+                            .padding(vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            dayNames.getOrElse(offset.toInt()) { dayDate.dayOfWeek.name.take(2) },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = textColor,
+                            fontWeight = if (isToday || isSelected) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            dayDate.dayOfMonth.toString(),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = textColor,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            shiftTag,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when {
+                                isToday -> Color(0xFF151A04)
+                                isDone -> c.accent
+                                isSelected -> c.accent
+                                dayShifts.isNotEmpty() -> c.textSecondary
+                                else -> c.textTertiary
+                            },
+                            fontWeight = if (pShift != null) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // Bottom Selected Day Schedule Banner
+            val statusSuffix = when {
+                primaryShift == null -> ""
+                primaryShift.status == ShiftStatus.COMPLETED -> " · DONE ✓"
+                else -> " · SCHEDULED"
+            }
+            val headerText = when {
+                activeDate == today -> "TODAY · ${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
+                activeDate == today.plusDays(1) -> "TOMORROW · ${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
+                activeDate == today.minusDays(1) -> "YESTERDAY · ${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
+                else -> "${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
+            }
+
+            val subtitleText = when {
+                primaryShift != null -> {
+                    val start = Instant.ofEpochMilli(primaryShift.startEpochMillis).atZone(ZoneId.systemDefault()).toLocalTime().format(timeFormat)
+                    val end = Instant.ofEpochMilli(primaryShift.endEpochMillis).atZone(ZoneId.systemDefault()).toLocalTime().format(timeFormat)
+                    val wpName = primaryShift.workplace ?: primaryShift.workplaceId?.let { workplaces[it]?.name }
+                    val wpLabel = if (!wpName.isNullOrBlank()) " · $wpName" else ""
+                    val shiftHours = primaryShift.netWorkingMinutes / 60.0
+                    val hoursStr = if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
+                    "$start – $end$wpLabel ($hoursStr)"
+                }
+                selectedDayLeaves.isNotEmpty() -> {
+                    val l = selectedDayLeaves.first()
+                    "${l.type.label} ${l.type.emoji}"
+                }
+                else -> "Day Off / No shift scheduled"
+            }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(c.glassStrong)
+                    .pressable({ onOpenRoster(activeDate.toEpochDay(), primaryShift?.id) })
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        headerText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = c.accent,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        subtitleText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textPrimary,
+                        maxLines = 1,
+                    )
+                }
+                Icon(
+                    Lucide.ChevronRight,
+                    contentDescription = "View shift details",
+                    tint = c.textTertiary,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }

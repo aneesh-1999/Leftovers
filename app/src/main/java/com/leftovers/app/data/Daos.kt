@@ -40,7 +40,7 @@ interface TransactionDao {
     suspend fun findByAmountAndDay(amountMinor: Long, epochDay: Long, type: TxType): Transaction?
 
     @Upsert
-    suspend fun upsert(transaction: Transaction)
+    suspend fun upsert(transaction: Transaction): Long
 
     @Delete
     suspend fun delete(transaction: Transaction)

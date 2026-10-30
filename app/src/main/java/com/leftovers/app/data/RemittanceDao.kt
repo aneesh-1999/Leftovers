@@ -88,6 +88,12 @@ interface RemittanceDao {
 
     @Query("SELECT DISTINCT provider FROM remittances WHERE provider <> '' ORDER BY provider ASC")
     fun observeProviders(): Flow<List<String>>
+
+    @Query("SELECT COUNT(*) FROM remittances WHERE provider = :provider")
+    suspend fun countWithProvider(provider: String): Int
+
+    @Query("UPDATE remittances SET provider = :newProvider WHERE provider = :oldProvider")
+    suspend fun updateProvider(oldProvider: String, newProvider: String): Int
 }
 
 @Dao

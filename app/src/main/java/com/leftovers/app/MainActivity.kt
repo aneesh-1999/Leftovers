@@ -53,6 +53,8 @@ class MainActivity : FragmentActivity() {
     companion object {
         const val EXTRA_OPEN_ADD = "open_add"
         const val EXTRA_OPEN_ROSTER = "open_roster"
+        const val EXTRA_ROSTER_DATE = "roster_date"
+        const val EXTRA_OPEN_SHIFT_ID = "open_shift_id"
         const val EXTRA_OPEN_DEBTS = "open_debts"
         const val EXTRA_OPEN_CREDIT_CARDS = "open_credit_cards"
         private const val RELOCK_AFTER_MS = 30_000L
@@ -61,6 +63,8 @@ class MainActivity : FragmentActivity() {
     /** Set when the widget or reminder asks to jump straight to "add". */
     private var openAddRequest by mutableStateOf(false)
     private var openRosterRequest by mutableStateOf(false)
+    private var openRosterDate by mutableStateOf<Long?>(null)
+    private var openRosterShiftId by mutableStateOf<Long?>(null)
     private var openDebtsRequest by mutableStateOf(false)
     private var openCreditCardsRequest by mutableStateOf(false)
     private var locked by mutableStateOf(true)
@@ -74,6 +78,10 @@ class MainActivity : FragmentActivity() {
         val container = (application as LeftoversApp).container
         openAddRequest = intent.getBooleanExtra(EXTRA_OPEN_ADD, false)
         openRosterRequest = intent.getBooleanExtra(EXTRA_OPEN_ROSTER, false)
+        val rDate = intent.getLongExtra(EXTRA_ROSTER_DATE, -1L)
+        if (rDate > 0) openRosterDate = rDate
+        val sId = intent.getLongExtra(EXTRA_OPEN_SHIFT_ID, -1L)
+        if (sId > 0) openRosterShiftId = sId
         openDebtsRequest = intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)
         openCreditCardsRequest = intent.getBooleanExtra(EXTRA_OPEN_CREDIT_CARDS, false) || intent.getBooleanExtra("extra_open_credit_cards", false)
         lifecycleScope.launch {
@@ -149,10 +157,16 @@ class MainActivity : FragmentActivity() {
                                 !showLock -> LeftoversNavHost(
                                     openAdd = openAddRequest,
                                     openRoster = openRosterRequest,
+                                    openRosterDate = openRosterDate,
+                                    openRosterShiftId = openRosterShiftId,
                                     openDebts = openDebtsRequest,
                                     openCreditCards = openCreditCardsRequest,
                                     onOpenAddHandled = { openAddRequest = false },
-                                    onOpenRosterHandled = { openRosterRequest = false },
+                                    onOpenRosterHandled = {
+                                        openRosterRequest = false
+                                        openRosterDate = null
+                                        openRosterShiftId = null
+                                    },
                                     onOpenDebtsHandled = { openDebtsRequest = false },
                                     onOpenCreditCardsHandled = { openCreditCardsRequest = false },
                                 )
@@ -183,7 +197,13 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_ADD, false)) openAddRequest = true
-        if (intent.getBooleanExtra(EXTRA_OPEN_ROSTER, false)) openRosterRequest = true
+        if (intent.getBooleanExtra(EXTRA_OPEN_ROSTER, false)) {
+            openRosterRequest = true
+            val rDate = intent.getLongExtra(EXTRA_ROSTER_DATE, -1L)
+            if (rDate > 0) openRosterDate = rDate
+            val sId = intent.getLongExtra(EXTRA_OPEN_SHIFT_ID, -1L)
+            if (sId > 0) openRosterShiftId = sId
+        }
         if (intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)) openDebtsRequest = true
         if (intent.getBooleanExtra(EXTRA_OPEN_CREDIT_CARDS, false) || intent.getBooleanExtra("extra_open_credit_cards", false)) openCreditCardsRequest = true
     }

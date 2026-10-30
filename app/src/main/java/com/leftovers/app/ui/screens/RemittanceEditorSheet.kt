@@ -24,13 +24,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -66,6 +69,7 @@ import com.leftovers.app.data.Remittance
 import com.leftovers.app.data.RemittanceCalculations
 import com.leftovers.app.data.RemittanceRepository
 import com.leftovers.app.data.RemittanceStatus
+import com.leftovers.app.data.StandardRemittanceProviders
 import com.leftovers.app.ui.AppViewModelProvider
 import com.leftovers.app.ui.components.CategoryIcon
 import com.leftovers.app.ui.components.Chip
@@ -92,11 +96,6 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-val StandardRemittanceProviders = listOf(
-    "Revolut", "Wise", "IME Pay", "Prabhu Remit", "Remitly",
-    "Western Union", "Bank Transfer", "MoneyGram", "EBL Remit", "Himal Remit",
-)
-
 val CommonRelationships = listOf("Mother", "Father", "Sister", "Brother", "Spouse", "Self / My Nepal Account", "Friend", "Other")
 
 class RemittanceEditorViewModel(
@@ -109,10 +108,24 @@ class RemittanceEditorViewModel(
     val accounts: StateFlow<List<AccountWithBalance>> = accountRepository.accounts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val providers: StateFlow<List<String>> = repository.providers
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StandardRemittanceProviders)
+
+    val customProviders: StateFlow<List<String>> = repository.customProviders
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     suspend fun saveRecipient(recipient: Recipient): Long = repository.saveRecipient(recipient)
 
     suspend fun saveRemittance(remittance: Remittance, createFinanceTx: Boolean): Long =
         repository.saveRemittance(remittance, createFinanceTx = createFinanceTx)
+
+    suspend fun addCustomProvider(name: String) = repository.addCustomProvider(name)
+
+    suspend fun updateCustomProvider(oldName: String, newName: String) = repository.updateCustomProvider(oldName, newName)
+
+    suspend fun deleteCustomProvider(name: String): Boolean = repository.deleteCustomProvider(name)
+
+    suspend fun countRemittancesForProvider(name: String): Int = repository.countRemittancesForProvider(name)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -128,12 +141,21 @@ fun RemittanceEditorSheet(
     val c = LocalAppColors.current
     val recipients by viewModel.recipients.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
+    val allProviders by viewModel.providers.collectAsStateWithLifecycle()
+    val customProviders by viewModel.customProviders.collectAsStateWithLifecycle()
 
     var transferDate by rememberSaveable { mutableStateOf(initialRemittance?.transferDate ?: LocalDate.now()) }
     var showDatePicker by rememberSaveable { mutableStateOf(false) }
 
-    var provider by rememberSaveable { mutableStateOf(initialRemittance?.provider ?: "Revolut") }
+    var provider by rememberSaveable { mutableStateOf(initialRemittance?.provider ?: "TapTap Send") }
     var showProviderPicker by rememberSaveable { mutableStateOf(false) }
+
+    var showAddProviderDialog by rememberSaveable { mutableStateOf(false) }
+    var newProviderName by rememberSaveable { mutableStateOf("") }
+    var editingCustomProvider by rememberSaveable { mutableStateOf<String?>(null) }
+    var editedProviderName by rememberSaveable { mutableStateOf("") }
+    var deletingCustomProvider by rememberSaveable { mutableStateOf<String?>(null) }
+    var deletingProviderInUseCount by rememberSaveable { mutableStateOf(0) }
 
     var sendAmountText by rememberSaveable {
         mutableStateOf(if (initialRemittance != null && initialRemittance.sendAmountMinor > 0) AmountInput.fromMinor(initialRemittance.sendAmountMinor) else "")
@@ -286,6 +308,79 @@ fun RemittanceEditorSheet(
                             },
                         )
                     }
+
+                    if (customProviders.isNotEmpty()) {
+                        RowDivider()
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "Custom Providers",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = c.textTertiary,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            },
+                            enabled = false,
+                            onClick = {},
+                        )
+                        customProviders.forEach { cp ->
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(cp, color = c.textPrimary, modifier = Modifier.weight(1f))
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            IconButton(
+                                                onClick = {
+                                                    editingCustomProvider = cp
+                                                    editedProviderName = cp
+                                                    showProviderPicker = false
+                                                },
+                                                modifier = Modifier.size(28.dp),
+                                            ) {
+                                                Icon(Lucide.Pencil, contentDescription = "Edit", tint = c.textSecondary, modifier = Modifier.size(15.dp))
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        deletingProviderInUseCount = viewModel.countRemittancesForProvider(cp)
+                                                        deletingCustomProvider = cp
+                                                        showProviderPicker = false
+                                                    }
+                                                },
+                                                modifier = Modifier.size(28.dp),
+                                            ) {
+                                                Icon(Lucide.Trash2, contentDescription = "Delete", tint = c.negative, modifier = Modifier.size(15.dp))
+                                            }
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    provider = cp
+                                    showProviderPicker = false
+                                },
+                            )
+                        }
+                    }
+
+                    RowDivider()
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Lucide.Plus, contentDescription = null, tint = c.accent, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Add Custom Provider", color = c.accent, fontWeight = FontWeight.SemiBold)
+                            }
+                        },
+                        onClick = {
+                            newProviderName = ""
+                            showAddProviderDialog = true
+                            showProviderPicker = false
+                        },
+                    )
                 }
             }
 
@@ -486,7 +581,7 @@ fun RemittanceEditorSheet(
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text("Sending Account (Optional)", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
-                        Text(acc?.name ?: "None selected", style = MaterialTheme.typography.bodyLarge, color = c.textPrimary)
+                        Text(acc?.let { "${it.name} (${Money(it.currency ?: "EUR").format(it.balanceMinor)})" } ?: "None selected", style = MaterialTheme.typography.bodyLarge, color = c.textPrimary)
                     }
                     var openAccPicker by remember { mutableStateOf(false) }
                     Box {
@@ -500,7 +595,7 @@ fun RemittanceEditorSheet(
                             DropdownMenuItem(text = { Text("None (Don't link account)") }, onClick = { selectedAccountId = null; openAccPicker = false })
                             accounts.forEach { a ->
                                 DropdownMenuItem(
-                                    text = { Text("${a.name} (${a.currency ?: "EUR"})") },
+                                    text = { Text("${a.name} (${Money(a.currency ?: "EUR").format(a.balanceMinor)})") },
                                     onClick = { selectedAccountId = a.id; openAccPicker = false },
                                 )
                             }
@@ -508,17 +603,26 @@ fun RemittanceEditorSheet(
                     }
                 }
 
-                if (selectedAccountId != null && initialRemittance == null) {
+                if (selectedAccountId != null) {
+                    val totalCost = RemittanceCalculations.calculateTotalCostMinor(sendAmountMinor, feeAmountMinor, sendCurrency, feeCurrency, feeMethod)
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(c.glassStrong)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
+                        Icon(Lucide.CircleCheck, contentDescription = null, tint = c.accent, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Log as expense transaction", style = MaterialTheme.typography.bodyMedium, color = c.textPrimary)
-                            Text("Deducts total cost (${Money(sendCurrency).format(RemittanceCalculations.calculateTotalCostMinor(sendAmountMinor, feeAmountMinor, sendCurrency, feeCurrency, feeMethod))}) from this account", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                            Text("Automatic Balance Deduction", style = MaterialTheme.typography.labelMedium, color = c.textPrimary, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Deducts ${Money(sendCurrency).format(totalCost)} from ${acc?.name ?: "account"}. Account balance & transaction history stay synchronised.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.textSecondary,
+                            )
                         }
-                        Switch(checked = createFinanceTx, onCheckedChange = { createFinanceTx = it })
                     }
                 }
             }
@@ -616,7 +720,7 @@ fun RemittanceEditorSheet(
                     )
 
                     scope.launch {
-                        viewModel.saveRemittance(toSave, createFinanceTx = createFinanceTx)
+                        viewModel.saveRemittance(toSave, createFinanceTx = (selectedAccountId != null))
                         onSaved(if (initialRemittance == null) "Remittance recorded" else "Remittance updated")
                         onDismiss()
                     }
@@ -665,6 +769,141 @@ fun RemittanceEditorSheet(
                 }
             },
         )
+    }
+
+    // Dialog: Add Custom Provider
+    if (showAddProviderDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddProviderDialog = false },
+            title = { Text("Add Custom Provider", color = c.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "Enter the name of your money transfer provider:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textSecondary,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = newProviderName,
+                        onValueChange = { newProviderName = it },
+                        placeholder = { Text("e.g. City Express, IME") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val name = newProviderName.trim()
+                        if (name.isNotBlank()) {
+                            scope.launch {
+                                viewModel.addCustomProvider(name)
+                                provider = name
+                                showAddProviderDialog = false
+                            }
+                        }
+                    },
+                    enabled = newProviderName.isNotBlank(),
+                ) {
+                    Text("Save Provider", color = c.accent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddProviderDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Dialog: Edit Custom Provider
+    editingCustomProvider?.let { oldName ->
+        AlertDialog(
+            onDismissRequest = { editingCustomProvider = null },
+            title = { Text("Edit Custom Provider", color = c.textPrimary) },
+            text = {
+                Column {
+                    Text("Update provider name:", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = editedProviderName,
+                        onValueChange = { editedProviderName = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val newName = editedProviderName.trim()
+                        if (newName.isNotBlank()) {
+                            scope.launch {
+                                viewModel.updateCustomProvider(oldName, newName)
+                                if (provider == oldName) provider = newName
+                                editingCustomProvider = null
+                            }
+                        }
+                    },
+                    enabled = editedProviderName.isNotBlank(),
+                ) {
+                    Text("Update", color = c.accent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingCustomProvider = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Dialog: Delete Custom Provider with Reference Protection
+    deletingCustomProvider?.let { name ->
+        if (deletingProviderInUseCount > 0) {
+            AlertDialog(
+                onDismissRequest = { deletingCustomProvider = null },
+                title = { Text("Cannot Delete Provider", color = c.warning) },
+                text = {
+                    Text(
+                        "'$name' cannot be deleted because it is currently used by $deletingProviderInUseCount existing remittance transaction(s). To keep financial records consistent, please reassign those remittances to another provider first.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = c.textPrimary,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { deletingCustomProvider = null }) {
+                        Text("OK", color = c.accent)
+                    }
+                },
+            )
+        } else {
+            AlertDialog(
+                onDismissRequest = { deletingCustomProvider = null },
+                title = { Text("Delete Custom Provider", color = c.textPrimary) },
+                text = {
+                    Text(
+                        "Are you sure you want to delete '$name'? It will no longer appear in future provider choices.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = c.textSecondary,
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                viewModel.deleteCustomProvider(name)
+                                if (provider == name) provider = "TapTap Send"
+                                deletingCustomProvider = null
+                            }
+                        },
+                    ) {
+                        Text("Delete", color = c.negative)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deletingCustomProvider = null }) { Text("Cancel") }
+                },
+            )
+        }
     }
 }
 

@@ -79,6 +79,7 @@ private data class DayWidgetInfo(
     val shiftTag: String,
     val isCompleted: Boolean,
     val isLeave: Boolean,
+    val shiftId: Long? = null,
 )
 
 private data class WeekRosterState(
@@ -91,6 +92,7 @@ private data class WeekRosterState(
     val selectedDaySubtitle: String,
     val selectedDayShiftId: Long?,
     val selectedDayShiftIsCompleted: Boolean,
+    val selectedEpochDay: Long,
     val days: List<DayWidgetInfo>,
 )
 
@@ -230,6 +232,7 @@ class WeekRosterWidget : GlanceAppWidget() {
                 shiftTag = shiftTag,
                 isCompleted = isCompleted,
                 isLeave = isLeave,
+                shiftId = primaryShift?.id,
             )
         }
 
@@ -282,6 +285,7 @@ class WeekRosterWidget : GlanceAppWidget() {
             selectedDaySubtitle = selectedDaySubtitle,
             selectedDayShiftId = shiftId,
             selectedDayShiftIsCompleted = isCompleted,
+            selectedEpochDay = selectedDate.toEpochDay(),
             days = dayList,
         )
     }
@@ -292,9 +296,14 @@ class WeekRosterWidget : GlanceAppWidget() {
         val accent = Color(0xFFCDF46F)
         val accentDark = ColorProvider(Color(0xFF151A04))
 
-        val openRosterIntent = Intent(context, MainActivity::class.java)
-            .putExtra(MainActivity.EXTRA_OPEN_ROSTER, true)
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val openRosterIntent = Intent(context, MainActivity::class.java).apply {
+            putExtra(MainActivity.EXTRA_OPEN_ROSTER, true)
+            putExtra(MainActivity.EXTRA_ROSTER_DATE, state.selectedEpochDay)
+            if (state.selectedDayShiftId != null) {
+                putExtra(MainActivity.EXTRA_OPEN_SHIFT_ID, state.selectedDayShiftId)
+            }
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
 
         Column(
             GlanceModifier
@@ -424,15 +433,28 @@ class WeekRosterWidget : GlanceAppWidget() {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 state.days.forEach { day ->
+                    val dayIntent = Intent(context, MainActivity::class.java).apply {
+                        putExtra(MainActivity.EXTRA_OPEN_ROSTER, true)
+                        putExtra(MainActivity.EXTRA_ROSTER_DATE, day.date.toEpochDay())
+                        if (day.shiftId != null) {
+                            putExtra(MainActivity.EXTRA_OPEN_SHIFT_ID, day.shiftId)
+                        }
+                        addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    val clickModifier = if (day.isSelected) {
+                        GlanceModifier.clickable(actionStartActivity(dayIntent))
+                    } else {
+                        GlanceModifier.clickable(
+                            actionRunCallback<SelectDayAction>(
+                                actionParametersOf(SelectDayAction.KeyEpochDay to day.date.toEpochDay()),
+                            ),
+                        )
+                    }
                     DayPill(
                         modifier = GlanceModifier
                             .defaultWeight()
                             .padding(horizontal = 1.dp)
-                            .clickable(
-                                actionRunCallback<SelectDayAction>(
-                                    actionParametersOf(SelectDayAction.KeyEpochDay to day.date.toEpochDay()),
-                                ),
-                            ),
+                            .then(clickModifier),
                         day = day,
                     )
                 }
@@ -587,6 +609,7 @@ class SelectDayAction : ActionCallback {
         updateAppWidgetState(context, PreferencesGlanceStateDefinition, glanceId) { prefs ->
             prefs.toMutablePreferences().apply {
                 this[KEY_SELECTED_DAY] = epochDay
+                this[KEY_REVISION] = System.currentTimeMillis()
             }
         }
         WeekRosterWidget().update(context, glanceId)
@@ -606,6 +629,7 @@ class ShiftWeekOffsetAction : ActionCallback {
             prefs.toMutablePreferences().apply {
                 this[KEY_WEEK_OFFSET] = current + delta
                 this.remove(KEY_SELECTED_DAY)
+                this[KEY_REVISION] = System.currentTimeMillis()
             }
         }
         WeekRosterWidget().update(context, glanceId)
@@ -623,6 +647,7 @@ class ResetToTodayAction : ActionCallback {
             prefs.toMutablePreferences().apply {
                 this[KEY_WEEK_OFFSET] = 0
                 this[KEY_SELECTED_DAY] = LocalDate.now().toEpochDay()
+                this[KEY_REVISION] = System.currentTimeMillis()
             }
         }
         WeekRosterWidget().update(context, glanceId)

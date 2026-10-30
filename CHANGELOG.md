@@ -18,6 +18,13 @@ All notable changes to Leftovers. Download any version from
 - Tab switching is back to the slide and fade from before, without the blank moment: a tab opened for the
   first time now shows its content straight away instead of an empty screen while it loads
 
+## 1.7.4
+
+- Remittance linked account deduction: linking a financial account to a remittance automatically deducts the principal and fee from the account's balance and records it in transaction history
+- Automatic balance reversal & sync: cancelling, refunding, or deleting a remittance restores the account balance immediately
+- Custom remittance & transfer providers: added TapTap Send as a built-in provider, plus the ability to add, rename, and safely delete custom remittance providers
+- Weekly Roster widget restoration: fixed home-screen widget week navigation and day selection reactivity, restored interactive weekly roster card on the dashboard, and enabled day clicks to jump directly to shift details
+
 ## 1.7.3
 
 - Seamless onboarding & Google link: new users can enter their name, set/crop a profile photo, pick their currency (with popular quick-selection pills), and optionally link their Google account for cloud backup directly from onboarding

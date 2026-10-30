@@ -35,6 +35,7 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -242,6 +243,8 @@ private val dayHeaderFormat = DateTimeFormatter.ofPattern("EEEE, d MMMM")
 @Composable
 fun RosterScreen(
     onBack: () -> Unit,
+    initialDateEpochDay: Long? = null,
+    initialShiftId: Long? = null,
     viewModel: RosterViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val shifts by viewModel.shifts.collectAsStateWithLifecycle()
@@ -256,14 +259,39 @@ fun RosterScreen(
     val scope = rememberCoroutineScope()
 
     var activeTab by rememberSaveable { mutableStateOf(RosterTab.CALENDAR) }
-    var selectedDate by rememberSaveable { mutableStateOf(LocalDate.now()) }
-    var currentMonth by rememberSaveable { mutableStateOf(YearMonth.now()) }
+    var selectedDate by rememberSaveable {
+        mutableStateOf(
+            if (initialDateEpochDay != null && initialDateEpochDay > 0) LocalDate.ofEpochDay(initialDateEpochDay) else LocalDate.now(),
+        )
+    }
+    var currentMonth by rememberSaveable { mutableStateOf(YearMonth.from(selectedDate)) }
     var viewMode by rememberSaveable { mutableStateOf(RosterViewMode.MONTH) }
     var selectedWorkplaceId by rememberSaveable { mutableStateOf<Long?>(null) }
 
     var editingShift by remember { mutableStateOf<Shift?>(null) }
     var viewingShift by remember { mutableStateOf<Shift?>(null) }
     var deletingShift by remember { mutableStateOf<Shift?>(null) }
+
+    LaunchedEffect(initialDateEpochDay) {
+        if (initialDateEpochDay != null && initialDateEpochDay > 0) {
+            val date = LocalDate.ofEpochDay(initialDateEpochDay)
+            selectedDate = date
+            currentMonth = YearMonth.from(date)
+        }
+    }
+
+    LaunchedEffect(initialShiftId, shifts) {
+        if (initialShiftId != null && initialShiftId > 0 && viewingShift == null) {
+            val target = shifts.firstOrNull { it.id == initialShiftId }
+            if (target != null) {
+                viewingShift = target
+                val zone = ZoneId.systemDefault()
+                val shiftDate = Instant.ofEpochMilli(target.startEpochMillis).atZone(zone).toLocalDate()
+                selectedDate = shiftDate
+                currentMonth = YearMonth.from(shiftDate)
+            }
+        }
+    }
 
     var editingLeave by remember { mutableStateOf<LeaveEntry?>(null) }
     var viewingLeave by remember { mutableStateOf<LeaveEntry?>(null) }

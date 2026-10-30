@@ -29,7 +29,7 @@ import com.leftovers.app.ui.screens.SubscriptionsViewModel
 
 object AppViewModelProvider {
     val Factory = viewModelFactory {
-        initializer { HomeViewModel(container().repository, container().settings, container().planning, container().sms, container().accounts) }
+        initializer { HomeViewModel(container().repository, container().settings, container().planning, container().sms, container().accounts, container().roster) }
         initializer {
             val c = container()
             EditorViewModel(createSavedStateHandle(), app(), c.repository, c.accounts, c.settings, c.sms, c.planning, c.budgetAlerts, c.roomExpenseDao)

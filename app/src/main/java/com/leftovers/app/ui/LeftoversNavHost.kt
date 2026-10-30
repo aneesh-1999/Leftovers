@@ -126,7 +126,8 @@ private object Routes {
     const val GOAL = "goals/{id}"
     const val ACCOUNTS = "accounts"
     const val RECAP = "recap/{month}"
-    const val ROSTER = "roster"
+    const val ROSTER = "roster?date={date}&shiftId={shiftId}"
+    fun roster(date: Long = -1L, shiftId: Long = -1L) = "roster?date=$date&shiftId=$shiftId"
     const val SETTINGS = "settings"
     const val CATEGORIES = "categories"
     const val ASSISTANT = "assistant"
@@ -190,6 +191,8 @@ private fun NavGraphBuilder.screen(
 fun LeftoversNavHost(
     openAdd: Boolean = false,
     openRoster: Boolean = false,
+    openRosterDate: Long? = null,
+    openRosterShiftId: Long? = null,
     openDebts: Boolean = false,
     openCreditCards: Boolean = false,
     onOpenAddHandled: () -> Unit = {},
@@ -229,10 +232,10 @@ fun LeftoversNavHost(
             onOpenAddHandled()
         }
     }
-    LaunchedEffect(openRoster) {
+    LaunchedEffect(openRoster, openRosterDate, openRosterShiftId) {
         if (openRoster) {
             nav.switchTab(Routes.PLAN)
-            nav.navigate(Routes.ROSTER)
+            nav.navigate(Routes.roster(openRosterDate ?: -1L, openRosterShiftId ?: -1L))
             onOpenRosterHandled()
         }
     }
@@ -337,6 +340,9 @@ fun LeftoversNavHost(
                             onOpenRecap = { nav.navigate(Routes.recap(it.toString())) },
                             onOpenAccounts = { nav.navigate(Routes.ACCOUNTS) },
                             onOpenAssistant = { nav.navigate(Routes.ASSISTANT) },
+                            onOpenRoster = { date, shiftId ->
+                                nav.navigate(Routes.roster(date ?: -1L, shiftId ?: -1L))
+                            },
                         )
                     }
                     screen(Routes.ASSISTANT) { AssistantScreen(onBack = back) }
@@ -365,7 +371,7 @@ fun LeftoversNavHost(
                             onOpenGoal = { nav.navigate(Routes.goal(it)) },
                             onOpenCategories = { nav.navigate(Routes.CATEGORIES) },
                             onOpenDebts = { nav.navigate(Routes.DEBTS) },
-                            onOpenRoster = { nav.navigate(Routes.ROSTER) },
+                            onOpenRoster = { nav.navigate(Routes.roster()) },
                             onOpenRemittance = { nav.navigate(Routes.REMITTANCE) },
                             onOpenInvestment = { nav.navigate(Routes.INVESTMENT) },
                             onOpenCreditCards = { nav.navigate(Routes.CREDIT_CARDS) },
@@ -375,7 +381,21 @@ fun LeftoversNavHost(
                     screen(Routes.INVESTMENT) { InvestmentScreen(onBack = back) }
                     screen(Routes.CREDIT_CARDS) { CreditCardScreen(onBack = back) }
                     screen(Routes.ROOM_EXPENSES) { RoomExpenseScreen(onBack = back) }
-                    screen(Routes.ROSTER) { RosterScreen(onBack = back) }
+                    screen(
+                        Routes.ROSTER,
+                        listOf(
+                            navArgument("date") { type = NavType.LongType; defaultValue = -1L },
+                            navArgument("shiftId") { type = NavType.LongType; defaultValue = -1L },
+                        ),
+                    ) { entry ->
+                        val dateArg = entry.arguments?.getLong("date")?.takeIf { it != -1L }
+                        val shiftIdArg = entry.arguments?.getLong("shiftId")?.takeIf { it != -1L }
+                        RosterScreen(
+                            onBack = back,
+                            initialDateEpochDay = dateArg,
+                            initialShiftId = shiftIdArg,
+                        )
+                    }
                     screen(Routes.DEBTS) { DebtsScreen(onBack = back) }
                     screen(Routes.DELETED) { DeletedScreen(onBack = back) }
                     screen(Routes.REMITTANCE) {
