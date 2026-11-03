@@ -70,16 +70,16 @@ class AppUpdateNotificationDeduplicationTest {
     @Test
     fun autoUpdateSettings_toggleSuccessfully() = runBlocking {
         settingsRepository.setAutoUpdateChecks(false)
-        assertFalse(settingsRepository.settings.first().autoUpdateChecks)
+        assertFalse(settingsRepository.settings.first { !it.autoUpdateChecks }.autoUpdateChecks)
 
         settingsRepository.setAutoUpdateChecks(true)
-        assertTrue(settingsRepository.settings.first().autoUpdateChecks)
+        assertTrue(settingsRepository.settings.first { it.autoUpdateChecks }.autoUpdateChecks)
 
         settingsRepository.setUpdateCheckWifiOnly(true)
-        assertTrue(settingsRepository.settings.first().updateCheckWifiOnly)
+        assertTrue(settingsRepository.settings.first { it.updateCheckWifiOnly }.updateCheckWifiOnly)
 
         settingsRepository.setUpdateCheckWifiOnly(false)
-        assertFalse(settingsRepository.settings.first().updateCheckWifiOnly)
+        assertFalse(settingsRepository.settings.first { !it.updateCheckWifiOnly }.updateCheckWifiOnly)
     }
 
     @Test

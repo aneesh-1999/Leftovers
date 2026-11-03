@@ -1,37 +1,57 @@
 package com.leftovers.app.data
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 
 class AccountRepository(
     private val accountDao: AccountDao,
     private val transferDao: TransferDao,
     private val transactionDao: TransactionDao,
     private val debtDao: DebtDao? = null,
+    /** The rates set for other currencies (code to "one unit in the app's currency"), for accounts with their own. */
+    rates: Flow<Map<String, String>> = kotlinx.coroutines.flow.flowOf(emptyMap()),
 ) {
-    val accounts: Flow<List<AccountWithBalance>> = accountDao.observeWithBalance()
+    val accounts: Flow<List<AccountWithBalance>> =
+        combine(accountDao.observeWithBalance(), accountDao.observeNativeParts(), rates) { list, parts, rateMap ->
+            val byId = parts.associateBy { it.accountId }
+            list.map { a ->
+                val code = a.currency ?: return@map a
+                a.copy(nativeMinor = nativeBalance(a.openingNative, byId[a.id], rateMap[code]))
+            }
+        }
     val transfers: Flow<List<Transfer>> = transferDao.observeAll()
 
     suspend fun saveAccount(account: Account): Long = accountDao.upsert(account)
 
     /** Deletes the account, or returns how many entries still use it (and deletes nothing). */
     suspend fun deleteAccount(account: Account): Int {
-        val used = transactionDao.countForAccount(account.id) + accountDao.transferCount(account.id) + (debtDao?.countForAccount(account.id) ?: 0)
-        if (used == 0) accountDao.delete(account)
+        val used = transactionDao.countForAccount(account.id) + accountDao.transferCount(account.id)
+        if (used == 0) {
+            debtDao?.unlinkAccount(account.id)
+            accountDao.delete(account)
+        }
         return used
     }
 
-    /** Re-files every entry of one account under another; returns the moved ids so it can be undone. */
-    suspend fun moveEntries(fromId: Long, toId: Long): List<Long> {
-        val ids = transactionDao.idsForAccount(fromId)
-        setAccount(ids, toId)
-        debtDao?.moveAccount(fromId, toId)
-        return ids
+    /** What [moveEntries] moved, so it can be put back. */
+    data class Moved(val transactions: List<Long>, val debts: List<Long>) {
+        val size: Int get() = transactions.size + debts.size
+        fun isEmpty() = size == 0
     }
 
-    suspend fun setAccount(ids: List<Long>, accountId: Long) {
-        // SQLite caps the number of query parameters, so update in batches.
-        ids.chunked(500).forEach { transactionDao.setAccount(it, accountId) }
+    /** Re-files every entry of one account, lent and borrowed ones too, under another; returns what moved so it can be undone. */
+    suspend fun moveEntries(fromId: Long, toId: Long): Moved {
+        val moved = Moved(transactionDao.idsForAccount(fromId), debtDao?.idsForAccount(fromId).orEmpty())
+        setAccount(moved, toId)
+        return moved
     }
+
+    suspend fun setAccount(moved: Moved, accountId: Long) {
+        // SQLite caps the number of query parameters, so update in batches.
+        moved.transactions.chunked(500).forEach { transactionDao.setAccount(it, accountId) }
+        debtDao?.let { d -> moved.debts.chunked(500).forEach { d.setAccount(it, accountId) } }
+    }
+
 
     suspend fun saveTransfer(transfer: Transfer) = transferDao.upsert(transfer)
     suspend fun deleteTransfer(transfer: Transfer) = transferDao.delete(transfer)

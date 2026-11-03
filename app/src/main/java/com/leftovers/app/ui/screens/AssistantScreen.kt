@@ -1,5 +1,6 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.toggleHaptic
 import androidx.activity.compose.LocalActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -83,6 +84,7 @@ import com.leftovers.app.ai.ToolOutcome
 import com.leftovers.app.ai.chatSession
 import com.leftovers.app.ai.listModels
 import com.leftovers.app.ai.requireHttps
+import com.leftovers.app.ai.testConnection
 import com.leftovers.app.ui.AppViewModelProvider
 import com.leftovers.app.ui.components.Chip
 import com.leftovers.app.ui.components.Glass
@@ -336,11 +338,16 @@ private val suggestions = listOf(
     "Add morning shift tomorrow",
     "How much did I spend on food this month?",
     "Am I on track with my budget?",
+    "Add 250 for coffee today",
+    "Who owes me money?",
+    "Which subscriptions renew this week?",
 )
 
 @Composable
 fun AssistantScreen(
     onBack: () -> Unit,
+    /** A question to send straight away, e.g. from Insights; sent once, only when an AI is connected. */
+    ask: String = "",
     // Kept by the activity, not this screen: going back doesn't stop an answer, and the chat is still here
     // on return. It lives only in memory and is gone when the app closes.
     viewModel: AssistantViewModel = viewModel(
@@ -352,6 +359,13 @@ fun AssistantScreen(
     val config by viewModel.config.collectAsStateWithLifecycle()
     var input by rememberSaveable { mutableStateOf("") }
     var showSetup by rememberSaveable { mutableStateOf(false) }
+    var asked by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(ask, config) {
+        if (ask.isNotBlank() && config != null && !asked) {
+            asked = true
+            viewModel.send(ask)
+        }
+    }
     val listState = rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var attached by rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
@@ -673,7 +687,7 @@ private fun ChangeCard(item: ChatItem.Change, waiting: Int, onDecide: (Boolean) 
         ChangeKind.DELETE_REMITTANCE -> Lucide.Trash2
         ChangeKind.RECIPIENT -> Lucide.User
         ChangeKind.CREDIT_CARD_PAYMENT, ChangeKind.CREDIT_CARD_ENTRY -> Lucide.CreditCard
-        ChangeKind.DEBT, ChangeKind.SETTLE_DEBT -> Lucide.HandCoins
+        ChangeKind.DEBT, ChangeKind.SETTLE_DEBT, ChangeKind.OWED -> Lucide.HandCoins
     }
     val isDanger = item.kind == ChangeKind.DELETE || item.kind == ChangeKind.DELETE_SHIFT || item.kind == ChangeKind.DELETE_REMITTANCE
     val tint = if (isDanger) c.negative else c.accent
@@ -751,6 +765,9 @@ fun AssistantSetupSheet(onDismiss: () -> Unit, viewModel: AssistantSetupViewMode
     var loaded by remember { mutableStateOf<List<String>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    // The last test's outcome: whether it worked, and what to say.
+    var tested by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
 
@@ -767,6 +784,31 @@ fun AssistantSetupSheet(onDismiss: () -> Unit, viewModel: AssistantSetupViewMode
                         Text("Connected to ${current.provider.label}", style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
                         Text(current.model, style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
                         Spacer(Modifier.height(12.dp))
+                        // Sends one short message, so the key, the model and the network are checked together.
+                        SecondaryButton(if (testing) "Testing…" else "Test connection", {
+                            if (!testing) {
+                                testing = true
+                                tested = null
+                                scope.launch {
+                                    tested = try {
+                                        val ms = testConnection(current)
+                                        true to "Working. ${current.model} answered in ${String.format(java.util.Locale.ROOT, "%.1f", ms / 1000.0)} s."
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        // Already in that setting, so not "check it in Settings".
+                                        false to (e.message?.removeSuffix(" Check it in Settings → AI assistant.") ?: "The test failed.")
+                                    } finally {
+                                        testing = false
+                                    }
+                                }
+                            }
+                        }, Modifier.fillMaxWidth())
+                        tested?.let { (ok, text) ->
+                            Spacer(Modifier.height(8.dp))
+                            Text(text, style = MaterialTheme.typography.bodySmall, color = if (ok) c.positive else c.negative)
+                        }
+                        Spacer(Modifier.height(8.dp))
                         SecondaryButton("Disconnect and delete key", {
                             viewModel.settings.disconnect()
                             key = ""
@@ -937,7 +979,7 @@ private fun PrivacyToggle(title: String, detail: String, checked: Boolean, onCha
         Spacer(Modifier.width(12.dp))
         Switch(
             checked = checked,
-            onCheckedChange = onChange,
+            onCheckedChange = toggleHaptic(onChange),
             colors = SwitchDefaults.colors(
                 checkedTrackColor = c.accent,
                 checkedThumbColor = c.onAccent,

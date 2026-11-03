@@ -38,8 +38,9 @@ class Money(currencyCode: String) {
         if (wordSymbol) text.replace(Regex("^(-?)" + Regex.escape(symbol) + "(?=\\d)"), "$1$symbol ") else text
     }
 
-    /** Rounded to whole units, for headline numbers like a daily allowance. */
-    fun formatWhole(minor: Long): String = format(Math.round(minor / 100.0) * 100)
+    /** Rounded to whole units, for headline numbers like a daily allowance. Halves round away from zero, so -12.50 and 12.50 both show 13. */
+    fun formatWhole(minor: Long): String =
+        format(BigDecimal.valueOf(minor, 2).setScale(0, java.math.RoundingMode.HALF_UP).movePointRight(2).toLong())
 
     fun signed(minor: Long, type: TxType): String =
         (if (type == TxType.INCOME) "+" else "−") + format(abs(minor))
@@ -57,6 +58,14 @@ class Money(currencyCode: String) {
 }
 
 val LocalMoney = staticCompositionLocalOf { Money("USD") }
+
+/** True when times show as 24-hour ("18:30"), false for 12-hour ("6:30 PM"); set from Settings or the phone. */
+val LocalUse24Hour = staticCompositionLocalOf { true }
+
+private val time24 = DateTimeFormatter.ofPattern("HH:mm")
+private val time12 = DateTimeFormatter.ofPattern("h:mm a")
+
+fun timeFormatter(use24Hour: Boolean): DateTimeFormatter = if (use24Hour) time24 else time12
 
 object AmountInput {
     private val pattern = Regex("""\d{0,9}(\.\d{0,2})?""")
@@ -98,11 +107,19 @@ private val popularCurrencyCodes = listOf(
     "QAR", "KWD", "OMR", "BHD",
 )
 
+/** The popular currencies first, then every other one the phone knows (Ghana cedi, Kenyan shilling...), by name. */
 val currencyOptions: List<CurrencyOption> by lazy {
-    popularCurrencyCodes.mapNotNull { code ->
-        runCatching {
-            val c = Currency.getInstance(code)
-            CurrencyOption(code, c.getDisplayName(Locale.getDefault()), Money(code).symbol)
-        }.getOrNull()
-    }
+    fun option(code: String) = runCatching {
+        val c = Currency.getInstance(code)
+        CurrencyOption(code, c.getDisplayName(Locale.getDefault()), Money(code).symbol)
+    }.getOrNull()
+    // Old and fund codes (like XAU, gold) aren't money anyone spends; real currencies have a name that isn't the code.
+    val rest = Currency.getAvailableCurrencies()
+        .map { it.currencyCode }
+        .filter { it !in popularCurrencyCodes && !it.startsWith("X") }
+        .mapNotNull(::option)
+        // Retired currencies are named with their years, like "Ghanaian Cedi (1979–2007)".
+        .filter { it.name != it.code && !Regex("""\(\d{4}""").containsMatchIn(it.name) }
+        .sortedBy { it.name }
+    popularCurrencyCodes.mapNotNull(::option) + rest
 }

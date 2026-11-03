@@ -1,5 +1,10 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.toggleHaptic
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -104,7 +109,11 @@ data class StatsUiState(
     val trends: List<Trend> = emptyList(),
 )
 
-class StatsViewModel(repository: TransactionRepository, settings: SettingsRepository) : ViewModel() {
+class StatsViewModel(
+    private val repository: TransactionRepository,
+    private val settings: SettingsRepository,
+    private val planning: com.leftovers.app.data.PlanningRepository,
+) : ViewModel() {
     private val month = MutableStateFlow(YearMonth.now())
     private val type = MutableStateFlow(TxType.EXPENSE)
 
@@ -127,9 +136,23 @@ class StatsViewModel(repository: TransactionRepository, settings: SettingsReposi
                 items = ofType,
                 trends = spendingTrends(all, m, t, Money(s.currencyCode)::formatWhole),
             )
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StatsUiState())
+        }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StatsUiState())
 
     fun setMonth(value: YearMonth) { month.value = value }
+
+    /** Makes the PDF statement for the month shown, or its whole year, and hands back the file to share. */
+    fun makeStatement(context: android.content.Context, chosen: YearMonth, yearly: Boolean, notes: Boolean, entries: Boolean, onReady: (android.net.Uri, String) -> Unit) {
+        viewModelScope.launch {
+            val all = repository.allTransactions.first()
+            val s = settings.settings.first()
+            val m = chosen
+            val statement = kotlinx.coroutines.withContext(Dispatchers.Default) {
+                com.leftovers.app.util.StatementPdf.build(if (yearly) null else m, m.year, all, s.plan, planning.recurring.first())
+            }
+            val uri = com.leftovers.app.util.StatementPdf.write(context, statement, Money(s.currencyCode), notes, entries)
+            onReady(uri, statement.title)
+        }
+    }
     fun setType(value: TxType) { type.value = value }
 }
 
@@ -138,17 +161,43 @@ fun StatsScreen(
     onOpenRecap: (YearMonth) -> Unit,
     onOpenYear: (Int) -> Unit = {},
     onOpenTransaction: (Long) -> Unit,
+    /** Opens the assistant with this question; the row only shows when an AI is connected. */
+    onAskAi: (String) -> Unit = {},
     viewModel: StatsViewModel = viewModel(factory = AppViewModelProvider.Factory)) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
     val money = LocalMoney.current
     val isExpense = state.type == TxType.EXPENSE
     val monthName = state.month.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val aiConfig by (context.applicationContext as com.leftovers.app.LeftoversApp).container.assistant.config.collectAsStateWithLifecycle()
+    val aiConnected = aiConfig != null
+    // Tapping an entry opens a card about it; Edit there opens the full editor.
+    val peek = rememberTransactionPeek()
+    TransactionPeekCard(peek, onEdit = onOpenTransaction)
+    var showStatement by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    if (showStatement) {
+        StatementSheet(
+            start = state.month,
+            onDismiss = { showStatement = false },
+            onMake = { chosen, yearly, notes, entries ->
+                viewModel.makeStatement(context, chosen, yearly, notes, entries) { uri, title ->
+                    showStatement = false
+                    context.startActivity(com.leftovers.app.util.StatementPdf.shareIntent(uri, title))
+                }
+            },
+        )
+    }
 
     GlassScreen(
         title = "Insights",
         onBack = null,
-        actions = { RoundButton(Lucide.Sparkles, "Monthly recap", { onOpenRecap(state.month) }) },
+        actions = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                RoundButton(Lucide.Download, "Statement as a PDF", { showStatement = true })
+                RoundButton(Lucide.Sparkles, "Monthly recap", { onOpenRecap(state.month) })
+            }
+        },
     ) { padding ->
         // Sideways swipes switch tabs here like everywhere else; the arrows change month.
         LazyColumn(
@@ -202,6 +251,27 @@ fun StatsScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = c.textTertiary,
                             modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+            }
+
+            // A read of the month from the AI, when one is connected: what changed and what to do about it.
+            if (aiConnected && state.count > 0) {
+                item {
+                    val previous = state.month.minusMonths(1).month.getDisplayName(TextStyle.FULL, Locale.getDefault())
+                    val question = if (isExpense) {
+                        "How did my spending go in $monthName ${state.month.year}? Compare it with $previous and my budget, " +
+                            "say what changed most, and suggest one or two things I could do differently."
+                    } else {
+                        "How did my income go in $monthName ${state.month.year} compared with $previous? Anything worth noticing?"
+                    }
+                    Glass(Modifier.fillMaxWidth().padding(top = 12.dp).appear(1), onClick = { onAskAi(question) }) {
+                        com.leftovers.app.ui.components.ListRow(
+                            "Ask AI about $monthName",
+                            subtitle = if (isExpense) "What changed, and what to do about it" else "How your income compares",
+                            leading = { com.leftovers.app.ui.components.IconTile(Lucide.MessageCircle, c.accent, size = 38.dp) },
+                            trailing = { Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary) },
                         )
                     }
                 }
@@ -290,7 +360,7 @@ fun StatsScreen(
                             AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                                 Column(Modifier.padding(start = 30.dp, bottom = 6.dp)) {
                                     state.items.filter { it.categoryId == cat.categoryId }.forEach { item ->
-                                        TransactionRow(item, onClick = { onOpenTransaction(item.id) }, subtitle = item.date.friendlyLabel())
+                                        TransactionRow(item, onClick = { peek.show(item) }, subtitle = item.date.friendlyLabel(), modifier = Modifier.peekSource(peek, item.id))
                                     }
                                 }
                             }
@@ -347,7 +417,7 @@ fun StatsScreen(
                                         )
                                     } else {
                                         entries.forEach { item ->
-                                            TransactionRow(item, onClick = { onOpenTransaction(item.id) })
+                                            TransactionRow(item, onClick = { peek.show(item) }, modifier = Modifier.peekSource(peek, item.id))
                                         }
                                     }
                                 }
@@ -430,4 +500,92 @@ private fun ComparisonChip(state: StatsUiState) {
         Spacer(Modifier.width(6.dp))
         Text("$pct% vs last month", style = MaterialTheme.typography.labelMedium, color = tint)
     }
+}
+
+/** Choices for the PDF statement: the month shown or its whole year, and what goes in it. */
+@Composable
+private fun StatementSheet(start: YearMonth, onDismiss: () -> Unit, onMake: (month: YearMonth, yearly: Boolean, notes: Boolean, entries: Boolean) -> Unit) {
+    val c = LocalAppColors.current
+    var yearly by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    // Starts on the month Insights is showing; the arrows pick any other month, or year.
+    var chosen by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(start.toString()) }
+    val month = YearMonth.parse(chosen)
+    val now = YearMonth.now()
+    val canGoForward = if (yearly) month.year < now.year else month < now
+    var notes by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    var entries by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    var making by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    GlassSheet(onDismiss) {
+        Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text("Statement as a PDF", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+            com.leftovers.app.ui.components.SegmentedToggle(
+                options = listOf(false, true),
+                selected = yearly,
+                label = { if (it) "Yearly" else "Monthly" },
+                onSelect = { yearly = it },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RoundButton(Lucide.ChevronLeft, if (yearly) "Previous year" else "Previous month", {
+                    chosen = (if (yearly) month.minusYears(1) else month.minusMonths(1)).toString()
+                })
+                Text(
+                    if (yearly) "${month.year}" else "${month.month.getDisplayName(TextStyle.FULL, Locale.getDefault())} ${month.year}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = c.textPrimary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f),
+                )
+                RoundButton(
+                    Lucide.ChevronRight,
+                    if (yearly) "Next year" else "Next month",
+                    { chosen = (if (yearly) month.plusYears(1) else month.plusMonths(1)).toString() },
+                    enabled = canGoForward,
+                    tint = if (canGoForward) c.textPrimary else c.textTertiary,
+                )
+            }
+            Text(
+                "Income and spending, categories, biggest expenses and subscriptions" +
+                    (if (yearly) ", with each month's totals" else "") + ". Made on your phone; nothing is uploaded.",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textSecondary,
+            )
+            Glass(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    StatementSwitch("Include notes", "Left out by default, as they can be personal", notes) { notes = it }
+                    com.leftovers.app.ui.components.RowDivider()
+                    StatementSwitch("List every entry", "Adds pages after the summary", entries) { entries = it }
+                }
+            }
+            com.leftovers.app.ui.components.PrimaryButton(
+                if (making) "Making it…" else "Share PDF",
+                {
+                    making = true
+                    // A future year can't be picked, but its later months could be from going back and switching to yearly.
+                    onMake(if (month > now) now else month, yearly, notes, entries)
+                },
+                Modifier.fillMaxWidth(),
+                enabled = !making,
+                icon = Lucide.Share2,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatementSwitch(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val c = LocalAppColors.current
+    val flip = toggleHaptic(onChange)
+    com.leftovers.app.ui.components.ListRow(
+        title,
+        subtitle = subtitle,
+        trailing = {
+            androidx.compose.material3.Switch(
+                checked = checked,
+                onCheckedChange = flip,
+                colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.onAccent),
+            )
+        },
+        modifier = Modifier.pressable({ flip(!checked) }, pressedScale = 0.99f),
+    )
 }

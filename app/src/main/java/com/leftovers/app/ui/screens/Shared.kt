@@ -3,10 +3,27 @@ package com.leftovers.app.ui.screens
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.net.Uri
+import kotlinx.coroutines.flow.first
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.animation.core.spring
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.layout.positionOnScreen
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import android.os.Build
 import android.view.WindowManager
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
@@ -28,6 +45,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -96,20 +114,24 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private val timeFormat = DateTimeFormatter.ofPattern("HH:mm")
-
+@Composable
 fun TransactionItem.timeLabel(): String =
-    Instant.ofEpochMilli(createdAt).atZone(ZoneId.systemDefault()).toLocalTime().format(timeFormat)
+    Instant.ofEpochMilli(createdAt).atZone(ZoneId.systemDefault()).toLocalTime().format(com.leftovers.app.util.timeFormatter(com.leftovers.app.util.LocalUse24Hour.current))
 
 @Composable
-fun TransactionRow(item: TransactionItem, onClick: () -> Unit, subtitle: String = item.timeLabel()) {
+fun TransactionRow(item: TransactionItem, onClick: () -> Unit, subtitle: String = item.timeLabel(), modifier: Modifier = Modifier) {
     val baseMoney = LocalMoney.current
     val money = item.accountCurrency?.let { com.leftovers.app.util.Money(it) } ?: baseMoney
     val c = LocalAppColors.current
-    val hasNote = item.note.isNotBlank()
+    // The note's words as the title; its tags after the category, on their own.
+    val text = com.leftovers.app.data.noteText(item.note)
+    val tags = com.leftovers.app.data.hashtags(item.note)
+    val hasNote = text.isNotBlank()
     ListRow(
-        title = if (hasNote) item.note else item.categoryName,
-        subtitle = if (hasNote) "${item.categoryName} · $subtitle" else subtitle,
+        title = if (hasNote) text else item.categoryName,
+        modifier = modifier,
+        subtitle = listOfNotNull(item.categoryName.takeIf { hasNote }, subtitle, tags.takeIf { it.isNotEmpty() }?.joinToString(" ") { "#$it" })
+            .joinToString(" · "),
         leading = { CategoryIcon(item.categoryEmoji, item.categoryColor, size = 42.dp) },
         trailing = {
             Column(horizontalAlignment = Alignment.End) {
@@ -121,8 +143,15 @@ fun TransactionRow(item: TransactionItem, onClick: () -> Unit, subtitle: String 
                 // Spent abroad: what was paid there, in that currency.
                 val foreign = item.foreignMinor
                 val code = item.foreignCurrency
-                if (foreign != null && code != null) {
-                    Text(com.leftovers.app.util.Money(code).format(foreign), style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                val photo = item.receiptPath != null
+                if ((foreign != null && code != null) || photo) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (photo) Icon(com.leftovers.app.ui.icons.Lucide.Camera, contentDescription = "Has a photo", tint = c.textTertiary, modifier = Modifier.size(13.dp))
+                        if (foreign != null && code != null) {
+                            if (photo) Spacer(Modifier.width(5.dp))
+                            Text(com.leftovers.app.util.Money(code).format(foreign), style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                        }
+                    }
                 }
             }
         },
@@ -168,7 +197,7 @@ fun GlassTextField(
                         visualTransformation = if (password) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                         cursorBrush = SolidColor(c.accent),
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = if (password) KeyboardType.Password else keyboardType,
+                            keyboardType = if (password && keyboardType == KeyboardType.Text) KeyboardType.Password else keyboardType,
                             capitalization = if (keyboardType == KeyboardType.Text && !password) KeyboardCapitalization.Sentences else KeyboardCapitalization.None,
                             autoCorrectEnabled = !password,
                         ),
@@ -182,14 +211,43 @@ fun GlassTextField(
     }
 }
 
+/** Like [GlassTextField], but with the cursor and selection in [value], for fields that edit text around the cursor. */
 @Composable
-fun MoneyField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, label: String? = null, large: Boolean = false, focusRequester: FocusRequester? = null) {
+fun GlassTextField(
+    value: androidx.compose.ui.text.input.TextFieldValue,
+    onValueChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    textStyle: TextStyle = MaterialTheme.typography.bodyLarge,
+    focusRequester: FocusRequester? = null,
+) {
+    val c = LocalAppColors.current
+    Glass(modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+        Box(Modifier.padding(horizontal = 16.dp, vertical = 15.dp)) {
+            if (value.text.isEmpty()) Text(placeholder, style = textStyle, color = c.textTertiary)
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = textStyle.copy(color = c.textPrimary),
+                cursorBrush = SolidColor(c.accent),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
+            )
+        }
+    }
+}
+
+@Composable
+fun MoneyField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, label: String? = null, large: Boolean = false, focusRequester: FocusRequester? = null, symbol: String? = null) {
     GlassTextField(
         value = value,
         onValueChange = { raw -> AmountInput.sanitize(raw)?.let(onValueChange) },
         placeholder = "0",
         label = label,
-        prefix = LocalMoney.current.symbol,
+        prefix = symbol ?: LocalMoney.current.symbol,
         keyboardType = KeyboardType.Decimal,
         textStyle = if (large) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
         modifier = modifier,
@@ -263,7 +321,8 @@ fun GlassAlertDialog(
         title = title,
         text = text,
         shape = glassShape,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (blurs) 0.62f else 1f),
+        // Nearly solid even with the screen blurred: some phones say they blur but don't, and text must stay readable.
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (blurs) 0.9f else 1f),
         tonalElevation = 0.dp,
         modifier = modifier
             .appearWith(appear)
@@ -294,7 +353,8 @@ fun GlassDatePickerDialog(
     val c = LocalAppColors.current
     val glassShape = RoundedCornerShape(30.dp)
     val blurs = rememberWindowBlur()
-    val container = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (blurs) 0.7f else 1f)
+    // Solid: the year list is drawn over the days, which would show through a see-through calendar.
+    val container = MaterialTheme.colorScheme.surfaceContainerHigh
     val appear = remember { Animatable(if (blurs) 0f else 1f) }
     DatePickerDialog(
         onDismissRequest = onDismissRequest,
@@ -359,7 +419,8 @@ fun GlassSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (blurs) 0.84f else 1f),
+        // Nearly solid: on phones that say they blur but don't, the screen behind would show through the form.
+        containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (blurs) 0.96f else 1f),
         shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
         scrimColor = c.background.copy(alpha = if (blurs) 0.3f else 0.6f),
         // Only the top edge gets the glass highlight. A full border follows the sheet's measured size,
@@ -650,5 +711,211 @@ fun PhotoCropDialog(
             }
         },
     )
+}
+
+/**
+ * Growing eases in and settles slowly; shrinking starts slowly and speeds up into the tapped card.
+ * Timed rather than a spring, so the motion is spread evenly over its frames instead of mostly in the first few.
+ */
+private val MorphGrow = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0f, 0f, 1f)
+private val MorphShrink = androidx.compose.animation.core.CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+
+/** Where an element sits on the screen, for [MorphCard] to grow out of. */
+fun Modifier.trackScreenBounds(onBounds: (androidx.compose.ui.geometry.Rect) -> Unit): Modifier =
+    this.then(Modifier.onGloballyPositioned { c ->
+        val at = c.positionOnScreen()
+        onBounds(androidx.compose.ui.geometry.Rect(at, androidx.compose.ui.geometry.Size(c.size.width.toFloat(), c.size.height.toFloat())))
+    })
+
+/**
+ * A card in the middle of the screen that grows out of the card that was tapped ([from], in screen coordinates),
+ * like a Saving for card growing into its goal, and shrinks back into it when closed. The screen behind blurs
+ * in as it opens. [content] gets a `close` that plays the shrink, dismisses, then runs what it's given.
+ */
+@Composable
+fun MorphCard(
+    from: androidx.compose.ui.geometry.Rect?,
+    onDismiss: () -> Unit,
+    onReveal: () -> Unit = {},
+    /** The card's first frame is on screen: the tapped card can step aside now, so it never leaves a gap first. */
+    onShown: () -> Unit = {},
+    content: @Composable ColumnScope.(close: (then: () -> Unit) -> Unit) -> Unit) {
+    val c = LocalAppColors.current
+    // Liquid glass, like the tab bar: the card bends the screen behind it, which is blurred only lightly so the
+    // bend still shows. Otherwise frosted glass over a more blurred screen.
+    val liquid = com.leftovers.app.ui.components.LocalScreenBackdrop.current
+    val blurs = rememberWindowBlur()
+    val progress = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    var target by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var closing by remember { mutableStateOf(false) }
+    val resolver = LocalContext.current.contentResolver
+    // With animations turned off on the phone, the card just appears.
+    val reduceMotion = remember { runCatching { android.provider.Settings.Global.getFloat(resolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) }.getOrDefault(1f) }
+    fun close(then: () -> Unit = {}) {
+        if (closing) return
+        closing = true
+        scope.launch {
+            var revealed = false
+            // The tapped card comes back while the pop-up is still fading into it, so there's no empty gap.
+            progress.animateTo(0f, tween(300, easing = MorphShrink)) {
+                if (!revealed && value < 0.3f) {
+                    revealed = true
+                    onReveal()
+                }
+            }
+            if (!revealed) onReveal()
+            onDismiss()
+            then()
+        }
+    }
+    /** [dim]: the pop-up dims what's behind it itself (in its own window). */
+    @Composable
+    fun MorphBody(dim: Boolean = true) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                // Read while drawing, not composing, so the fade doesn't rebuild the card every frame.
+                .drawBehind { if (dim) drawRect(c.background.copy(alpha = (if (blurs) 0.28f else 0.6f) * progress.value.coerceIn(0f, 1f))) }
+                .pointerInput(Unit) { detectTapGestures { close() } },
+            contentAlignment = Alignment.Center,
+        ) {
+            val glassShape = RoundedCornerShape(30.dp)
+            Column(
+                Modifier
+                    .padding(horizontal = 24.dp)
+                    .widthIn(max = 460.dp)
+                    .fillMaxWidth()
+                    .onGloballyPositioned { co ->
+                        val at = co.positionOnScreen()
+                        target = androidx.compose.ui.geometry.Rect(at, androidx.compose.ui.geometry.Size(co.size.width.toFloat(), co.size.height.toFloat()))
+                    }
+                    .graphicsLayer {
+                        val p = progress.value
+                        val src = from
+                        val dst = target
+                        if (src != null && dst != null && dst.width > 0 && dst.height > 0 && reduceMotion > 0f) {
+                            // Grows evenly from the tapped card's size and place to the centre, like a zoom, so the
+                            // contents are never squashed. It fades in over the first part and out over the last, so
+                            // no empty box is left over the tapped card.
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin.Center
+                            val from = minOf(src.width / dst.width, src.height / dst.height).coerceIn(0.2f, 1f)
+                            val k = androidx.compose.ui.util.lerp(from, 1f, p)
+                            scaleX = k
+                            scaleY = k
+                            translationX = androidx.compose.ui.util.lerp(src.center.x - dst.center.x, 0f, p)
+                            translationY = androidx.compose.ui.util.lerp(src.center.y - dst.center.y, 0f, p)
+                            alpha = (p / 0.3f).coerceIn(0f, 1f)
+                        } else {
+                            val k = 0.94f + 0.06f * p
+                            scaleX = k
+                            scaleY = k
+                            alpha = p.coerceIn(0f, 1f)
+                        }
+                        shape = glassShape
+                        clip = true
+                    }
+                    .then(
+                        if (liquid != null) {
+                            // What's behind bends at the card's rounded edges, a little colour splits at the rim,
+                            // and it's tinted enough for its text to read over any screen.
+                            Modifier.drawBackdrop(
+                                backdrop = liquid,
+                                shape = { com.kyant.shapes.RoundedRectangle(30.dp) },
+                                effects = {
+                                    vibrancy()
+                                    // Frosted inside, so icons and switches behind never show through the text.
+                                    blur(28.dp.toPx())
+                                    lens(22.dp.toPx(), 44.dp.toPx(), chromaticAberration = true)
+                                },
+                                onDrawSurface = { drawRect(if (c.isDark) androidx.compose.ui.graphics.Color(0xFF14141B).copy(alpha = 0.62f) else androidx.compose.ui.graphics.Color.White.copy(alpha = 0.62f)) },
+                            )
+                        } else {
+                            // The same glass as the cards on screen, over the blurred screen behind.
+                            Modifier
+                                .background(com.leftovers.app.ui.components.glassFill(c.glassStrong), glassShape)
+                                .border(1.dp, com.leftovers.app.ui.components.glassBorder(c), glassShape)
+                        },
+                    )
+                    // Taps on the card stay on the card.
+                    .pointerInput(Unit) { detectTapGestures { } }
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                androidx.activity.compose.BackHandler { close() }
+                content { then -> close(then) }
+            }
+        }
+    }
+    val layer = com.leftovers.app.ui.components.LocalPopupLayer.current
+    if (layer != null) {
+        // Drawn on the app's own screen: the screen behind is softened with the same glass as the tab bar.
+        val locals = androidx.compose.runtime.currentCompositionLocalContext
+        val key = remember { Any() }
+        LaunchedEffect(Unit) {
+            launch { progress.animateTo(1f, tween(400, easing = MorphGrow)) }
+            // The tapped card steps aside once the pop-up has drawn its first frame over it.
+            snapshotFlow { progress.value }.first { it > 0.05f }
+            onShown()
+        }
+        val card: @Composable () -> Unit = {
+            androidx.compose.runtime.CompositionLocalProvider(locals) {
+                Box(Modifier.fillMaxSize()) {
+                    // What's behind: blurred lightly (liquid glass phones) and dimmed, fading in with the card.
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = progress.value.coerceIn(0f, 1f) }
+                            .then(
+                                if (liquid != null) {
+                                    Modifier.drawBackdrop(
+                                        backdrop = liquid,
+                                        shape = { androidx.compose.ui.graphics.RectangleShape },
+                                        effects = { blur(10.dp.toPx()) },
+                                        onDrawSurface = { drawRect(c.background.copy(alpha = 0.32f)) },
+                                    )
+                                } else {
+                                    Modifier.background(c.background.copy(alpha = 0.6f))
+                                },
+                            ),
+                    )
+                    MorphBody(dim = false)
+                }
+            }
+        }
+        androidx.compose.runtime.SideEffect { layer.show(key, card) }
+        androidx.compose.runtime.DisposableEffect(key) { onDispose { layer.hide(key) } }
+        return
+    }
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = { close() },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        // The window behind blurs and dims with the card, so it never arrives late.
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        val radius = with(LocalDensity.current) { (if (liquid != null) 10.dp else 24.dp).roundToPx() }
+        LaunchedEffect(window) {
+            if (window == null) {
+                onShown()
+                progress.animateTo(1f, tween(400, easing = MorphGrow))
+                return@LaunchedEffect
+            }
+            // The window fills the screen before anything moves, so the card's end place doesn't shift mid-way.
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+            window.setWindowAnimations(0)
+            window.setDimAmount(0f)
+            repeat(2) { androidx.compose.runtime.withFrameNanos { } }
+            launch { progress.animateTo(1f, tween(400, easing = MorphGrow)) }
+            // The blur starts with the card's first frame, so the screen never blurs with no card on it.
+            snapshotFlow { progress.value }.first { it > 0f }
+            onShown()
+            if (blurs) window.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+            // Set once: changing the window's blur each frame makes the system redo the window every frame.
+            if (blurs && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                window.attributes = window.attributes.apply { blurBehindRadius = radius }
+            }
+        }
+        MorphBody()
+    }
 }
 

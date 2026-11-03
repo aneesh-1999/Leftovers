@@ -1,5 +1,13 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.toggleHaptic
+import com.leftovers.app.ui.components.pressable
+import androidx.compose.foundation.layout.Box
+import com.leftovers.app.ui.components.SecondaryButton
+import com.leftovers.app.ui.components.PrimaryButton
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import com.leftovers.app.util.BackupPasswordException
 import kotlinx.coroutines.Dispatchers
 import android.Manifest
@@ -27,6 +35,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,6 +62,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,6 +88,8 @@ import com.leftovers.app.ui.components.SegmentedToggle
 import com.leftovers.app.ui.icons.Lucide
 import com.leftovers.app.ui.theme.LocalAppColors
 import com.leftovers.app.util.AutoBackup
+import com.leftovers.app.util.DeviceSync
+import com.leftovers.app.util.WebDavPlace
 import com.leftovers.app.util.BackupManager
 import com.leftovers.app.util.friendlyLabel
 import com.leftovers.app.util.CsvExporter
@@ -100,22 +112,52 @@ class SettingsViewModel(
 ) : ViewModel() {
 
     /** A CSV file read and waiting for the user to confirm: what would be added, and what's skipped. */
-    data class CsvPreview(val toAdd: List<com.leftovers.app.data.Transaction>, val duplicates: Int, val unreadable: Int, val unmatched: Int, val noCategory: Int)
+    /** [newCategories] are made on import; entries waiting for one carry its name in [pendingCategory] (by position in [toAdd]). */
+    data class CsvPreview(
+        val toAdd: List<com.leftovers.app.data.Transaction>, val duplicates: Int, val unreadable: Int, val noCategory: Int, val transfers: Int = 0,
+        val newCategories: List<Pair<com.leftovers.app.data.TxType, String>> = emptyList(),
+        val pendingCategory: Map<Int, Pair<com.leftovers.app.data.TxType, String>> = emptyMap(),
+    )
 
     var csvPreview by mutableStateOf<CsvPreview?>(null)
         private set
 
-    /** Reads [uri] and prepares the entries; nothing is saved until [confirmCsvImport]. */
-    fun readCsv(context: android.content.Context, uri: android.net.Uri, onError: (String) -> Unit) {
+    /** Reads [uri] (CSV, Excel or a bank's statement file) and prepares the entries; nothing is saved until [confirmCsvImport]. */
+    fun readCsv(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        password: String? = null,
+        onNeedPassword: (wrong: Boolean) -> Unit = {},
+        onError: (String) -> Unit,
+    ) {
         viewModelScope.launch {
-            val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() } }.getOrNull()
+            val file = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+                    ?.let(com.leftovers.app.util.StatementFile::read)
             }
-            if (text == null) {
-                onError("Couldn't open that file")
-                return@launch
+            val parsed = when (file) {
+                null -> {
+                    onError("Couldn't open that file")
+                    return@launch
+                }
+                is com.leftovers.app.util.StatementFile.Result.Unsupported -> {
+                    onError(file.message)
+                    return@launch
+                }
+                is com.leftovers.app.util.StatementFile.Result.Text -> com.leftovers.app.util.CsvImporter.parse(file.text)
+                is com.leftovers.app.util.StatementFile.Result.Table -> com.leftovers.app.util.CsvImporter.parseTable(file.rows)
+                is com.leftovers.app.util.StatementFile.Result.Pdf -> {
+                    // Most bank e-statements have a password (often a date of birth or customer ID).
+                    val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { com.leftovers.app.util.PdfStatement.text(context, file.bytes, password) }
+                    }
+                    text.exceptionOrNull()?.let {
+                        if (it is com.leftovers.app.util.PdfStatement.PasswordNeeded) onNeedPassword(it.wrong) else onError("Couldn't read this PDF.")
+                        return@launch
+                    }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { com.leftovers.app.util.PdfStatement.parse(text.getOrThrow()) }
+                }
             }
-            val parsed = com.leftovers.app.util.CsvImporter.parse(text)
             parsed.error?.let {
                 onError(it)
                 return@launch
@@ -123,25 +165,30 @@ class SettingsViewModel(
             val cats = repository.categories.first()
             val accountList = accounts.accounts.first()
             val defaultAccount = settingsRepository.settings.first().defaultAccountId
-            // A category is matched by name; anything else goes to the type's "Other" category.
+            // A category is matched by name; one you don't have yet is made on import, as the other app had it.
+            // Entries with no category at all go to the type's "Other" category.
             fun fallback(type: com.leftovers.app.data.TxType) = cats.filter { it.type == type }.let { list ->
                 list.firstOrNull { it.name.lowercase() in setOf("other", "others", "miscellaneous", "misc", "general") } ?: list.firstOrNull()
             }
             val existing = repository.getAllTransactions().map { Triple(it.epochDay, it.amountMinor, it.type to it.note.trim().lowercase()) }.toMutableSet()
             var duplicates = 0
-            var unmatched = 0
             var noCategory = 0
-            val toAdd = parsed.rows.mapNotNull { row ->
+            val newCategories = linkedMapOf<Pair<com.leftovers.app.data.TxType, String>, String>()
+            val pending = mutableMapOf<Int, Pair<com.leftovers.app.data.TxType, String>>()
+            val toAdd = mutableListOf<com.leftovers.app.data.Transaction>()
+            parsed.rows.forEach { row ->
                 val key = Triple(row.date.toEpochDay(), row.amountMinor, row.type to row.note.trim().lowercase())
                 if (!existing.add(key)) {
                     duplicates++
-                    return@mapNotNull null
+                    return@forEach
                 }
-                val category = row.category?.let { name -> cats.firstOrNull { it.type == row.type && it.name.equals(name, ignoreCase = true) } }
-                    ?: fallback(row.type).also { if (row.category == null) noCategory++ else unmatched++ }
-                    ?: return@mapNotNull null
+                val wanted = row.category?.trim()?.take(40)?.takeIf { it.isNotEmpty() }
+                val match = wanted?.let { name -> cats.firstOrNull { it.type == row.type && it.name.equals(name, ignoreCase = true) } }
+                val toMake = if (match == null && wanted != null) (row.type to wanted.lowercase()).also { newCategories.putIfAbsent(it, wanted) } else null
+                val category = match ?: fallback(row.type).also { if (wanted == null) noCategory++ } ?: return@forEach
+                if (toMake != null) pending[toAdd.size] = toMake
                 val account = row.account?.let { name -> accountList.firstOrNull { it.name.equals(name, ignoreCase = true) }?.id } ?: defaultAccount
-                com.leftovers.app.data.Transaction(
+                toAdd += com.leftovers.app.data.Transaction(
                     amountMinor = row.amountMinor,
                     type = row.type,
                     categoryId = category.id,
@@ -150,7 +197,11 @@ class SettingsViewModel(
                     accountId = account,
                 )
             }
-            csvPreview = CsvPreview(toAdd, duplicates, parsed.unreadable, unmatched, noCategory)
+            csvPreview = CsvPreview(
+                toAdd, duplicates, parsed.unreadable, noCategory, parsed.transfers,
+                newCategories = newCategories.map { (k, name) -> k.first to name },
+                pendingCategory = pending.mapValues { (_, k) -> k.first to newCategories.getValue(k) },
+            )
         }
     }
 
@@ -162,8 +213,25 @@ class SettingsViewModel(
         val preview = csvPreview ?: return
         csvPreview = null
         viewModelScope.launch {
-            preview.toAdd.forEach { repository.saveTransaction(it) }
-            onDone(preview.toAdd.size)
+            val have = repository.categories.first()
+            preview.newCategories.forEachIndexed { i, (type, name) ->
+                if (have.none { it.type == type && it.name.equals(name, ignoreCase = true) }) {
+                    repository.saveCategory(
+                        com.leftovers.app.data.Category(
+                            name = name, emoji = com.leftovers.app.util.CategoryGuess.icon(name, type),
+                            color = com.leftovers.app.data.Palette.all[(have.size + i) % com.leftovers.app.data.Palette.all.size],
+                            type = type, addsToBudget = type == com.leftovers.app.data.TxType.INCOME,
+                        ),
+                    )
+                }
+            }
+            val cats = repository.categories.first()
+            val entries = preview.toAdd.mapIndexed { i, t ->
+                val (type, name) = preview.pendingCategory[i] ?: return@mapIndexed t
+                cats.firstOrNull { it.type == type && it.name.equals(name, ignoreCase = true) }?.let { t.copy(categoryId = it.id) } ?: t
+            }
+            repository.addTransactions(entries)
+            onDone(entries.size)
         }
     }
 
@@ -191,6 +259,10 @@ class SettingsViewModel(
         viewModelScope.launch { settingsRepository.setCurrency(code) }
     }
 
+    fun setTimeFormat(format: com.leftovers.app.data.TimeFormat) {
+        viewModelScope.launch { settingsRepository.setTimeFormat(format) }
+    }
+
     fun setTheme(mode: ThemeMode) {
         viewModelScope.launch { settingsRepository.setThemeMode(mode) }
     }
@@ -203,6 +275,10 @@ class SettingsViewModel(
         viewModelScope.launch { settingsRepository.setGlassEffects(enabled) }
     }
 
+    fun setPureBlack(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setPureBlack(enabled) }
+    }
+
     fun setBudgetAlerts(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setBudgetAlerts(enabled) }
     }
@@ -213,6 +289,14 @@ class SettingsViewModel(
 
     fun setAppLock(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setAppLock(enabled) }
+    }
+
+    fun setLockAfter(seconds: Int) {
+        viewModelScope.launch { settingsRepository.setLockAfter(seconds) }
+    }
+
+    fun setLockFingerprint(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setLockFingerprint(enabled) }
     }
 
     fun setAutoBackupDays(days: Int) {
@@ -281,6 +365,69 @@ class SettingsViewModel(
         }
     }
 
+    /** Remembers [tree] as the folder shared with the user's other phones, and syncs straight away. */
+    fun enableSync(context: Context, tree: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            settingsRepository.setSyncServer(null, null)
+            settingsRepository.setSyncDir(tree.toString())
+            syncNow(context, onResult)
+        }
+    }
+
+    fun syncNow(context: Context, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val result = DeviceSync.runIfOn(context) ?: return@launch
+            result.fold({ onResult(DeviceSync.describe(it)) }, { onResult("Couldn't sync: ${WebDavPlace.problem(it)}") })
+        }
+    }
+
+    /** Tries the server first, and keeps it only when a sync works; [onResult] gets null on success, or what went wrong. */
+    fun enableServerSync(context: Context, url: String, user: String, password: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            val place = runCatching { WebDavPlace(url, user, password) }.getOrElse { onResult(it.message); return@launch }
+            DeviceSync.runNow(context, place).fold(
+                { outcome ->
+                    (context.applicationContext as com.leftovers.app.LeftoversApp).container.syncLogin.set(password)
+                    settingsRepository.setSyncDir(null)
+                    settingsRepository.setSyncServer(url.trim().trimEnd('/'), user)
+                    onResult(null)
+                    android.widget.Toast.makeText(context, DeviceSync.describe(outcome), android.widget.Toast.LENGTH_LONG).show()
+                },
+                { onResult(WebDavPlace.problem(it)) },
+            )
+        }
+    }
+
+    fun setUpdateCheck(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setUpdateCheck(enabled) }
+    }
+
+    /** Asks GitHub now; [onResult] says what it found. */
+    fun checkForUpdate(context: Context, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            com.leftovers.app.util.UpdateCheck.latest().fold(
+                { release ->
+                    if (com.leftovers.app.util.UpdateCheck.isNewer(release.version, com.leftovers.app.util.UpdateCheck.installed(context))) {
+                        onResult("Leftovers ${release.version} is out")
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } else {
+                        onResult("You have the latest version")
+                    }
+                },
+                { onResult("Couldn't check: ${WebDavPlace.problem(it)}") },
+            )
+        }
+    }
+
+    fun disableSync(context: Context, dir: String?) {
+        viewModelScope.launch {
+            settingsRepository.setSyncDir(null)
+            settingsRepository.setSyncServer(null, null)
+            (context.applicationContext as com.leftovers.app.LeftoversApp).container.syncLogin.set(null)
+            dir?.let { runCatching { context.contentResolver.releasePersistableUriPermission(Uri.parse(it), Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } }
+        }
+    }
+
     fun disableAutoBackup(context: Context, dir: String?) {
         viewModelScope.launch {
             settingsRepository.setAutoBackupDir(null)
@@ -290,6 +437,10 @@ class SettingsViewModel(
 
     fun setSmsDetection(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setSmsDetection(enabled) }
+    }
+
+    fun setAppNotifications(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAppNotifications(enabled) }
     }
 
     fun backupTo(uri: Uri, onResult: (String) -> Unit) {
@@ -302,12 +453,31 @@ class SettingsViewModel(
     }
 
     /** [onNeedPassword] is called when the backup is protected and no saved or typed password opens it. */
-    fun restoreFrom(uri: Uri, password: String? = null, onNeedPassword: (wrong: Boolean) -> Unit, onResult: (String) -> Unit) {
+    fun restoreFrom(
+        uri: Uri,
+        password: String? = null,
+        keep: Boolean = false,
+        onNeedPassword: (wrong: Boolean) -> Unit,
+        onNotBackup: () -> Unit = {},
+        onResult: (String) -> Unit,
+    ) {
         viewModelScope.launch {
-            backup.import(uri, password).fold(
-                { onResult("Restored $it entries") },
+            backup.import(uri, password, keep).fold(
                 {
-                    if (it is BackupPasswordException) onNeedPassword(password != null) else onResult("Couldn't restore: ${it.message}")
+                    onResult(
+                        when {
+                            !keep -> "Restored ${it.entries} entries"
+                            it.alreadyHere > 0 -> "Added ${it.entries} entries; ${it.alreadyHere} were already here"
+                            else -> "Added ${it.entries} entries"
+                        },
+                    )
+                },
+                {
+                    when (it) {
+                        is BackupPasswordException -> onNeedPassword(password != null)
+                        is com.leftovers.app.util.NotABackupException -> onNotBackup()
+                        else -> onResult("Couldn't restore: ${it.message}")
+                    }
                 },
             )
         }
@@ -348,6 +518,12 @@ fun SettingsScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
     val context = LocalContext.current
+    // Payment apps' notifications need notification access, given in the phone's settings; checked again on return.
+    var notificationAccess by remember { mutableStateOf(com.leftovers.app.util.PaymentApps.accessGranted(context)) }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        notificationAccess = com.leftovers.app.util.PaymentApps.accessGranted(context)
+        onPauseOrDispose { }
+    }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var showCurrency by rememberSaveable { mutableStateOf(false) }
@@ -367,7 +543,12 @@ fun SettingsScreen(
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
     // A protected backup waiting for its password; the flag says the last try was wrong.
     var lockedRestore by remember { mutableStateOf<Pair<Uri, Boolean>?>(null) }
+    var lockedPdf by remember { mutableStateOf<Pair<Uri, Boolean>?>(null) }
+    // Whether the restore being done keeps what's already in the app (true) or replaces it.
+    var restoreKeeps by remember { mutableStateOf(true) }
     var setPassword by rememberSaveable { mutableStateOf(false) }
+    var chooseSync by rememberSaveable { mutableStateOf(false) }
+    var syncServerForm by rememberSaveable { mutableStateOf(false) }
     val passwordSet by viewModel.backupPasswordSet.collectAsStateWithLifecycle()
     fun toast(text: String) = scope.launch { snackbar.showSnackbar(text) }
 
@@ -376,7 +557,7 @@ fun SettingsScreen(
     }
     val openBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> pendingRestore = uri }
     val openCsv = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) viewModel.readCsv(context, uri) { message -> scope.launch { snackbar.showSnackbar(message) } }
+        if (uri != null) viewModel.readCsv(context, uri, onNeedPassword = { wrong -> lockedPdf = uri to wrong }) { message -> scope.launch { snackbar.showSnackbar(message) } }
     }
     val pickBackupFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
         if (tree != null) {
@@ -384,6 +565,14 @@ fun SettingsScreen(
                 context.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             }
             viewModel.enableAutoBackup(context, tree) { toast(it) }
+        }
+    }
+    val pickSyncFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        if (tree != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            viewModel.enableSync(context, tree) { toast(it) }
         }
     }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -394,6 +583,41 @@ fun SettingsScreen(
 
     GlassScreen(title = "Settings", onBack = onBack, snackbar = snackbar) { padding ->
         val s = settings ?: return@GlassScreen
+        val passcode = (context.applicationContext as com.leftovers.app.LeftoversApp).container.passcode
+        val passcodeKind by passcode.kind.collectAsStateWithLifecycle()
+        var showLockOptions by rememberSaveable { mutableStateOf(false) }
+    var showPaymentApps by rememberSaveable { mutableStateOf(false) }
+    if (showPaymentApps) PaymentAppsSheet(onDismiss = { showPaymentApps = false })
+        // App lock was switched on with no phone screen lock: it turns on once an app PIN or password is saved.
+        var enableLockAfterCode by rememberSaveable { mutableStateOf(false) }
+        if (showLockOptions) {
+            LockOptionsSheet(
+                kind = passcodeKind,
+                phoneLock = canLock(context),
+                lockAfter = s.lockAfterSeconds,
+                fingerprint = s.lockFingerprint,
+                onSaveCode = { code, kind ->
+                    // Read now: closing the sheet clears the flag before the save below finishes.
+                    val turnOn = enableLockAfterCode
+                    scope.launch {
+                        passcode.set(code, kind)
+                        if (turnOn) viewModel.setAppLock(true)
+                        enableLockAfterCode = false
+                        snackbar.showSnackbar(if (kind == com.leftovers.app.util.AppPasscode.Kind.PIN) "App PIN set" else "Password set")
+                    }
+                },
+                onUsePhoneLock = {
+                    passcode.clear()
+                    scope.launch { snackbar.showSnackbar("Unlocks with the phone's screen lock") }
+                },
+                onLockAfter = viewModel::setLockAfter,
+                onFingerprint = viewModel::setLockFingerprint,
+                onDismiss = {
+                    showLockOptions = false
+                    enableLockAfterCode = false
+                },
+            )
+        }
         val money = Money(s.currencyCode)
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -450,6 +674,19 @@ fun SettingsScreen(
                         }
                         // Off: solid bars, cards, dialogs and sheets, with no blur (also a little easier on the battery).
                         ToggleRow(Lucide.Droplet, "Glass effects", s.glassEffects, viewModel::setGlassEffects, inset = false)
+                        // Only means something with the dark theme, so it's hidden when the app is always light.
+                        if (s.themeMode != ThemeMode.LIGHT) {
+                            ToggleRow(Lucide.Moon, "Pure black (AMOLED)", s.pureBlack, viewModel::setPureBlack, inset = false)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Text("Time", style = MaterialTheme.typography.labelMedium, color = c.textSecondary, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
+                        SegmentedToggle(
+                            com.leftovers.app.data.TimeFormat.entries,
+                            s.timeFormat,
+                            { it.label },
+                            viewModel::setTimeFormat,
+                            Modifier.fillMaxWidth(),
+                        )
                     }
                 }
             }
@@ -459,8 +696,26 @@ fun SettingsScreen(
                 Glass(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(vertical = 6.dp)) {
                         ToggleRow(Lucide.Lock, "App lock", s.appLock, { on ->
-                            if (on && !canLock(context)) toast("Set up a screen lock on your phone first") else viewModel.setAppLock(on)
+                            // Without a phone screen lock, an app PIN or password is the way to lock it.
+                            if (on && !canLock(context) && passcodeKind == null) {
+                                enableLockAfterCode = true
+                                showLockOptions = true
+                            } else {
+                                viewModel.setAppLock(on)
+                            }
                         })
+                        if (s.appLock) {
+                            RowDivider()
+                            NavRow(
+                                Lucide.Shield,
+                                "Lock options",
+                                when (passcodeKind) {
+                                    com.leftovers.app.util.AppPasscode.Kind.PIN -> "App PIN"
+                                    com.leftovers.app.util.AppPasscode.Kind.PASSWORD -> "Password"
+                                    null -> "Phone lock"
+                                } + " · " + lockAfterLabel(s.lockAfterSeconds).lowercase(),
+                            ) { showLockOptions = true }
+                        }
                         RowDivider()
                         ToggleRow(Lucide.Repeat, "Remind me before bills", s.billReminders, { on ->
                             if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -478,7 +733,7 @@ fun SettingsScreen(
                         })
                         if (s.reminderEnabled) {
                             RowDivider()
-                            NavRow(Lucide.CalendarClock, "Remind me at", Reminders.label(s.reminderMinutes)) { showTime = true }
+                            NavRow(Lucide.CalendarClock, "Remind me at", Reminders.label(s.reminderMinutes, com.leftovers.app.util.LocalUse24Hour.current)) { showTime = true }
                         }
                         RowDivider()
                         ToggleRow(Lucide.Briefcase, "Shift & roster reminders", s.shiftRemindersEnabled, { on ->
@@ -500,23 +755,25 @@ fun SettingsScreen(
                             if (on) smsPermission.launch(Manifest.permission.RECEIVE_SMS) else viewModel.setSmsDetection(false)
                         })
                         RowDivider()
-                        ToggleRow(Lucide.Bell, "Detect app notifications", s.notificationDetection, { on ->
-                            if (on) {
-                                viewModel.setNotificationDetection(true)
-                                if (!com.leftovers.app.util.detection.NotificationAccessHelper.isAccessGranted(context)) {
-                                    showNotificationSettings = true
+                        ToggleRow(Lucide.Bell, "Detect payment apps", (s.appNotifications || s.notificationDetection) && notificationAccess, { on ->
+                            viewModel.setAppNotifications(on)
+                            viewModel.setNotificationDetection(on)
+                            if (on && !notificationAccess) {
+                                val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                    android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                                        .putExtra(android.provider.Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, com.leftovers.app.util.PaymentApps.component(context).flattenToString())
+                                } else {
+                                    android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
                                 }
-                            } else {
-                                viewModel.setNotificationDetection(false)
+                                runCatching { context.startActivity(intent) }
+                                    .onFailure { runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }
                             }
                         })
-                        if (s.notificationDetection) {
+                        if ((s.appNotifications || s.notificationDetection) && notificationAccess) {
                             RowDivider()
-                            NavRow(
-                                Lucide.SlidersHorizontal,
-                                "Notification apps & settings",
-                                if (s.enabledNotificationApps.isEmpty()) "All supported" else "${s.enabledNotificationApps.size} enabled"
-                            ) { showNotificationSettings = true }
+                            val apps by (context.applicationContext as com.leftovers.app.LeftoversApp).container.paymentApps.apps.collectAsStateWithLifecycle()
+                            val reading = apps.count { it.read }
+                            NavRow(Lucide.Smartphone, "Payment apps", "$reading ${if (reading == 1) "app" else "apps"}") { showPaymentApps = true }
                         }
                         RowDivider()
                         NavRow(Lucide.Mail, "Detect payments in email", emailConnection?.address ?: "Off") { showEmail = true }
@@ -525,6 +782,18 @@ fun SettingsScreen(
                             NavRow(Lucide.Tag, "Detection keywords", if (s.detectionKeywords.isEmpty()) "Test a message" else "${s.detectionKeywords.size} added") { showKeywords = true }
                         }
                     }
+                }
+                if (s.appNotifications) {
+                    Text(
+                        if (notificationAccess) {
+                            "Reads only notifications from ${com.leftovers.app.util.PaymentApps.names.values.joinToString(", ")}, and only a fingerprint of each is kept. Offers and reminders are skipped."
+                        } else {
+                            "Turn on notification access for Leftovers in the screen that opened, then come back."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textSecondary,
+                        modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp),
+                    )
                 }
                 if (s.smsDetection) {
                     Text(
@@ -602,8 +871,14 @@ fun SettingsScreen(
                             viewModel.export(context) { scope.launch { snackbar.showSnackbar("Nothing to export yet") } }
                         }
                         RowDivider()
-                        NavRow(Lucide.Download, "Import from CSV", "Bank statement or another app") {
-                            openCsv.launch(arrayOf("text/*", "application/csv", "application/vnd.ms-excel", "application/octet-stream"))
+                        NavRow(Lucide.Download, "Import entries", "Statements, other apps") {
+                            openCsv.launch(
+                                arrayOf(
+                                    "text/*", "application/csv", "application/vnd.ms-excel", "application/octet-stream",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/pdf",
+                                    "application/json", "application/zip",
+                                ),
+                            )
                         }
                         RowDivider()
                         ListRow(
@@ -641,6 +916,46 @@ fun SettingsScreen(
                 }
             }
 
+            item { SectionHeader("Sync") }
+            item {
+                Glass(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(vertical = 6.dp)) {
+                        val syncOn = s.syncDir != null || s.syncServer != null
+                        ToggleRow(Lucide.Smartphone, "Sync between devices", syncOn, { on ->
+                            if (on) chooseSync = true else viewModel.disableSync(context, s.syncDir)
+                        })
+                        if (syncOn) {
+                            RowDivider()
+                            NavRow(
+                                if (s.syncServer != null) Lucide.Globe else Lucide.Folder,
+                                if (s.syncServer != null) "Server" else "Folder",
+                                s.syncServer?.removePrefix("https://")?.substringBefore('/') ?: "Chosen folder",
+                            ) { chooseSync = true }
+                            RowDivider()
+                            NavRow(
+                                Lucide.Repeat,
+                                "Sync now",
+                                if (s.syncLast > 0) {
+                                    val at = java.time.Instant.ofEpochMilli(s.syncLast).atZone(java.time.ZoneId.systemDefault())
+                                    "${at.toLocalDate().friendlyLabel()}, ${at.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))}"
+                                } else "Not synced yet",
+                            ) { viewModel.syncNow(context) { toast(it) } }
+                        }
+                    }
+                }
+                Text(
+                    if (s.syncDir == null && s.syncServer == null) {
+                        "Keep your phones in step with no account: use a folder that Syncthing or Nextcloud's app keeps the same on each phone, or your own WebDAV server, and choose the same one on every phone."
+                    } else {
+                        "Each phone keeps its data there and merges in the others' when the app opens and every few hours. Entries deleted or changed on one phone are removed on the others; Money owed, goals and subscriptions are only added." +
+                            if (passwordSet) " Files are encrypted with your backup password; use the same one on every phone." else " Set a backup password to keep these files encrypted."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.textTertiary,
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp),
+                )
+            }
+
             item { SectionHeader("App updates") }
             item {
                 com.leftovers.app.updater.ui.AppUpdateSection(viewModel = updateViewModel)
@@ -656,10 +971,32 @@ fun SettingsScreen(
                 ) {
                     Icon(Lucide.Lock, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Stored on both device & cloud · Leftovers 1.7.1", style = MaterialTheme.typography.bodySmall, color = c.textTertiary, textAlign = TextAlign.Center)
+                    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty().removeSuffix("-dev") }
+                    val where = if (s.cloudUserEmail != null) "Stored on device & encrypted cloud" else if (s.syncDir != null || s.syncServer != null) "Stored on your devices only" else "Stored only on this device"
+                    Text("$where · Leftovers $version", style = MaterialTheme.typography.bodySmall, color = c.textTertiary, textAlign = TextAlign.Center)
                 }
             }
             item {
+                val uriHandler = LocalUriHandler.current
+                Glass(Modifier.fillMaxWidth().padding(top = 24.dp)) {
+                    Column(Modifier.padding(vertical = 6.dp)) {
+                        // Opens GitHub's issue forms (bug report or feature request) in the browser.
+                        NavRow(Lucide.MessageCircle, "Report a problem or suggest an idea", "GitHub") {
+                            uriHandler.openUri("https://github.com/saisaharsh3/Leftovers/issues/new/choose")
+                        }
+                        RowDivider()
+                        // Off unless turned on: F-Droid and Obtainium already update the app.
+                        ToggleRow(Lucide.Bell, "Tell me about new versions", s.updateCheck, { on ->
+                            viewModel.setUpdateCheck(on)
+                            if (on && android.os.Build.VERSION.SDK_INT >= 33) notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        })
+                        RowDivider()
+                        NavRow(Lucide.Download, "Check for a new version", null) { viewModel.checkForUpdate(context) { toast(it) } }
+                    }
+                }
+            }
+            item {
+                val uriHandler = LocalUriHandler.current
                 Text(
                     "Made by Aneesh",
                     style = MaterialTheme.typography.bodySmall,
@@ -719,14 +1056,64 @@ fun SettingsScreen(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 shape = RoundedCornerShape(30.dp),
                 title = { Text("Restore this backup?") },
-                text = { Text("Everything currently in the app will be replaced with the backup's contents.", color = c.textSecondary) },
-                confirmButton = {
-                    TextButton(onClick = {
+                text = {
+                    fun restore(keep: Boolean) {
                         pendingRestore = null
-                        viewModel.restoreFrom(uri, onNeedPassword = { wrong -> lockedRestore = uri to wrong }) { toast(it) }
-                    }) { Text("Restore", color = c.textPrimary) }
+                        restoreKeeps = keep
+                        viewModel.restoreFrom(
+                            uri,
+                            keep = keep,
+                            onNeedPassword = { wrong -> lockedRestore = uri to wrong },
+                            // Not a backup, but maybe a statement or another app's export: offer its entries instead.
+                            onNotBackup = {
+                                viewModel.readCsv(context, uri, onNeedPassword = { wrong -> lockedPdf = uri to wrong }) { message -> toast("That isn't a Leftovers backup. $message") }
+                            },
+                        ) { toast(it) }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "Keep what's in the app and add the backup's entries (any already here aren't added twice), or replace everything with the backup.",
+                            color = c.textSecondary,
+                        )
+                        PrimaryButton("Keep mine and add the backup", { restore(keep = true) }, Modifier.fillMaxWidth())
+                        SecondaryButton("Replace everything", { restore(keep = false) }, Modifier.fillMaxWidth())
+                        Text(
+                            "Replacing removes what's in the app now, including its settings.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.textTertiary,
+                        )
+                    }
                 },
+                confirmButton = {},
                 dismissButton = { TextButton(onClick = { pendingRestore = null }) { Text("Cancel", color = c.textSecondary) } },
+            )
+        }
+
+        lockedPdf?.let { (uri, wrong) ->
+            var typed by remember(uri, wrong) { mutableStateOf("") }
+            GlassAlertDialog(
+                onDismissRequest = { lockedPdf = null },
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(30.dp),
+                title = { Text("This statement has a password") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Banks usually set it to something like your date of birth or customer ID; the email or the bank's website says which. It's only used to open the file on this phone.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = c.textSecondary,
+                        )
+                        GlassTextField(typed, { typed = it }, placeholder = "Password", password = true)
+                        if (wrong) Text("That password didn't work", style = MaterialTheme.typography.bodySmall, color = c.negative)
+                    }
+                },
+                confirmButton = {
+                    TextButton(enabled = typed.isNotEmpty(), onClick = {
+                        lockedPdf = null
+                        viewModel.readCsv(context, uri, typed, onNeedPassword = { w -> lockedPdf = uri to w }) { toast(it) }
+                    }) { Text("Open", color = c.textPrimary) }
+                },
+                dismissButton = { TextButton(onClick = { lockedPdf = null }) { Text("Cancel", color = c.textSecondary) } },
             )
         }
 
@@ -746,11 +1133,79 @@ fun SettingsScreen(
                 confirmButton = {
                     TextButton(enabled = typed.isNotEmpty(), onClick = {
                         lockedRestore = null
-                        viewModel.restoreFrom(uri, typed, onNeedPassword = { w -> lockedRestore = uri to w }) { toast(it) }
+                        viewModel.restoreFrom(uri, typed, keep = restoreKeeps, onNeedPassword = { w -> lockedRestore = uri to w }) { toast(it) }
                     }) { Text("Restore", color = c.textPrimary) }
                 },
                 dismissButton = { TextButton(onClick = { lockedRestore = null }) { Text("Cancel", color = c.textSecondary) } },
             )
+        }
+
+        if (chooseSync) {
+            GlassAlertDialog(
+                onDismissRequest = { chooseSync = false },
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(30.dp),
+                title = { Text("Sync through") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ListRow("A folder", subtitle = "Syncthing, Nextcloud app, any synced folder", leading = { IconTile(Lucide.Folder, c.textPrimary, size = 38.dp) }) {
+                            chooseSync = false
+                            pickSyncFolder.launch(null)
+                        }
+                        ListRow("My WebDAV server", subtitle = "Nextcloud, ownCloud, any WebDAV", leading = { IconTile(Lucide.Globe, c.textPrimary, size = 38.dp) }) {
+                            chooseSync = false
+                            syncServerForm = true
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = { TextButton(onClick = { chooseSync = false }) { Text("Cancel", color = c.textSecondary) } },
+            )
+        }
+
+        if (syncServerForm) {
+            var url by rememberSaveable { mutableStateOf(s.syncServer ?: "https://") }
+            var user by rememberSaveable { mutableStateOf(s.syncUser.orEmpty()) }
+            var pass by remember { mutableStateOf("") }
+            var busy by remember { mutableStateOf(false) }
+            var error by remember { mutableStateOf<String?>(null) }
+            val ok = url.length > "https://".length && user.isNotBlank() && pass.isNotEmpty() && !busy
+            GlassSheet({ if (!busy) syncServerForm = false }) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text("WebDAV server", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                    GlassTextField(url, { url = it.trim(); error = null }, placeholder = "https://", label = "Folder address", keyboardType = KeyboardType.Uri)
+                    Text(
+                        "For Nextcloud: https://your-server/remote.php/dav/files/your-name/Leftovers",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textTertiary,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                    GlassTextField(user, { user = it.trim(); error = null }, placeholder = "Your user name", label = "User name", keyboardType = KeyboardType.Email)
+                    GlassTextField(pass, { pass = it; error = null }, placeholder = "Password", label = "Password", password = true)
+                    Text(
+                        "With Nextcloud, make an app password in Settings › Security, so this phone can be signed out on its own. It's kept encrypted on this phone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textTertiary,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                    error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.negative, modifier = Modifier.padding(start = 6.dp)) }
+                    PrimaryButton(
+                        if (busy) "Connecting…" else "Connect",
+                        {
+                            busy = true
+                            viewModel.enableServerSync(context, url, user.trim(), pass) { problem ->
+                                busy = false
+                                if (problem == null) syncServerForm = false else error = problem
+                            }
+                        },
+                        Modifier.fillMaxWidth(),
+                        enabled = ok,
+                    )
+                }
+            }
         }
 
         if (setPassword) {
@@ -786,7 +1241,7 @@ fun SettingsScreen(
         }
 
         if (showTime) {
-            val state = rememberTimePickerState(s.reminderMinutes / 60, s.reminderMinutes % 60)
+            val state = rememberTimePickerState(s.reminderMinutes / 60, s.reminderMinutes % 60, is24Hour = com.leftovers.app.util.LocalUse24Hour.current)
             GlassAlertDialog(
                 onDismissRequest = { showTime = false },
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -892,10 +1347,25 @@ fun SettingsScreen(
                                 val to = java.time.LocalDate.ofEpochDay(days.max()).friendlyLabel()
                                 if (from == to) "From $from." else "From $from to $to."
                             } else null,
+                            // The totals, so an amount read wrongly shows before anything is added.
+                            if (adding > 0) {
+                                val spent = preview.toAdd.filter { it.type == com.leftovers.app.data.TxType.EXPENSE }.sumOf { it.amountMinor }
+                                val earned = preview.toAdd.filter { it.type == com.leftovers.app.data.TxType.INCOME }.sumOf { it.amountMinor }
+                                listOfNotNull(
+                                    if (spent > 0) "${money.format(spent)} spending" else null,
+                                    if (earned > 0) "${money.format(earned)} income" else null,
+                                ).joinToString(" and ").takeIf { it.isNotEmpty() }?.let { "$it in total." }
+                            } else null,
                             if (preview.duplicates > 0) "${preview.duplicates} already in Leftovers ${if (preview.duplicates == 1) "is" else "are"} skipped." else null,
                             if (preview.noCategory > 0) "${if (preview.noCategory == adding) "They have" else "${preview.noCategory} have"} no category, so ${if (preview.noCategory == 1) "it goes" else "they go"} to Other; change any later." else null,
-                            if (preview.unmatched > 0) "${preview.unmatched} with a category you don't have go to Other." else null,
+                            preview.newCategories.takeIf { it.isNotEmpty() }?.let { list ->
+                                val names = list.map { it.second }
+                                val shown = if (names.size > 4) names.take(3).joinToString(", ") + " and ${names.size - 3} more"
+                                    else names.dropLast(1).joinToString(", ").let { if (it.isEmpty()) names.last() else "$it and ${names.last()}" }
+                                "${if (names.size == 1) "A new category is" else "${names.size} new categories are"} added: $shown."
+                            },
                             if (preview.unreadable > 0) "${preview.unreadable} ${if (preview.unreadable == 1) "row" else "rows"} without a readable date or amount ${if (preview.unreadable == 1) "is" else "are"} left out." else null,
+                            if (preview.transfers > 0) "${preview.transfers} ${if (preview.transfers == 1) "transfer" else "transfers"} between accounts ${if (preview.transfers == 1) "is" else "are"} left out, as ${if (preview.transfers == 1) "it isn't" else "they aren't"} spending or income." else null,
                         ).joinToString(" "),
                     )
                 },
@@ -942,7 +1412,9 @@ private fun NavRow(icon: ImageVector, title: String, value: String?, onClick: ()
         trailing = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (value != null) {
-                    Text(value, style = MaterialTheme.typography.bodySmall, color = c.textSecondary, maxLines = 1, modifier = Modifier.padding(end = 6.dp))
+                    // Capped, so a long value shortens itself and the row's title always shows in full.
+                    Text(value, style = MaterialTheme.typography.bodySmall, color = c.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 150.dp).padding(end = 6.dp))
                 }
                 Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
             }
@@ -954,6 +1426,7 @@ private fun NavRow(icon: ImageVector, title: String, value: String?, onClick: ()
 @Composable
 private fun ToggleRow(icon: ImageVector, title: String, checked: Boolean, onChange: (Boolean) -> Unit, inset: Boolean = true) {
     val c = LocalAppColors.current
+    val flip = toggleHaptic(onChange)
     ListRow(
         title,
         modifier = if (inset) Modifier else Modifier.padding(horizontal = (0).dp),
@@ -961,7 +1434,7 @@ private fun ToggleRow(icon: ImageVector, title: String, checked: Boolean, onChan
         trailing = {
             Switch(
                 checked = checked,
-                onCheckedChange = onChange,
+                onCheckedChange = flip,
                 colors = SwitchDefaults.colors(
                     checkedTrackColor = c.accent,
                     checkedThumbColor = c.onAccent,
@@ -971,7 +1444,7 @@ private fun ToggleRow(icon: ImageVector, title: String, checked: Boolean, onChan
                 ),
             )
         },
-        onClick = { onChange(!checked) },
+        onClick = { flip(!checked) },
     )
 }
 
@@ -981,6 +1454,201 @@ private fun canLock(context: Context): Boolean {
         manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL) == BiometricManager.BIOMETRIC_SUCCESS
     } else {
         context.getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure
+    }
+}
+
+private fun lockAfterLabel(seconds: Int) = when (seconds) {
+    0 -> "Immediately"
+    30 -> "After 30 s"
+    else -> "After ${seconds / 60} min"
+}
+
+/** How app lock unlocks (the phone's lock, an app PIN or a password) and how soon it locks after leaving. */
+@Composable
+private fun LockOptionsSheet(
+    kind: com.leftovers.app.util.AppPasscode.Kind?,
+    phoneLock: Boolean,
+    lockAfter: Int,
+    fingerprint: Boolean,
+    onSaveCode: (String, com.leftovers.app.util.AppPasscode.Kind) -> Unit,
+    onUsePhoneLock: () -> Unit,
+    onLockAfter: (Int) -> Unit,
+    onFingerprint: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAppColors.current
+    val context = LocalContext.current
+    // null is the phone's lock; it can't be picked when the phone has none.
+    var method by rememberSaveable { mutableStateOf(kind?.name ?: if (phoneLock) "PHONE" else com.leftovers.app.util.AppPasscode.Kind.PIN.name) }
+    var first by rememberSaveable { mutableStateOf("") }
+    var again by rememberSaveable { mutableStateOf("") }
+    val choosing = method != "PHONE" && method != kind?.name
+    val pin = method == com.leftovers.app.util.AppPasscode.Kind.PIN.name
+    val hasBiometric = androidx.biometric.BiometricManager.from(context)
+        .canAuthenticate(androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK) == androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS
+    GlassSheet(onDismiss) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Lock options", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+            Text("Unlock with", style = MaterialTheme.typography.labelMedium, color = c.textSecondary, modifier = Modifier.padding(start = 4.dp))
+            SegmentedToggle(
+                options = listOfNotNull("PHONE".takeIf { phoneLock }, "PIN", "PASSWORD"),
+                selected = method,
+                label = { when (it) { "PHONE" -> "Phone lock"; "PIN" -> "App PIN"; else -> "Password" } },
+                onSelect = { next ->
+                    method = next
+                    first = ""
+                    again = ""
+                    if (next == "PHONE" && kind != null) onUsePhoneLock()
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                when (method) {
+                    "PHONE" -> "Your fingerprint, face or the phone's own screen lock."
+                    "PIN" -> "A PIN just for Leftovers, ${com.leftovers.app.util.AppPasscode.MIN_PIN} to ${com.leftovers.app.util.AppPasscode.MAX_PIN} digits, separate from the phone's lock."
+                    else -> "A password just for Leftovers, at least ${com.leftovers.app.util.AppPasscode.MIN_PASSWORD} characters."
+                } + if (method != "PHONE") " It can't be recovered; if you forget it, the phone's screen lock still opens the app${if (phoneLock) "" else " once you set one up"}." else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textSecondary,
+            )
+            if (method != "PHONE") {
+                if (choosing || kind == null) {
+                    val valid = if (pin) first.length in com.leftovers.app.util.AppPasscode.MIN_PIN..com.leftovers.app.util.AppPasscode.MAX_PIN else first.length >= com.leftovers.app.util.AppPasscode.MIN_PASSWORD
+                    GlassTextField(
+                        first,
+                        { first = if (pin) it.filter(Char::isDigit).take(com.leftovers.app.util.AppPasscode.MAX_PIN) else it.take(64) },
+                        placeholder = if (pin) "New PIN" else "New password",
+                        keyboardType = if (pin) KeyboardType.NumberPassword else KeyboardType.Text,
+                        password = true,
+                    )
+                    GlassTextField(
+                        again,
+                        { again = if (pin) it.filter(Char::isDigit).take(com.leftovers.app.util.AppPasscode.MAX_PIN) else it.take(64) },
+                        placeholder = if (pin) "Same PIN again" else "Same password again",
+                        keyboardType = if (pin) KeyboardType.NumberPassword else KeyboardType.Text,
+                        password = true,
+                    )
+                    if (again.isNotEmpty() && again != first) {
+                        Text("They don't match", style = MaterialTheme.typography.bodySmall, color = c.negative, modifier = Modifier.padding(start = 4.dp))
+                    }
+                    PrimaryButton(
+                        if (pin) "Save PIN" else "Save password",
+                        {
+                            onSaveCode(first, if (pin) com.leftovers.app.util.AppPasscode.Kind.PIN else com.leftovers.app.util.AppPasscode.Kind.PASSWORD)
+                            onDismiss()
+                        },
+                        Modifier.fillMaxWidth(),
+                        enabled = valid && first == again,
+                    )
+                } else {
+                    SecondaryButton(if (pin) "Change PIN" else "Change password", {
+                        method = ""
+                        method = if (pin) "PIN" else "PASSWORD"
+                        first = " "
+                        first = ""
+                    }, Modifier.fillMaxWidth())
+                }
+                if (hasBiometric && kind != null && !choosing) {
+                    Glass(Modifier.fillMaxWidth()) {
+                        ToggleRow(Lucide.Lock, "Also unlock with fingerprint or face", fingerprint, onFingerprint)
+                    }
+                }
+            }
+            Text("Lock after leaving the app", style = MaterialTheme.typography.labelMedium, color = c.textSecondary, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+            SegmentedToggle(
+                options = listOf(0, 30, 300),
+                selected = if (lockAfter in listOf(0, 30, 300)) lockAfter else 0,
+                label = { lockAfterLabel(it) },
+                onSelect = onLockAfter,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Picking a photo, taking one or sharing a file doesn't lock it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textSecondary,
+            )
+        }
+    }
+}
+
+/**
+ * Which apps' notifications are read for payments: the built-in payment apps, and any app that has sent a
+ * notification recently (a bank's own app, say). Each can put its payments in a chosen account.
+ */
+@Composable
+private fun PaymentAppsSheet(onDismiss: () -> Unit) {
+    val c = LocalAppColors.current
+    val container = (LocalContext.current.applicationContext as com.leftovers.app.LeftoversApp).container
+    val apps by container.paymentApps.apps.collectAsStateWithLifecycle()
+    val accounts by container.accounts.accounts.collectAsStateWithLifecycle(emptyList())
+    GlassSheet(onDismiss) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Payment apps", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+            Text(
+                "Only the apps switched on are read. Apps that sent you a notification lately show up here too, so you can add your bank's app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textSecondary,
+            )
+            Glass(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    apps.forEachIndexed { i, app ->
+                        if (i > 0) RowDivider()
+                        var choosing by remember { mutableStateOf(false) }
+                        val account = accounts.firstOrNull { it.id == app.accountId }
+                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(app.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                if (app.read && accounts.size > 1) {
+                                    Box {
+                                        Row(
+                                            Modifier.padding(top = 2.dp).pressable({ choosing = true }, pressedScale = 0.96f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                account?.let { "Goes to ${it.name}" } ?: "Account from the message",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = c.accent,
+                                            )
+                                            Icon(Lucide.ChevronDown, contentDescription = "Choose account", tint = c.accent, modifier = Modifier.size(14.dp))
+                                        }
+                                        androidx.compose.material3.DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
+                                            androidx.compose.material3.DropdownMenuItem(
+                                                text = { Text("Account from the message") },
+                                                onClick = { container.paymentApps.setAccount(app.pkg, null); choosing = false },
+                                            )
+                                            accounts.forEach { a ->
+                                                androidx.compose.material3.DropdownMenuItem(
+                                                    text = { Text(a.name) },
+                                                    onClick = { container.paymentApps.setAccount(app.pkg, a.id); choosing = false },
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (!app.read && app.pkg !in com.leftovers.app.util.PaymentApps.names) {
+                                    Text("Sent you a notification lately", style = MaterialTheme.typography.bodySmall, color = c.textTertiary)
+                                }
+                            }
+                            Switch(
+                                checked = app.read,
+                                onCheckedChange = toggleHaptic({ container.paymentApps.setRead(app.pkg, it) }),
+                                colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.onAccent),
+                            )
+                        }
+                    }
+                }
+            }
+            Text(
+                "With no account chosen, the message's last digits or bank name pick it, like bank SMS.",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textSecondary,
+            )
+        }
     }
 }
 

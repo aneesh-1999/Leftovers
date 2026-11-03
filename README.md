@@ -8,6 +8,8 @@
 A fast, private expense tracker for Android. Log a spend in two taps, see what's safe to spend
 today, plan for the things you want, and ask an AI about your money if you'd like to.
 
+**[saisaharsh3.github.io/Leftovers](https://saisaharsh3.github.io/Leftovers/)**
+
 [![Build](https://github.com/saisaharsh3/Leftovers/actions/workflows/build.yml/badge.svg)](https://github.com/saisaharsh3/Leftovers/actions/workflows/build.yml)
 [![Download](https://img.shields.io/badge/Download-latest%20APK-CDF46F?logo=android&logoColor=black)](https://github.com/saisaharsh3/Leftovers/releases/latest)
 ![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)
@@ -16,9 +18,13 @@ today, plan for the things you want, and ask an AI about your money if you'd lik
 
 ![Home, adding an expense, Insights and Plan](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row1.png)
 
-![Activity calendar, filters, Money owed and the AI assistant](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row2.png)
+![Activity calendar, lent or borrowed, Money owed and the AI assistant](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row2.png)
 
 <a href="https://github.com/aneesh-1999/Leftovers/releases/latest"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-download.png" height="40" alt="Download the APK"></a>&nbsp;
+<a href="https://f-droid.org/packages/com.leftovers.app/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="40" alt="Get it on F-Droid"></a>&nbsp;
+<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/aneesh-1999/Leftovers"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-obtainium.png" height="40" alt="Get it on Obtainium"></a>
+
+If Leftovers is useful to you, a ⭐ helps other people find it.
 
 </div>
 
@@ -53,7 +59,7 @@ Most budget apps want an account, show ads, or send your spending to a server. L
 - **It answers the question you actually have:** *how much can I spend today?* What's left this month,
   minus bills still due, spread over the days remaining.
 - **Private by design:** no sign-up, no ads, no analytics. Your data never leaves the phone unless you
-  choose to connect an AI or an email account.
+  choose to connect an AI or an email account, or sync with your own devices.
 - **Fast to use:** the keypad opens first, so a spend is logged in two taps. Bank SMS and email alerts can
   suggest entries for you, in any currency.
 - **Free and open source** (MIT), with signed releases built in the open by GitHub Actions.
@@ -65,16 +71,22 @@ Most budget apps want an account, show ads, or send your spending to a server. L
 - Expenses and income with categories, notes, accounts and receipt photos
 - Add forgotten spending for any past day from a date strip or calendar
 - Split one bill across several categories
+- Monthly or yearly statement as a PDF, made on the phone
+- Detects payments from FamApp, Google Pay, PhonePe, Paytm, BHIM and CRED notifications, or any app you choose,
+  including your bank's own app, each into the account you pick (optional)
 - Split a bill with friends, equally or by amount: your share is your expense, and what each person owes goes to Money owed
 - Spending abroad? Log it in the local currency at your own rate; the original amount stays visible
-- Search every entry by note, category or amount; filter by account, category or #tag
-- Add #tags to notes (*"Dinner #goa"*) to group entries across categories and months, with a total
-- Tap an entry to edit or delete it. Deleted entries can be restored later from Settings
+- Search every entry by note, category or amount; filter by account, category or #tag; see one month or all time
+- Tag entries (*#goa*, *#work*) to group them across categories and months, with a total; tags have their own
+  row in the note box and show beside the note
+- Tap an entry, the balance or a subscription for a quick card that grows out of it: the details, with Edit,
+  Delete (with Undo), Pause or switching account right there. Deleted entries can be restored later from Settings
 
 **Budgets that make sense day to day**
 - Monthly budget, or a yearly one split evenly, by smart rollover, or custom per month
 - *Safe to spend today*: what's left, minus bills still due, spread over the remaining days
-- Gifts, bonuses and other extra income add to that month's budget (switch per income category)
+- Choose whether gifts, bonuses and other extra income add to that month's budget (off unless you turn it on;
+  then per income category)
 - When a month ends, choose whether what's left carries into the next month, or set it to always or never
 - Per-category limits with alerts at 80% and 100%
 
@@ -83,12 +95,16 @@ Most budget apps want an account, show ads, or send your spending to a server. L
   day, with a reminder the morning before a bill; longer cycles count as their monthly share in totals
 - Skip a single payment without stopping the subscription
 - Spots repeating expenses that look like a subscription and offers to add them
-- Savings goals that say how much to put aside each month and whether you're on track
+- Savings goals that say how much to put aside each month and whether you're on track. Add a shop link (Amazon,
+  Flipkart or any shop) and **Check price** reads its current price when you tap it, to compare with your target
 - Accounts (cash, bank, UPI, cards) with live balances, transfers, a breakdown of how each balance adds up,
-  and a one-step move of every entry to another account (with undo)
+  and a one-step move of every entry to another account (with undo). An account can have its own currency:
+  its entries are entered and shown in it, and totals count them at the rate you set
 - Total balance across accounts on Home, with where it's heading by the end of the month; switch it to one
   account (like a wallet) to see just that account's balance, spending and income
-- Money owed: what you lent or borrowed and from whom, settled with a tap and kept out of your budget
+- Money owed: what you lent or borrowed and from whom, kept out of your budget. It moves the account the money
+  went from or into while it's open, and can be paid back in full or a bit at a time. **Remind** sends someone
+  who owes you a friendly message through WhatsApp, SMS or any app
 
 **Insights**
 - Daily bar chart you can touch to read any day
@@ -102,30 +118,51 @@ Most budget apps want an account, show ads, or send your spending to a server. L
 - Ask questions like *"How much did I spend on food this month?"* or *"Am I on track with my budget?"*
 - Tell it what to do: *"Add 250 for coffee today"*, *"Move yesterday's lunch to Cash"*, *"Set a 5,000 limit on Shopping"*
 - Snap a bill or receipt and it suggests the entries, split by category
+- On the add screen, attach a bill photo and tap **Fill in from this photo**: amount, date, category and note are filled in for you to check
+- **Ask AI about this month** on Insights: what changed against last month and your budget, and what to do about it
+- Knows about Money owed and tags too: *"Who owes me money?"*, *"I lent Arjun 500"*, *"How much did #goa cost?"*
+- **Test connection** in its settings checks your key and model, and any refusal says why, in the service's words
 - Every change it proposes waits for you to tap **Apply**. See [AI assistant](#ai-assistant) below.
 
 **Extras**
-- Home-screen widgets: *Safe to spend today* (with one-tap add) and *Left this month*, plus an *Add expense* Quick Settings tile
-- Evening reminder, app lock (fingerprint, face or PIN)
-- Import from a bank statement or another app (CSV), skipping anything already logged
+- Home-screen widgets: *Safe to spend today* (with one-tap add), *Left this month*, and *Quick add*, which logs
+  ₹50, ₹100, ₹200 or ₹500 in one tap (with Undo) without opening the app and shows what you've spent today;
+  tap its category to switch. Plus an *Add expense* Quick Settings tile
+- **Sync between your devices**, with no account: through a folder that Syncthing or Nextcloud's app keeps the
+  same on each phone, or your own WebDAV server (Nextcloud, ownCloud). Entries deleted or changed on one phone are
+  removed on the others, and the files are encrypted with your backup password
+- Evening reminder, app lock with the phone's lock (fingerprint, face, screen lock) or its own PIN or password, locking as soon as you leave or after 30 s or 5 min
+- Import a bank statement as CSV, Excel (.xlsx, .xls or a bank's HTML ".xls") or PDF, password-protected ones
+  included, or another app's backup (JSON, or a .zip of it), with its notes, tags and categories. Anything already
+  logged is skipped, and the totals show before anything is added
+- Restore a backup over everything, or keep what's in the app and add only the backup's new entries
 - Backup and restore to a file or Google Drive (photos included if you like), daily, weekly or monthly automatic
   backups to a folder you choose, CSV export
 - Optional backup password: backups are encrypted (AES-256) and need it to restore
 - Optional payment detection from bank SMS and from bank email alerts, suggesting entries for you to confirm,
   including money coming in as income.
-  Add your own keywords for banks it misses, and test any message to see what it would suggest. One payment never shows up twice, even when it arrives by both SMS and email
+  Add your own keywords for banks it misses, and test any message to see what it would suggest. One payment never shows up twice, even when it arrives by both SMS and email.
+  A payment to a place you've logged before opens under the category you used last time
 - Swipe sideways to move between Home, Activity, Insights and Plan
-- Frosted glass design in dark and light mode (or solid surfaces with *Glass effects* off), spring animations
-  and high-refresh-rate support
+- Pull down on Home to check for new payment emails, log subscriptions that are due and sync right away
+- Frosted glass design in dark and light mode (or solid surfaces with *Glass effects* off), a liquid glass tab
+  bar on Android 13 and newer, spring animations, haptic feedback and high-refresh-rate support
+- If the app ever closes unexpectedly, it offers to report it on GitHub or by email. You see the report (versions,
+  phone model and the error, nothing from your entries) before anything is sent
 
 ## Privacy
 
 Everything stays on your device. There are no accounts, ads or analytics, and the app makes no
-network calls unless you connect the optional AI assistant or an email account.
+network calls unless you connect the optional AI assistant or an email account, sync with your own WebDAV
+server, tap Check price on a goal, or turn on *Tell me about new versions* (one weekly request to GitHub for
+the latest version number).
 
 - The app is excluded from Android's automatic cloud backup, so backups go only where you save them.
-- With app lock on, screenshots are blocked and the app is hidden in the recent-apps preview.
+- With app lock on, screenshots are blocked and the app is hidden in the recent-apps preview. An app PIN or password is
+  kept only as a salted hash, and repeated wrong tries make you wait longer each time.
 - SMS detection is off by default. When on, messages are read on the device and nothing is added without your tap.
+- Payment app detection is off by default too. When on, it reads only notifications from the payment apps listed in
+  Settings, keeps just a fingerprint of each, and needs notification access you give in the phone's settings.
 - Email detection is off by default and signs in with an *app password* (Gmail, Yahoo, iCloud, Zoho or any
   IMAP server with SSL). It connects only to your mail server, over TLS with the certificate checked. The inbox
   is opened read-only, so nothing is changed or marked as read. Only alerts from banks, cards and payment apps
@@ -133,6 +170,10 @@ network calls unless you connect the optional AI assistant or an email account.
   password are encrypted with an Android Keystore key, never backed up, and deleted when you disconnect.
 - With a backup password, backup files are encrypted. The password is kept encrypted with an Android Keystore key
   and is never written into a backup; if it's forgotten, those backups can't be opened.
+- Sync between devices is off by default. Each phone keeps a full copy of its data in the folder or on the
+  server you choose, encrypted when you set a backup password (use the same one on each phone). A WebDAV
+  password is encrypted with an Android Keystore key and never backed up.
+- Crash reports are never sent by themselves: after a crash the app asks, and you read the report first.
 - Network access is HTTPS-only and trusts only the system's certificate authorities.
 
 ## AI assistant
@@ -184,6 +225,12 @@ What you send is handled under the chosen provider's privacy policy (DeepSeek st
 OpenRouter passes requests on to the model's own provider).
 
 ## Install
+
+**F-Droid:** Leftovers is [on F-Droid](https://f-droid.org/packages/com.leftovers.app/). Install it from the F-Droid
+app and updates arrive there. F-Droid ships the same signed APK as the GitHub releases, so you can switch between
+the two without losing data.
+
+**From GitHub:**
 
 1. Open the [latest release](https://github.com/saisaharsh3/Leftovers/releases/latest) on your phone and download `leftovers-<version>.apk`.
 2. Open the file. If Android asks, allow your browser or file manager to **install unknown apps**.
@@ -255,7 +302,8 @@ Leftovers features a built-in GitHub Releases updater in **Settings → App upda
 
 - Kotlin, Jetpack Compose, Material 3
 - Room (SQLite) with versioned migrations, DataStore for settings
-- WorkManager (reminders, bill alerts, automatic backups), Glance (widgets), Biometric (app lock)
+- WorkManager (reminders, bill alerts, automatic backups, sync), Glance (widgets), Biometric (app lock)
+- [OkHttp](https://square.github.io/okhttp/) for WebDAV sync, which needs requests Android's built-in client can't send
 - AI providers called over plain HTTPS with `org.json`, so no extra SDKs ship in the app
 - [Haze](https://github.com/chrisbanes/haze) for frosted-glass blur
 - [Lucide](https://lucide.dev) icons and the [Manrope](https://github.com/davelab6/manrope) typeface
@@ -273,12 +321,14 @@ app/src/main/java/com/leftovers/app/
 
 - **Bank SMS detection** uses the `RECEIVE_SMS` permission, which Google Play restricts to default SMS
   apps and a few exceptions. It works for direct APK installs; remove it before publishing to Play.
-- The `INTERNET` permission is used only by the AI assistant and email detection, after you connect them.
+- The `INTERNET` permission is used only by the AI assistant and email detection, after you connect them, and by
+  **Check price** on a savings goal, which fetches that one shop page when you tap it.
 
 ## Get involved
 
 - **Try the newest changes:** every push to `dev` is published as a
-  [Dev build](https://github.com/saisaharsh3/Leftovers/releases) that installs next to the real app.
+  [Dev build](https://github.com/saisaharsh3/Leftovers/releases/tag/dev-build) that installs next to the real app, with its
+  own data. To get each new one automatically, [add Leftovers Dev to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522com.leftovers.app.dev%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fsaisaharsh3%252FLeftovers%2522%252C%2522author%2522%253A%2522saisaharsh3%2522%252C%2522name%2522%253A%2522Leftovers%2520Dev%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522includePrereleases%255C%2522%253A%2520true%252C%2520%255C%2522fallbackToOlderReleases%255C%2522%253A%2520false%252C%2520%255C%2522filterReleaseTitlesByRegEx%255C%2522%253A%2520%255C%2522%255EDev%2520build%255C%2522%252C%2520%255C%2522filterReleaseNotesByRegEx%255C%2522%253A%2520%255C%2522%255C%2522%252C%2520%255C%2522verifyLatestTag%255C%2522%253A%2520false%252C%2520%255C%2522useLatestAssetDateAsReleaseDate%255C%2522%253A%2520true%252C%2520%255C%2522releaseTitleAsVersion%255C%2522%253A%2520false%252C%2520%255C%2522trackOnly%255C%2522%253A%2520false%252C%2520%255C%2522versionExtractionRegEx%255C%2522%253A%2520%255C%2522%255C%2522%252C%2520%255C%2522matchGroupToUse%255C%2522%253A%2520%255C%2522%255C%2522%252C%2520%255C%2522versionDetection%255C%2522%253A%2520false%252C%2520%255C%2522releaseDateAsVersion%255C%2522%253A%2520true%252C%2520%255C%2522apkFilterRegEx%255C%2522%253A%2520%255C%2522leftovers-dev%255C%255C%255C%255C.apk%255C%2522%252C%2520%255C%2522invertAPKFilter%255C%2522%253A%2520false%252C%2520%255C%2522autoApkFilterByArch%255C%2522%253A%2520true%252C%2520%255C%2522appName%255C%2522%253A%2520%255C%2522Leftovers%2520Dev%255C%2522%257D%2522%257D) (tap **Continue** when it asks to import).
 - **Report a bug or suggest an idea** with the [issue forms](https://github.com/saisaharsh3/Leftovers/issues/new/choose),
   or ask a question in [Discussions](https://github.com/saisaharsh3/Leftovers/discussions).
 - **Your bank's messages not detected?** Paste one (with personal details removed) in an issue; adding it to

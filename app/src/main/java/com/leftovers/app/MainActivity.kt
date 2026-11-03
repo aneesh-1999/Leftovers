@@ -46,6 +46,7 @@ import com.leftovers.app.util.Money
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** FragmentActivity because the biometric prompt needs it. */
@@ -58,6 +59,8 @@ class MainActivity : FragmentActivity() {
         const val EXTRA_OPEN_DEBTS = "open_debts"
         const val EXTRA_OPEN_CREDIT_CARDS = "open_credit_cards"
         private const val RELOCK_AFTER_MS = 30_000L
+        private const val OWN_SCREEN_GRACE_MS = 10 * 60_000L
+        private const val SYNC_AFTER_LAUNCH_MS = 1_200L
     }
 
     /** Set when the widget or reminder asks to jump straight to "add". */
@@ -70,6 +73,9 @@ class MainActivity : FragmentActivity() {
     private var locked by mutableStateOf(true)
     private var lockChecked by mutableStateOf(false)
     private var backgroundedAt = 0L
+    private var firstStart = true
+    /** When the app itself last opened another screen (photo picker, camera, share sheet, settings). */
+    private var openedOwnScreenAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -117,9 +123,14 @@ class MainActivity : FragmentActivity() {
                 val money = remember(s.currencyCode) { Money(s.currencyCode) }
                 val hazeState = rememberHazeState()
                 val showLock = s.appLock && locked
-                LeftoversTheme(darkTheme = dark, dynamicColor = s.dynamicColor, glassEffects = s.glassEffects) {
+                LeftoversTheme(darkTheme = dark, dynamicColor = s.dynamicColor, glassEffects = s.glassEffects, pureBlack = s.pureBlack) {
                     CompositionLocalProvider(
                         LocalMoney provides money,
+                        com.leftovers.app.util.LocalUse24Hour provides when (s.timeFormat) {
+                            com.leftovers.app.data.TimeFormat.H12 -> false
+                            com.leftovers.app.data.TimeFormat.H24 -> true
+                            com.leftovers.app.data.TimeFormat.PHONE -> android.text.format.DateFormat.is24HourFormat(this@MainActivity)
+                        },
                         LocalHazeState provides hazeState,
                         LocalContentColor provides LocalAppColors.current.textPrimary,
                     ) {
@@ -171,13 +182,62 @@ class MainActivity : FragmentActivity() {
                                     onOpenCreditCardsHandled = { openCreditCardsRequest = false },
                                 )
                             }
+                            // After a crash: offer to report it. Nothing leaves the phone unless the user sends it.
+                            var crash by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(com.leftovers.app.util.CrashReports.pending(this@MainActivity)) }
+                            crash?.let { report ->
+                                val done = { com.leftovers.app.util.CrashReports.clear(this@MainActivity); crash = null }
+                                com.leftovers.app.ui.screens.GlassAlertDialog(
+                                    onDismissRequest = done,
+                                    title = { androidx.compose.material3.Text("Leftovers closed unexpectedly") },
+                                    text = {
+                                        androidx.compose.material3.Text(
+                                            "A short report would help fix it. It has the app and Android version, the phone model and the error, " +
+                                                "and nothing from your entries. You see it before anything is sent.",
+                                        )
+                                    },
+                                    confirmButton = {
+                                        androidx.compose.material3.TextButton(onClick = { com.leftovers.app.util.CrashReports.openIssue(this@MainActivity, report); done() }) {
+                                            androidx.compose.material3.Text("Report on GitHub")
+                                        }
+                                    },
+                                    dismissButton = {
+                                        androidx.compose.foundation.layout.Row {
+                                            androidx.compose.material3.TextButton(onClick = { com.leftovers.app.util.CrashReports.email(this@MainActivity, report); done() }) {
+                                                androidx.compose.material3.Text("Email")
+                                            }
+                                            androidx.compose.material3.TextButton(onClick = done) { androidx.compose.material3.Text("Not now") }
+                                        }
+                                    },
+                                )
+                            }
                             AnimatedVisibility(showLock, enter = fadeIn(), exit = fadeOut()) {
-                                LockScreen(onUnlock = ::authenticate)
+                                val kind by container.passcode.kind.collectAsStateWithLifecycle()
+                                val code = kind
+                                LockScreen(
+                                    kind = code,
+                                    onPhoneUnlock = ::authenticate,
+                                    onFingerprint = if (code != null && s.lockFingerprint && biometricAvailable()) {
+                                        { authenticateBiometric(code) }
+                                    } else {
+                                        null
+                                    },
+                                    check = { typed -> container.passcode.check(typed).also { if (it) locked = false } },
+                                    waitMs = container.passcode::waitMs,
+                                    canUsePhoneLock = phoneLockAvailable(),
+                                )
                             }
                         }
                     }
                 }
-                LaunchedEffect(showLock) { if (showLock) authenticate() }
+                LaunchedEffect(showLock) {
+                    if (showLock) {
+                        val code = container.passcode.kind.value
+                        when {
+                            code == null -> authenticate()
+                            s.lockFingerprint -> authenticateBiometric(code)
+                        }
+                    }
+                }
             }
         }
     }
@@ -211,17 +271,33 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         val container = (application as LeftoversApp).container
-        lifecycleScope.launch { container.syncRecurring() }
+        lifecycleScope.launch {
+            // On a cold start, let the first screen load its data before logging due subscriptions, which
+            // writes to the database and makes every screen reload once more.
+            if (firstStart) delay(SYNC_AFTER_LAUNCH_MS)
+            firstStart = false
+            container.syncRecurring()
+        }
         lifecycleScope.launch {
             runCatching { com.leftovers.app.widget.WeekRosterWidget().updateAll(this@MainActivity) }
             runCatching { com.leftovers.app.widget.SafeToSpendWidget().updateAll(this@MainActivity) }
             runCatching { com.leftovers.app.widget.MonthBudgetWidget().updateAll(this@MainActivity) }
+            runCatching { com.leftovers.app.widget.QuickAddWidget().updateAll(this@MainActivity) }
             runCatching { container.roomExpenses.syncFromFirebase() }
         }
         // Background email checks can be held back for hours to save battery; opening the app catches up.
         container.emailAccount.connection.value?.let { com.leftovers.app.util.EmailSync.checkSoon(this, it.lastCheckedAt) }
-        if (backgroundedAt > 0 && SystemClock.elapsedRealtime() - backgroundedAt > RELOCK_AFTER_MS) {
-            lifecycleScope.launch { if (container.settings.settings.first().appLock) locked = true }
+        if (backgroundedAt > 0) {
+            val away = SystemClock.elapsedRealtime() - backgroundedAt
+            // Picking a photo or sharing a file leaves the app on purpose; that doesn't lock it, unless it's long.
+            val ownTrip = openedOwnScreenAt > 0 && away < OWN_SCREEN_GRACE_MS
+            openedOwnScreenAt = 0
+            if (!ownTrip) {
+                lifecycleScope.launch {
+                    val s = container.settings.settings.first()
+                    if (s.appLock && away >= s.lockAfterSeconds * 1000L) locked = true
+                }
+            }
         }
     }
 
@@ -243,6 +319,38 @@ class MainActivity : FragmentActivity() {
             .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
             .maxByOrNull { it.refreshRate } ?: return
         window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+    }
+
+    // Every screen the app opens goes through here, including startActivity and the photo and file pickers.
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
+    override fun startActivityForResult(intent: android.content.Intent, requestCode: Int, options: Bundle?) {
+        openedOwnScreenAt = SystemClock.elapsedRealtime()
+        super.startActivityForResult(intent, requestCode, options)
+    }
+
+    private fun biometricAvailable(): Boolean =
+        BiometricManager.from(this).canAuthenticate(BIOMETRIC_WEAK) == BiometricManager.BIOMETRIC_SUCCESS
+
+    /** With an app PIN or password: fingerprint or face as a shortcut, with the code as the way back. */
+    private fun authenticateBiometric(kind: com.leftovers.app.util.AppPasscode.Kind) {
+        if (!biometricAvailable()) return
+        val prompt = BiometricPrompt(
+            this,
+            ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    locked = false
+                }
+            },
+        )
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Unlock Leftovers")
+            .setSubtitle("Use your fingerprint or face")
+            .setNegativeButtonText(if (kind == com.leftovers.app.util.AppPasscode.Kind.PIN) "Use PIN" else "Use password")
+            .setAllowedAuthenticators(BIOMETRIC_WEAK)
+            .build()
+        prompt.authenticate(info)
     }
 
     private fun authenticate() {
@@ -281,5 +389,12 @@ class MainActivity : FragmentActivity() {
             }
             .build()
         prompt.authenticate(info)
+    }
+
+    /** Whether the phone has a screen lock (or fingerprint) that can unlock the app. */
+    private fun phoneLockAvailable(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        BiometricManager.from(this).canAuthenticate(BIOMETRIC_WEAK or DEVICE_CREDENTIAL) == BiometricManager.BIOMETRIC_SUCCESS
+    } else {
+        getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure
     }
 }

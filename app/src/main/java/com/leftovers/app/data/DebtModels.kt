@@ -4,7 +4,11 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import java.time.LocalDate
 
-/** Money lent to or borrowed from someone. Kept apart from spending, so it never touches the budget. */
+/**
+ * Money lent to or borrowed from someone, or paid back. Kept apart from spending, so it never touches the
+ * budget, but it moves [accountId]'s balance: lending takes the money out, borrowing puts it in, and a
+ * [repayment] moves it the other way. Settling records what's left as a repayment, so it all evens out.
+ */
 @Entity(
     tableName = "debts",
     indices = [androidx.room.Index("accountId")],
@@ -22,8 +26,10 @@ data class Debt(
     val receiptPath: String? = null,
     val dueDateEpochDay: Long? = null,
     val reminderEnabled: Boolean = false,
-    /** Optional account the money came from or went to (e.g. Cash, Bank); null when unlinked. */
+    /** The account the money left or came into; null for entries made before accounts were tracked here. */
     val accountId: Long? = null,
+    /** Money paid back, all or part of what was owed; its sign is the opposite of what it pays off. */
+    val repayment: Boolean = false,
 ) {
     val photos: List<String> get() = receiptPath?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
     val dueDate: LocalDate? get() = dueDateEpochDay?.let { LocalDate.ofEpochDay(it) }

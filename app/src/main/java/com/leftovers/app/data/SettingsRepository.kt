@@ -18,6 +18,9 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 
 enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("System default") }
 
+/** How times are shown: like the phone, or always 12- or 24-hour. */
+enum class TimeFormat(val label: String) { PHONE("Phone"), H12("12-hour"), H24("24-hour") }
+
 data class AppSettings(
     val onboarded: Boolean = false,
     val currencyCode: String = "EUR",
@@ -27,6 +30,9 @@ data class AppSettings(
     val dynamicColor: Boolean = false,
     /** Frosted, see-through bars, cards and dialogs; off gives solid surfaces. */
     val glassEffects: Boolean = true,
+    /** Black background for OLED screens, when the dark theme is in use. */
+    val pureBlack: Boolean = false,
+    val timeFormat: TimeFormat = TimeFormat.PHONE,
     /** Last exchange rate used per currency in travel mode, e.g. "AED" to "22.7" (home currency per unit). */
     val foreignRates: Map<String, String> = emptyMap(),
     val plan: BudgetPlan = BudgetPlan(),
@@ -36,7 +42,13 @@ data class AppSettings(
     /** Minutes after midnight for the daily reminder. */
     val reminderMinutes: Int = 20 * 60,
     val appLock: Boolean = false,
+    /** How long the app can be away before it locks again: 0 is straight away. */
+    val lockAfterSeconds: Int = 0,
+    /** With an app PIN or password, fingerprint or face can unlock too. */
+    val lockFingerprint: Boolean = true,
     val smsDetection: Boolean = false,
+    /** Read payment apps' notifications (FamApp, Google Pay, PhonePe...) for payments; needs notification access. */
+    val appNotifications: Boolean = false,
     /** Month (yyyy-MM) whose recap the user has already opened or dismissed. */
     val recapSeen: String = "",
     /** Folder (document tree uri) for weekly automatic backups; null when off. */
@@ -111,6 +123,19 @@ data class AppSettings(
     val updateCacheTimestamp: Long = 0L,
     /** Custom remittance and money transfer providers saved by the user. */
     val customRemittanceProviders: Set<String> = emptySet(),
+    /** Folder (document tree uri) shared with the user's other phones for Sync between devices; null when off. */
+    val syncDir: String? = null,
+    /** The user's WebDAV folder (https) for Sync between devices, instead of [syncDir]; null when not used. */
+    val syncServer: String? = null,
+    val syncUser: String? = null,
+    /** This phone's name in the sync folder, made once. */
+    val syncDevice: String? = null,
+    /** When the last sync finished (epoch millis), 0 if never. */
+    val syncLast: Long = 0,
+    /** Tell the user when a newer version is out (asks GitHub weekly); off unless turned on. */
+    val updateCheck: Boolean = false,
+    /** The newest version already told about, so each is told once. */
+    val updateNotified: String? = null,
 )
 
 class SettingsRepository(context: Context) {
@@ -125,6 +150,8 @@ class SettingsRepository(context: Context) {
             themeMode = ThemeMode.entries.firstOrNull { it.name == p[THEME] } ?: ThemeMode.DARK,
             dynamicColor = p[DYNAMIC_COLOR] ?: false,
             glassEffects = p[GLASS_EFFECTS] ?: true,
+            pureBlack = p[PURE_BLACK] ?: false,
+            timeFormat = TimeFormat.entries.firstOrNull { it.name == p[TIME_FORMAT] } ?: TimeFormat.PHONE,
             foreignRates = p[FOREIGN_RATES].orEmpty().split(';').mapNotNull { pair ->
                 pair.split('=').takeIf { it.size == 2 && it[0].isNotBlank() }?.let { it[0] to it[1] }
             }.toMap(),
@@ -137,13 +164,17 @@ class SettingsRepository(context: Context) {
                 carry = CarryMode.entries.firstOrNull { it.name == p[CARRY_MODE] } ?: CarryMode.ASK,
                 carryFrom = p[CARRY_FROM]?.let { runCatching { YearMonth.parse(it) }.getOrNull() },
                 carryChoices = BudgetPlan.decodeChoices(p[CARRY_CHOICES]),
+                extraIncome = p[EXTRA_INCOME] ?: false,
             ),
             budgetAlerts = p[BUDGET_ALERTS] ?: true,
             defaultAccountId = p[DEFAULT_ACCOUNT] ?: 1L,
             reminderEnabled = p[REMINDER] ?: false,
             reminderMinutes = p[REMINDER_TIME] ?: (21 * 60),
             appLock = p[APP_LOCK] ?: false,
+            lockAfterSeconds = p[LOCK_AFTER] ?: 0,
+            lockFingerprint = p[LOCK_FINGERPRINT] ?: true,
             smsDetection = p[SMS] ?: false,
+            appNotifications = p[APP_NOTIFICATIONS] ?: false,
             recapSeen = p[RECAP_SEEN].orEmpty(),
             autoBackupDir = p[AUTO_BACKUP_DIR],
             autoBackupLast = p[AUTO_BACKUP_LAST] ?: 0L,
@@ -181,6 +212,13 @@ class SettingsRepository(context: Context) {
             updateCachedEtag = p[UPDATE_CACHED_ETAG].orEmpty(),
             updateCacheTimestamp = p[UPDATE_CACHE_TIMESTAMP] ?: 0L,
             customRemittanceProviders = p[CUSTOM_REMITTANCE_PROVIDERS] ?: emptySet(),
+            syncDir = p[SYNC_DIR],
+            syncServer = p[SYNC_SERVER],
+            syncUser = p[SYNC_USER],
+            syncDevice = p[SYNC_DEVICE],
+            syncLast = p[SYNC_LAST] ?: 0L,
+            updateCheck = p[UPDATE_CHECK] ?: false,
+            updateNotified = p[UPDATE_NOTIFIED],
         )
     }.sharedLive()
 
@@ -265,7 +303,11 @@ class SettingsRepository(context: Context) {
     suspend fun setDynamicColor(enabled: Boolean) = store.edit { it[DYNAMIC_COLOR] = enabled }
     suspend fun setGlassEffects(enabled: Boolean) = store.edit { it[GLASS_EFFECTS] = enabled }
 
+    suspend fun setPureBlack(enabled: Boolean) = store.edit { it[PURE_BLACK] = enabled }
+
     /** Remembers the rate last used for [code], so the next entry in that currency starts with it. */
+    suspend fun setTimeFormat(format: TimeFormat) = store.edit { it[TIME_FORMAT] = format.name }
+
     suspend fun setForeignRate(code: String, rate: String) = store.edit { p ->
         val rates = p[FOREIGN_RATES].orEmpty().split(';').filter { it.isNotBlank() && !it.startsWith("$code=") } + "$code=$rate"
         p[FOREIGN_RATES] = rates.takeLast(20).joinToString(";")
@@ -279,6 +321,7 @@ class SettingsRepository(context: Context) {
         it[YEAR_SPLIT] = plan.split.name
         it[CUSTOM_SPLIT] = BudgetPlan.encodeCustom(plan.custom)
         it[CARRY_MODE] = plan.carry.name
+        it[EXTRA_INCOME] = plan.extraIncome
         if (plan.carryChoices.isNotEmpty()) it[CARRY_CHOICES] = BudgetPlan.encodeChoices(plan.carryChoices)
         val from = plan.carryFrom ?: it[CARRY_FROM]?.let { raw -> runCatching { YearMonth.parse(raw) }.getOrNull() }
         if (plan.isSet) it[CARRY_FROM] = (from ?: YearMonth.now()).toString() else it.remove(CARRY_FROM)
@@ -301,7 +344,13 @@ class SettingsRepository(context: Context) {
         it[REMINDER_TIME] = minutes
     }
     suspend fun setAppLock(enabled: Boolean) = store.edit { it[APP_LOCK] = enabled }
+
+    suspend fun setLockAfter(seconds: Int) = store.edit { it[LOCK_AFTER] = seconds }
+
+    suspend fun setLockFingerprint(enabled: Boolean) = store.edit { it[LOCK_FINGERPRINT] = enabled }
     suspend fun setSmsDetection(enabled: Boolean) = store.edit { it[SMS] = enabled }
+
+    suspend fun setAppNotifications(enabled: Boolean) = store.edit { it[APP_NOTIFICATIONS] = enabled }
     suspend fun setRecapSeen(month: String) = store.edit { it[RECAP_SEEN] = month }
     suspend fun setAutoBackupDir(dir: String?) = store.edit { if (dir == null) it.remove(AUTO_BACKUP_DIR) else it[AUTO_BACKUP_DIR] = dir }
     suspend fun setAutoBackupDone(at: Long) = store.edit { it[AUTO_BACKUP_LAST] = at }
@@ -309,6 +358,28 @@ class SettingsRepository(context: Context) {
     suspend fun setHomeAccount(id: Long?) = store.edit { if (id == null) it.remove(HOME_ACCOUNT) else it[HOME_ACCOUNT] = id }
     suspend fun setAutoBackupDays(days: Int) = store.edit { it[AUTO_BACKUP_DAYS] = days }
     suspend fun setAutoBackupKeep(count: Int) = store.edit { it[AUTO_BACKUP_KEEP] = count }
+    suspend fun setSyncDir(dir: String?) = store.edit { if (dir == null) it.remove(SYNC_DIR) else it[SYNC_DIR] = dir }
+    suspend fun setSyncServer(url: String?, user: String?) = store.edit {
+        if (url == null) it.remove(SYNC_SERVER) else it[SYNC_SERVER] = url
+        if (user == null) it.remove(SYNC_USER) else it[SYNC_USER] = user
+    }
+    suspend fun setSyncDone(at: Long) = store.edit { it[SYNC_LAST] = at }
+    suspend fun setUpdateCheck(enabled: Boolean) = store.edit { it[UPDATE_CHECK] = enabled }
+    suspend fun setUpdateNotified(version: String) = store.edit { it[UPDATE_NOTIFIED] = version }
+
+    /** This phone's name in the sync folder, like "pixel-7-k3f9q2", made the first time it's needed. */
+    suspend fun syncDevice(): String {
+        var name = ""
+        store.edit { p ->
+            name = p[SYNC_DEVICE] ?: run {
+                val model = android.os.Build.MODEL.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(20).ifEmpty { "phone" }
+                val tag = (1..6).map { "abcdefghijkmnpqrstuvwxyz23456789".random() }.joinToString("")
+                "$model-$tag"
+            }
+            p[SYNC_DEVICE] = name
+        }
+        return name
+    }
     suspend fun setBackupPhotos(enabled: Boolean) = store.edit { it[BACKUP_PHOTOS] = enabled }
     suspend fun setDetectionKeywords(words: Set<String>) = store.edit { it[DETECTION_KEYWORDS] = words }
     suspend fun setDeletedKeepDays(days: Int) = store.edit { it[DELETED_KEEP_DAYS] = days }
@@ -458,13 +529,16 @@ class SettingsRepository(context: Context) {
         val THEME = stringPreferencesKey("theme")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val GLASS_EFFECTS = booleanPreferencesKey("glass_effects")
+        val PURE_BLACK = booleanPreferencesKey("pure_black")
         val FOREIGN_RATES = stringPreferencesKey("foreign_rates")
+        val TIME_FORMAT = stringPreferencesKey("time_format")
         val MONTHLY_BUDGET = longPreferencesKey("monthly_budget")
         val YEARLY_BUDGET = longPreferencesKey("yearly_budget")
         val BUDGET_MODE = stringPreferencesKey("budget_mode")
         val YEAR_SPLIT = stringPreferencesKey("year_split")
         val CUSTOM_SPLIT = stringPreferencesKey("custom_split")
         val CARRY_MODE = stringPreferencesKey("carry_mode")
+        val EXTRA_INCOME = booleanPreferencesKey("extra_income_adds")
         val CARRY_CHOICES = stringPreferencesKey("carry_choices")
         val CARRY_FROM = stringPreferencesKey("carry_from")
         val BUDGET_ALERTS = booleanPreferencesKey("budget_alerts")
@@ -476,11 +550,21 @@ class SettingsRepository(context: Context) {
         val BACKUP_PHOTOS = booleanPreferencesKey("backup_photos")
         val AUTO_BACKUP_DAYS = intPreferencesKey("auto_backup_days")
         val AUTO_BACKUP_KEEP = intPreferencesKey("auto_backup_keep")
+        val SYNC_DIR = stringPreferencesKey("sync_dir")
+        val SYNC_DEVICE = stringPreferencesKey("sync_device")
+        val SYNC_SERVER = stringPreferencesKey("sync_server")
+        val SYNC_USER = stringPreferencesKey("sync_user")
+        val SYNC_LAST = longPreferencesKey("sync_last")
+        val UPDATE_CHECK = booleanPreferencesKey("update_check")
+        val UPDATE_NOTIFIED = stringPreferencesKey("update_notified")
         val DEFAULT_ACCOUNT = longPreferencesKey("default_account")
         val REMINDER = booleanPreferencesKey("reminder")
         val REMINDER_TIME = intPreferencesKey("reminder_time")
         val APP_LOCK = booleanPreferencesKey("app_lock")
+        val LOCK_AFTER = androidx.datastore.preferences.core.intPreferencesKey("lock_after_seconds")
+        val LOCK_FINGERPRINT = booleanPreferencesKey("lock_fingerprint")
         val SMS = booleanPreferencesKey("sms_detection")
+        val APP_NOTIFICATIONS = booleanPreferencesKey("app_notifications")
         val RECAP_SEEN = stringPreferencesKey("recap_seen")
         val AUTO_BACKUP_DIR = stringPreferencesKey("auto_backup_dir")
         val AUTO_BACKUP_LAST = longPreferencesKey("auto_backup_last")

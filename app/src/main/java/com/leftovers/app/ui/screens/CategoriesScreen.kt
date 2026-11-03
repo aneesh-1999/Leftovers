@@ -1,5 +1,6 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.toggleHaptic
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -104,7 +105,7 @@ fun CategoriesScreen(
         onBack = onBack,
         snackbar = snackbar,
         bottomBar = {
-            Box(Modifier.frosted().navigationBarsPadding().padding(16.dp)) {
+            Box(Modifier.frosted(fadeTop = true).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 26.dp, bottom = 16.dp)) {
                 PrimaryButton(
                     "New category",
                     { editing = Category(name = "", emoji = CategoryIcons.keys.first(), color = Palette.all.first(), type = tab, addsToBudget = tab == TxType.INCOME) },
@@ -135,7 +136,7 @@ fun CategoriesScreen(
                                         if (cat.type == TxType.INCOME) {
                                             Switch(
                                                 checked = cat.addsToBudget,
-                                                onCheckedChange = { viewModel.save(cat.copy(addsToBudget = it)) },
+                                                onCheckedChange = toggleHaptic({ viewModel.save(cat.copy(addsToBudget = it)) }),
                                                 colors = SwitchDefaults.colors(
                                                     checkedTrackColor = c.accent,
                                                     checkedThumbColor = c.onAccent,

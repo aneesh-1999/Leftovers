@@ -1,5 +1,14 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.Haptics
+import com.leftovers.app.ui.components.toggleHaptic
+import androidx.compose.foundation.gestures.transformable
+import kotlin.math.abs
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.animation.core.Animatable
 import com.leftovers.app.data.Debt
 import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.rememberCoroutineScope
@@ -27,6 +36,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
 import android.view.HapticFeedbackConstants
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,6 +52,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -160,7 +172,67 @@ class EditorViewModel(
     private val planning: PlanningRepository,
     private val budgetAlerts: BudgetAlertManager,
     private val roomExpenseDao: RoomExpenseDao,
+    private val assistant: com.leftovers.app.ai.AssistantSettings,
 ) : ViewModel() {
+    /** Whether an AI is connected, for reading a receipt photo into the entry. */
+    val aiConfig = assistant.config
+    var readingReceipt by mutableStateOf(false)
+        private set
+    /** What happened when the photo was read: filled in, or why not. */
+    var receiptMessage by mutableStateOf<String?>(null)
+        private set
+    /** The last read failed (busy service, no connection), so tapping the message tries again. */
+    var receiptFailed by mutableStateOf(false)
+        private set
+
+    /** Sends the attached photo to the connected AI and fills in the amount, date, category and note it reads. */
+    fun fillFromReceipt() {
+        val path = receiptPath ?: return
+        val config = aiConfig.value ?: return
+        if (readingReceipt) return
+        readingReceipt = true
+        receiptMessage = null
+        receiptFailed = false
+        viewModelScope.launch {
+            runCatching {
+                val image = com.leftovers.app.ai.ImagePrep.prepare(app, Uri.fromFile(File(path)))
+                val cats = categories.value
+                com.leftovers.app.ai.ReceiptReader.read(
+                    config,
+                    image,
+                    cats.filter { it.type == TxType.EXPENSE }.map { it.name },
+                    cats.filter { it.type == TxType.INCOME }.map { it.name },
+                    accounts.value.map { com.leftovers.app.ai.AssistantTools.scrub(it.name) },
+                )
+            }.onSuccess { r ->
+                if (r == null) {
+                    receiptMessage = "Couldn't find a total on that photo"
+                } else {
+                    if (r.isIncome != (type == TxType.INCOME)) onTypeChange(if (r.isIncome) TxType.INCOME else TxType.EXPENSE)
+                    amountText = AmountInput.fromMinor(r.amountMinor)
+                    cursor = null
+                    r.date?.let { date = it }
+                    r.category?.let { name ->
+                        categories.value.firstOrNull { it.type == type && it.name.equals(name, ignoreCase = true) }?.let { selectCategory(it.id) }
+                    }
+                    if (note.isBlank()) r.note?.let { note = it }
+                    // "Paid by UPI" goes to a bank account, "cash" to cash, as the bill says.
+                    com.leftovers.app.ai.ReceiptReader.pickAccount(r, accounts.value.map { Triple(it.id, it.name, it.icon) }, accountId)?.let { accountId = it }
+                    receiptMessage = "Filled in from the photo · check it before adding"
+                }
+            }.onFailure {
+                // One short line: the service's full error text is long and would push the screen around.
+                val short = when {
+                    (it as? com.leftovers.app.ai.AiException)?.status == 429 -> "The AI's usage limit is reached for now"
+                    else -> (it.message ?: "Couldn't read the photo").substringBefore(':').substringBefore(". ").take(80)
+                }
+                receiptMessage = "$short · tap to try again"
+                receiptFailed = true
+            }
+            readingReceipt = false
+        }
+    }
+
     private val id: Long = savedState.get<Long>("id") ?: -1L
     private val smsId: Long = savedState.get<Long>("sms") ?: -1L
     val isEditing = id > 0
@@ -230,6 +302,22 @@ class EditorViewModel(
         rateText = if (code == null) "" else rate
     }
 
+    /**
+     * Picks the account this goes to. Moving to an account in its own currency switches the amount to that
+     * currency, at its rate; moving away from one switches back, unless another currency was picked by hand.
+     */
+    fun chooseAccount(id: Long?) {
+        val before = accounts.value.firstOrNull { it.id == accountId }?.currency
+        accountId = id
+        val code = accounts.value.firstOrNull { it.id == id }?.currency
+        viewModelScope.launch {
+            when {
+                code != null && foreignCurrency != code -> useForeign(code, lastRate(code))
+                code == null && before != null && foreignCurrency == before -> useForeign(null, "")
+            }
+        }
+    }
+
     /** The rate last used for [code], to start the rate box with. */
     suspend fun lastRate(code: String): String = settings.settings.first().foreignRates[code].orEmpty()
     val othersOwe: Long get() = people.sumOf { shareOf(it) }
@@ -288,6 +376,17 @@ class EditorViewModel(
                 val matched = (if (smsId > 0) sms.accountIdFor(smsId)?.takeIf { it in known } else null)
                     ?: fromSms?.let { d -> accountRepository.accounts.first().firstOrNull { it.matchesDigits(d) }?.id }
                 accountId = matched ?: s.homeAccountId?.takeIf { it in known } ?: s.defaultAccountId
+                // An account in its own currency opens the amount in that currency, at its rate (#30).
+                accountRepository.accounts.first().firstOrNull { it.id == accountId }?.currency?.let { code ->
+                    if (foreignCurrency == null) useForeign(code, lastRate(code))
+                }
+            }
+            // A detected payment to somewhere filed before opens under the same category again.
+            if (smsId > 0 && categoryId == null && note.isNotBlank()) {
+                val past = repository.getAllTransactions().map { com.leftovers.app.util.MerchantMemory.Past(it.note, it.type, it.categoryId, it.epochDay, it.createdAt) }
+                com.leftovers.app.util.MerchantMemory.categoryFor(note, type, past)?.let { remembered ->
+                    if (categoryId == null) categoryId = remembered
+                }
             }
 
             if (smsId > 0) {
@@ -371,6 +470,134 @@ class EditorViewModel(
         cursor = null
     }
 
+    /** Money lent to or borrowed from someone instead of spending or income: saved to Money owed, kept out of the budget. */
+    var owed by mutableStateOf(false)
+        private set
+    /** For [owed]: true when you lent it, false when you borrowed it. */
+    var lent by mutableStateOf(true)
+    /** For [owed]: everyone it's with. A name still being typed in [owedName] counts too. */
+    val owedPeople = mutableStateListOf<String>()
+    var owedName by mutableStateOf("")
+        private set
+    /** With more than one person: how the amount goes to each of them. */
+    var owedSplit by mutableStateOf(OwedSplit.EACH)
+    /** Typed amounts by person, as text, for [OwedSplit.BY_AMOUNT]. */
+    val owedAmounts = mutableStateMapOf<String, String>()
+    var needPerson by mutableStateOf(false)
+        private set
+    /** Set when amounts typed per person don't add up to the total. */
+    var needAmounts by mutableStateOf(false)
+        private set
+
+    fun chooseOwedSplit(next: OwedSplit) {
+        // Typing amounts starts from an even split.
+        if (next == OwedSplit.BY_AMOUNT && owedSplit != OwedSplit.BY_AMOUNT) {
+            val even = owedSplitEvenly()
+            even.forEach { (name, amount) -> owedAmounts[name] = AmountInput.fromMinor(amount) }
+        }
+        owedSplit = next
+        needAmounts = false
+    }
+
+    fun typeOwedAmount(person: String, text: String) {
+        owedAmounts[person] = text
+        needAmounts = false
+    }
+
+    private fun owedSplitEvenly(): List<Pair<String, Long>> {
+        val people = owedWith
+        if (people.isEmpty()) return emptyList()
+        val base = totalMinor / people.size
+        val left = totalMinor - base * people.size
+        return people.mapIndexed { i, name -> name to base + if (i < left) 1 else 0 }
+    }
+
+    /** Who it's with, including a name typed but not added yet. */
+    val owedWith: List<String> get() {
+        val typed = owedName.trim()
+        return if (typed.isEmpty() || owedPeople.any { it.equals(typed, ignoreCase = true) }) owedPeople.toList() else owedPeople + typed
+    }
+
+    /** Each person's amount. Split, the odd paisa go to the first ones, so it adds up to the total. */
+    fun owedShares(): List<Pair<String, Long>> {
+        val people = owedWith
+        if (people.isEmpty()) return emptyList()
+        if (people.size == 1) return people.map { it to totalMinor }
+        return when (owedSplit) {
+            OwedSplit.EACH -> people.map { it to totalMinor }
+            OwedSplit.SPLIT -> owedSplitEvenly()
+            OwedSplit.BY_AMOUNT -> people.map { it to (AmountInput.toMinor(owedAmounts[it].orEmpty()) ?: 0L) }
+        }
+    }
+
+    /** Leaves lent or borrowed for whichever of expense or income it was on before. */
+    fun leaveOwed() = selectKind(if (type == TxType.INCOME) EntryKind.INCOME else EntryKind.EXPENSE)
+
+    val kind: EntryKind get() = when {
+        owed -> EntryKind.OWED
+        type == TxType.INCOME -> EntryKind.INCOME
+        else -> EntryKind.EXPENSE
+    }
+
+    fun selectKind(next: EntryKind) {
+        owed = next == EntryKind.OWED
+        if (owed) {
+            // Lending isn't spending, so nothing repeats or splits.
+            repeatMonthly = false
+            splits.clear()
+            clearPeople()
+        } else {
+            onTypeChange(if (next == EntryKind.INCOME) TxType.INCOME else TxType.EXPENSE)
+        }
+    }
+
+    /** Adds [name], or takes it off if it's already there. */
+    fun togglePerson(name: String) {
+        val at = owedPeople.indexOfFirst { it.equals(name, ignoreCase = true) }
+        if (at >= 0) owedPeople.removeAt(at) else owedPeople += name.trim().take(30)
+        needPerson = false
+    }
+
+    fun typeName(text: String) {
+        owedName = text.take(30)
+        needPerson = false
+    }
+
+    fun addTypedName() {
+        val typed = owedName.trim()
+        if (typed.isNotEmpty() && owedPeople.none { it.equals(typed, ignoreCase = true) }) owedPeople += typed
+        owedName = ""
+    }
+
+    private fun saveOwed(onDone: (String) -> Unit, describe: (Long) -> String): Boolean {
+        if (amountMinor <= 0 || totalMinor <= 0) return false
+        val shares = owedShares()
+        if (shares.isEmpty()) {
+            needPerson = true
+            return false
+        }
+        if (shares.size > 1 && owedSplit == OwedSplit.BY_AMOUNT && (shares.any { it.second <= 0 } || shares.sumOf { it.second } != totalMinor)) {
+            needAmounts = true
+            return false
+        }
+        val wasLent = lent
+        val day = date.toEpochDay()
+        val text = note.trim()
+        val photo = receiptPath
+        val account = accountId
+        viewModelScope.launch {
+            shares.forEach { (person, amount) ->
+                planning.saveDebt(Debt(person = person, amountMinor = if (wasLent) amount else -amount, note = text, epochDay = day, receiptPath = photo, accountId = account))
+            }
+            if (smsId > 0) sms.dismiss(smsId)
+            val names = shares.map { it.first }.let { if (it.size == 1) it[0] else it.dropLast(1).joinToString(", ") + " and " + it.last() }
+            val same = shares.map { it.second }.distinct().size == 1
+            val amount = if (same) describe(shares[0].second) + if (shares.size > 1) " each" else "" else describe(shares.sumOf { it.second })
+            onDone(if (wasLent) "$amount lent to $names · in Money owed" else "$amount borrowed from $names · in Money owed")
+        }
+        return true
+    }
+
     fun onTypeChange(newType: TxType) {
         if (newType != type) {
             type = newType
@@ -389,6 +616,7 @@ class EditorViewModel(
             if (path != null) {
                 if (receiptPath != originalReceipt) ReceiptStore.delete(receiptPath)
                 receiptPath = path
+                receiptMessage = null
             }
             onDone()
         }
@@ -397,6 +625,7 @@ class EditorViewModel(
     fun removeReceipt() {
         if (receiptPath != originalReceipt) ReceiptStore.delete(receiptPath)
         receiptPath = null
+        receiptMessage = null
     }
 
     /** Categories of the current type, most used first. */
@@ -411,6 +640,7 @@ class EditorViewModel(
      * when the entry isn't complete yet.
      */
     fun save(onDone: (String) -> Unit, describe: (Long) -> String): Boolean {
+        if (owed && !isEditing) return saveOwed(onDone, describe)
         if (amountMinor <= 0 || totalMinor <= 0) return false
         val category = categoryId
         if (category == null) {
@@ -531,6 +761,12 @@ class EditorViewModel(
 
 private val stripDay = DateTimeFormatter.ofPattern("EEE")
 
+/** With several people: each owes the whole amount, it's split evenly, or each has their own amount. */
+enum class OwedSplit(val label: String) { EACH("Each"), SPLIT("Split"), BY_AMOUNT("By amount") }
+
+/** What the add screen is logging. Swiping across the amount moves between expense and income; the lent or borrowed button sets owed. */
+enum class EntryKind(val label: String) { EXPENSE("Expense"), INCOME("Income"), OWED("Lent or borrowed") }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(
@@ -551,11 +787,61 @@ fun EditorScreen(
     var showNote by rememberSaveable { mutableStateOf(false) }
     var showSplit by rememberSaveable { mutableStateOf(false) }
     var showForeign by rememberSaveable { mutableStateOf(false) }
+    var showOwedAmounts by rememberSaveable { mutableStateOf(false) }
+    // Back leaves lent or borrowed before it closes the screen.
+    BackHandler(enabled = viewModel.owed) { viewModel.leaveOwed() }
     val knownPeople by viewModel.knownPeople.collectAsStateWithLifecycle()
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
     var receiptMenu by rememberSaveable { mutableStateOf(false) }
     var viewReceipt by rememberSaveable { mutableStateOf(false) }
     var cameraFile by remember { mutableStateOf<File?>(null) }
+
+    // Swiping across the amount moves between Expense and Income; the new one slides in from its side.
+    val kinds = listOf(EntryKind.EXPENSE, EntryKind.INCOME)
+    val density = LocalDensity.current
+    val swipeIn = with(density) { 56.dp.toPx() }
+    val swipeAt = with(density) { 44.dp.toPx() }
+    val swipe = remember { Animatable(0f) }
+    val swipeScope = rememberCoroutineScope()
+    var shownKind by remember { mutableStateOf(viewModel.kind) }
+    LaunchedEffect(viewModel.kind) {
+        val now = viewModel.kind
+        if (now != shownKind) {
+            val fromRight = now.ordinal > shownKind.ordinal
+            shownKind = now
+            swipe.snapTo(if (fromRight) swipeIn else -swipeIn)
+            swipe.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 380f))
+        }
+    }
+    val swipeable = Modifier.pointerInput(kinds) {
+        detectHorizontalDragGestures(
+            onDragEnd = {
+                val at = kinds.indexOf(viewModel.kind).takeIf { it >= 0 } ?: -9
+                val next = when {
+                    swipe.value < -swipeAt -> kinds.getOrNull(at + 1)
+                    swipe.value > swipeAt -> kinds.getOrNull(at - 1)
+                    else -> null
+                }
+                if (next != null) {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    viewModel.selectKind(next)
+                } else {
+                    swipeScope.launch { swipe.animateTo(0f, spring(dampingRatio = 0.7f, stiffness = 500f)) }
+                }
+            },
+            onDragCancel = { swipeScope.launch { swipe.animateTo(0f) } },
+        ) { change, dx ->
+            change.consume()
+            val at = kinds.indexOf(viewModel.kind)
+            // There's nothing past the first and last, so it only gives a little there.
+            val edge = (dx > 0 && at == 0) || (dx < 0 && at == kinds.lastIndex)
+            swipeScope.launch { swipe.snapTo(swipe.value + dx * (if (edge) 0.15f else 0.6f)) }
+        }
+    }
+    val sliding = Modifier.graphicsLayer {
+        translationX = swipe.value
+        alpha = (1f - abs(swipe.value) / (swipeIn * 4)).coerceIn(0.4f, 1f)
+    }
 
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) viewModel.attachReceipt(uri)
@@ -565,10 +851,38 @@ fun EditorScreen(
         if (ok && file != null) viewModel.attachReceipt(Uri.fromFile(file)) { file.delete() } else file?.delete()
     }
 
-    Column(
+    val keypad: @Composable (Modifier) -> Unit = { keypadModifier ->
+        Glass(keypadModifier, shape = RoundedCornerShape(topStart = 34.dp, topEnd = 34.dp)) {
+            Keypad(
+                onKey = viewModel::onKey,
+                onClear = viewModel::clearAmount,
+                onConfirm = {
+                    val ok = viewModel.save(onDone = onSaved, describe = money::format)
+                    if (!ok) view.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                },
+                confirmEnabled = viewModel.amountMinor > 0,
+                confirmLabel = if (viewModel.isEditing) "Save" else "Add",
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(16.dp),
+            )
+        }
+    }
+
+    // In landscape there's no room for everything above the keypad, so the keypad goes on the right
+    // and the rest scrolls on the left.
+    BoxWithConstraints(
         modifier
             .fillMaxSize()
             .statusBarsPadding(),
+    ) {
+    val wide = maxWidth > maxHeight
+    Row(Modifier.fillMaxSize()) {
+    Column(
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .then(if (wide) Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding() else Modifier),
     ) {
         Row(
             Modifier
@@ -576,15 +890,20 @@ fun EditorScreen(
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RoundButton(Lucide.X, "Close", onClose)
+            // In lent or borrowed, this goes back to the expense or income it came from.
+            if (viewModel.owed) RoundButton(Lucide.ChevronLeft, "Back", viewModel::leaveOwed) else RoundButton(Lucide.X, "Close", onClose)
             Spacer(Modifier.weight(1f))
-            SegmentedToggle(
-                options = TxType.entries,
-                selected = viewModel.type,
-                label = { if (it == TxType.EXPENSE) "Expense" else "Income" },
-                onSelect = viewModel::onTypeChange,
-                modifier = Modifier.width(210.dp),
-            )
+            if (viewModel.owed) {
+                Text("Lent or borrowed", style = MaterialTheme.typography.titleMedium, color = c.textPrimary)
+            } else {
+                SegmentedToggle(
+                    options = kinds,
+                    selected = viewModel.kind,
+                    label = { it.label },
+                    onSelect = viewModel::selectKind,
+                    modifier = Modifier.width(210.dp),
+                )
+            }
             Spacer(Modifier.weight(1f))
             if (viewModel.isEditing) {
                 RoundButton(Lucide.Trash2, "Delete", { confirmDelete = true }, tint = c.negative)
@@ -597,8 +916,10 @@ fun EditorScreen(
 
         Column(
             Modifier
-                .weight(1f)
-                .fillMaxWidth(),
+                .then(if (wide) Modifier.padding(vertical = 16.dp) else Modifier.weight(1f))
+                .fillMaxWidth()
+                .then(swipeable)
+                .then(sliding),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
@@ -634,7 +955,7 @@ fun EditorScreen(
                     style = MaterialTheme.typography.displayLarge.copy(fontSize = size.sp, lineHeight = (size * 1.1).sp),
                     color = when {
                         raw.isEmpty() -> c.textTertiary
-                        viewModel.type == TxType.INCOME -> c.positive
+                        viewModel.type == TxType.INCOME && !viewModel.owed -> c.positive
                         else -> c.textPrimary
                     },
                     caretAfter = if (placed != null && raw.isNotEmpty()) AmountCursor.displayAfter(display, raw, placed) else null,
@@ -651,8 +972,25 @@ fun EditorScreen(
             NotePill(viewModel.note, onClick = { showNote = true }, modifier = Modifier.padding(horizontal = 32.dp).widthIn(max = 320.dp))
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (viewModel.owed) {
+                    RoundButton(
+                        Lucide.HandCoins,
+                        "Not lent or borrowed",
+                        viewModel::leaveOwed,
+                        size = 40.dp,
+                        tint = c.onAccent,
+                        container = c.accent,
+                    )
+                    SegmentedToggle(
+                        options = listOf(true, false),
+                        selected = viewModel.lent,
+                        label = { if (it) "I lent" else "I borrowed" },
+                        onSelect = { viewModel.lent = it },
+                        modifier = Modifier.width(200.dp),
+                    )
+                } else {
                 if (accounts.size > 1) {
-                    AccountPicker(accounts, viewModel.accountId) { viewModel.accountId = it }
+                    AccountPicker(accounts, viewModel.accountId) { viewModel.chooseAccount(it) }
                 }
                 if (!viewModel.isEditing) {
                     val repeating = viewModel.repeatMonthly
@@ -683,13 +1021,20 @@ fun EditorScreen(
                             container = if (split) c.accent else null,
                         )
                     }
+                    RoundButton(Lucide.HandCoins, "Lent or borrowed", { viewModel.selectKind(EntryKind.OWED) }, size = 40.dp, tint = c.textSecondary)
+                }
                 }
                 val path = viewModel.receiptPath
                 if (path == null) {
                     RoundButton(Lucide.Camera, "Attach receipt", { receiptMenu = true }, size = 40.dp, tint = c.textSecondary)
                 } else {
-                    ReceiptThumb(path, onOpen = { viewReceipt = true }, onRemove = viewModel::removeReceipt)
+                    ReceiptThumb(path, onOpen = { viewReceipt = true })
                 }
+            }
+            // Lent or borrowed money still comes out of, or goes into, an account.
+            if (viewModel.owed && accounts.size > 1) {
+                Spacer(Modifier.height(10.dp))
+                AccountPicker(accounts, viewModel.accountId) { viewModel.accountId = it }
             }
             viewModel.foreignCurrency?.let { code ->
                 Text(
@@ -700,6 +1045,28 @@ fun EditorScreen(
                     color = c.textSecondary,
                     modifier = Modifier.padding(bottom = 6.dp).pressable({ showForeign = true }, pressedScale = 0.96f),
                 )
+            }
+            val aiConfig by viewModel.aiConfig.collectAsStateWithLifecycle()
+            if (aiConfig != null && viewModel.receiptPath != null && !viewModel.owed) {
+                val message = viewModel.receiptMessage
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .padding(top = 10.dp)
+                        .then(if (!viewModel.readingReceipt && (message == null || viewModel.receiptFailed)) Modifier.pressable(viewModel::fillFromReceipt, pressedScale = 0.96f) else Modifier),
+                ) {
+                    Icon(Lucide.Sparkles, contentDescription = null, tint = c.accent, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        when {
+                            viewModel.readingReceipt -> "Reading the photo…"
+                            message != null -> message
+                            else -> "Fill in from this photo"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = c.accent,
+                    )
+                }
             }
             val splitting = viewModel.people.isNotEmpty() && viewModel.type == TxType.EXPENSE && !viewModel.repeatMonthly
             AnimatedVisibility(splitting, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
@@ -726,6 +1093,28 @@ fun EditorScreen(
                     modifier = Modifier.padding(top = 10.dp, start = 24.dp, end = 24.dp),
                 )
             }
+            AnimatedVisibility(viewModel.owed, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                val people = viewModel.owedWith
+                val shares = viewModel.owedShares()
+                val many = people.size > 1
+                val names = people.joinToString(", ")
+                val byAmount = many && viewModel.owedSplit == OwedSplit.BY_AMOUNT
+                val amount = money.format(shares.maxOfOrNull { it.second } ?: viewModel.totalMinor) + if (many) " each" else ""
+                Text(
+                    when {
+                        people.isEmpty() || viewModel.totalMinor <= 0 -> "Saved to Money owed · kept out of your budget"
+                        byAmount -> shares.joinToString(", ") { "${it.first} ${money.format(it.second)}" }
+                        viewModel.lent -> "$names ${if (many) "owe" else "owes"} you $amount"
+                        else -> "You owe $names $amount"
+                    } + if (many && viewModel.totalMinor > 0) " · tap to change" else "",
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (viewModel.needAmounts) c.warning else c.accent,
+                    modifier = Modifier
+                        .padding(top = 10.dp, start = 24.dp, end = 24.dp)
+                        .then(if (many && viewModel.totalMinor > 0) Modifier.pressable({ showOwedAmounts = true }, pressedScale = 0.96f) else Modifier),
+                )
+            }
             AnimatedVisibility(viewModel.repeatMonthly, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                 Text(
                     if (viewModel.date > LocalDate.now()) {
@@ -748,6 +1137,39 @@ fun EditorScreen(
         )
         Spacer(Modifier.height(12.dp))
 
+        if (viewModel.owed) {
+            AnimatedVisibility(viewModel.needPerson, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                Text(
+                    if (viewModel.lent) "Add who you lent it to" else "Add who you borrowed it from",
+                    color = c.warning,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(start = 20.dp, bottom = 8.dp),
+                )
+            }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = sliding,
+            ) {
+                item {
+                    GlassTextField(
+                        viewModel.owedName,
+                        viewModel::typeName,
+                        placeholder = if (viewModel.lent) "Lent to" else "Borrowed from",
+                        modifier = Modifier.width(170.dp),
+                    )
+                }
+                if (viewModel.owedName.isNotBlank()) {
+                    item(key = "add") { Chip("Add", onClick = viewModel::addTypedName, icon = Lucide.Plus, selected = true) }
+                }
+                val choices = (viewModel.owedPeople + knownPeople).distinctBy { it.lowercase() }
+                items(choices, key = { it.lowercase() }) { name ->
+                    val picked = viewModel.owedPeople.any { it.equals(name, ignoreCase = true) }
+                    Chip(name, onClick = { viewModel.togglePerson(name) }, icon = if (picked) Lucide.Check else null, selected = picked)
+                }
+            }
+        } else {
         AnimatedVisibility(viewModel.needCategory, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
             Text(
                 "Choose a category to save",
@@ -760,6 +1182,7 @@ fun EditorScreen(
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = sliding,
         ) {
             items(sorted, key = { it.id }) { cat ->
                 Chip(
@@ -772,22 +1195,22 @@ fun EditorScreen(
             }
             item { Chip("Edit", onClick = onManageCategories, icon = Lucide.SlidersHorizontal, iconTint = c.textSecondary) }
         }
+        }
         Spacer(Modifier.height(14.dp))
 
-        Glass(Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 34.dp, topEnd = 34.dp)) {
-            Keypad(
-                onKey = viewModel::onKey,
-                onClear = viewModel::clearAmount,
-                onConfirm = {
-                    val ok = viewModel.save(onDone = onSaved, describe = money::format)
-                    if (!ok) view.performHapticFeedback(HapticFeedbackConstants.REJECT)
-                },
-                confirmEnabled = viewModel.amountMinor > 0,
-                confirmLabel = if (viewModel.isEditing) "Save" else "Add",
-                modifier = Modifier
-                    .navigationBarsPadding()
-                    .padding(16.dp),
-            )
+        if (!wide) keypad(Modifier.fillMaxWidth())
+    }
+    if (wide && viewModel.loaded) {
+        Box(Modifier.weight(0.85f).fillMaxHeight(), contentAlignment = Alignment.BottomCenter) {
+            keypad(Modifier.fillMaxWidth())
+        }
+    }
+    }
+    }
+
+    if (showOwedAmounts) {
+        GlassSheet(onDismiss = { showOwedAmounts = false }) {
+            OwedAmountsBody(viewModel, onDone = { showOwedAmounts = false })
         }
     }
 
@@ -861,7 +1284,7 @@ fun EditorScreen(
     }
 
     if (viewReceipt) {
-        viewModel.receiptPath?.let { path -> ReceiptViewer(path) { viewReceipt = false } }
+        viewModel.receiptPath?.let { path -> ReceiptViewer(path, onDismiss = { viewReceipt = false }, onRemove = viewModel::removeReceipt) }
     }
 
     if (showCalendar) {
@@ -899,13 +1322,25 @@ fun EditorScreen(
                         Text(if (viewModel.repeatMonthly) "Which day does it repeat from?" else "Which day was it?", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 24.dp, top = 20.dp))
                     }
                 },
-                colors = DatePickerDefaults.colors(containerColor = Color.Transparent),
+                // The dialog's own colour, not see-through: the year list is drawn over the days in this colour.
+                colors = DatePickerDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
             )
         }
     }
 
     if (showNote) {
-        var draft by rememberSaveable { mutableStateOf(viewModel.note) }
+        // The note's words, and its tags apart from them (#31). They're saved together, as "Dinner #goa".
+        val startText = remember { com.leftovers.app.data.noteText(viewModel.note) }
+        var draft by rememberSaveable(stateSaver = androidx.compose.ui.text.input.TextFieldValue.Saver) {
+            mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(startText, androidx.compose.ui.text.TextRange(startText.length)))
+        }
+        var tags by rememberSaveable { mutableStateOf(com.leftovers.app.data.hashtags(viewModel.note)) }
+        var tagDraft by rememberSaveable { mutableStateOf("") }
+        fun addTag(raw: String) {
+            val tag = raw.trim().trimStart('#').lowercase().filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+            if (tag.any { it.isLetter() } && tag !in tags) tags = tags + tag
+            tagDraft = ""
+        }
         val focus = remember { FocusRequester() }
         LaunchedEffect(Unit) { focus.requestFocus() }
         GlassAlertDialog(
@@ -915,26 +1350,45 @@ fun EditorScreen(
             title = { Text("Note", style = MaterialTheme.typography.titleLarge) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    GlassTextField(draft, { draft = it.take(120) }, placeholder = "e.g. Lunch with friends #goa", focusRequester = focus)
-                    // While a #tag is being typed, offer tags used before that start the same way.
-                    val typing = Regex("""#([\p{L}\p{N}_-]*)$""").find(draft)
+                    GlassTextField(
+                        draft,
+                        { next -> if (next.text.length <= 120) draft = next },
+                        placeholder = "e.g. Lunch with friends",
+                        focusRequester = focus,
+                    )
+                    Text("Tags", style = MaterialTheme.typography.labelMedium, color = c.textSecondary, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+                    if (tags.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            tags.forEach { tag -> Chip("#$tag", { tags = tags - tag }, icon = Lucide.X, selected = true) }
+                        }
+                    }
+                    GlassTextField(
+                        tagDraft,
+                        { next ->
+                            // A space or comma at the end finishes what's typed (one tag, or several typed quickly).
+                            if (next.endsWith(' ') || next.endsWith(',')) next.split(' ', ',').forEach { if (it.isNotBlank()) addTag(it) }
+                            else tagDraft = next.take(60)
+                        },
+                        placeholder = "Add a tag, like trip or work",
+                        prefix = "#",
+                    )
+                    // Tags used before: the ones starting like what's typed, or the most used.
                     val usedTags = remember(history) { history.allTags() }
-                    val matches = typing?.let { m ->
-                        val start = m.groupValues[1].lowercase()
-                        usedTags.filter { it.startsWith(start) && it != start }.take(6)
-                    }.orEmpty()
+                    val typed = tagDraft.trim().trimStart('#').lowercase()
+                    val matches = usedTags.filter { it !in tags && it.startsWith(typed) && it != typed }.take(6)
                     if (matches.isNotEmpty()) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            matches.forEach { tag ->
-                                Chip("#$tag", { draft = draft.substring(0, typing!!.range.first) + "#$tag " })
-                            }
+                            matches.forEach { tag -> Chip("#$tag", { addTag(tag) }, icon = Lucide.Plus) }
                         }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.note = draft.trim()
+                    // A #tag typed in the note itself still counts as a tag.
+                    val words = com.leftovers.app.data.noteText(draft.text)
+                    val all = tags + com.leftovers.app.data.hashtags(draft.text) + listOfNotNull(tagDraft.trim().trimStart('#').lowercase().takeIf { t -> t.any { it.isLetter() } })
+                    viewModel.note = com.leftovers.app.data.withTags(words, all).take(160)
                     showNote = false
                 }) { Text("Done", color = c.textPrimary) }
             },
@@ -966,7 +1420,7 @@ fun EditorScreen(
                             )
                             Switch(
                                 checked = stopRepeating,
-                                onCheckedChange = { stopRepeating = it },
+                                onCheckedChange = toggleHaptic({ stopRepeating = it }),
                                 colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.onAccent),
                             )
                         }
@@ -976,6 +1430,7 @@ fun EditorScreen(
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
+                    Haptics.confirm(view)
                     viewModel.delete(linked?.takeIf { stopRepeating }, onClose)
                 }) { Text("Delete", color = c.negative) }
             },
@@ -1073,45 +1528,64 @@ private fun rememberReceiptBitmap(path: String, maxSide: Int): Bitmap? {
 }
 
 @Composable
-internal fun ReceiptThumb(path: String, onOpen: () -> Unit, onRemove: () -> Unit) {
+/** A photo's thumbnail. Tapping opens it full size, where it can be removed; there's no cross here to hit by mistake. */
+internal fun ReceiptThumb(path: String, onOpen: () -> Unit, size: androidx.compose.ui.unit.Dp = 44.dp) {
     val c = LocalAppColors.current
-    val bitmap = rememberReceiptBitmap(path, 200)
-    Box {
-        Box(
-            Modifier
-                .size(42.dp)
-                .pressable(onOpen)
-                .clip(RoundedCornerShape(12.dp))
-                .background(c.glass)
-                .border(1.dp, glassBorder(c), RoundedCornerShape(12.dp)),
-        ) {
-            bitmap?.let { Image(it.asImageBitmap(), contentDescription = "Receipt", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
-        }
-        Box(
-            Modifier
-                .align(Alignment.TopEnd)
-                .padding(start = 30.dp)
-                .size(18.dp)
-                .pressable(onRemove)
-                .clip(RoundedCornerShape(50))
-                .background(c.negative),
-            contentAlignment = Alignment.Center,
-        ) { Icon(Lucide.X, contentDescription = "Remove receipt", tint = Color.White, modifier = Modifier.size(11.dp)) }
+    val bitmap = rememberReceiptBitmap(path, 300)
+    Box(
+        Modifier
+            .size(size)
+            .pressable(onOpen)
+            .clip(RoundedCornerShape(12.dp))
+            .background(c.glass)
+            .border(1.dp, glassBorder(c), RoundedCornerShape(12.dp)),
+    ) {
+        bitmap?.let { Image(it.asImageBitmap(), contentDescription = "Receipt photo, tap to view", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
     }
 }
 
 @Composable
-internal fun ReceiptViewer(path: String, onDismiss: () -> Unit) {
+/** A photo full screen: pinch to zoom, and with [onRemove], a button to take it off the entry. */
+internal fun ReceiptViewer(path: String, onDismiss: () -> Unit, onRemove: (() -> Unit)? = null) {
     val bitmap = rememberReceiptBitmap(path, 2000)
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    val zoom = androidx.compose.foundation.gestures.rememberTransformableState { change, pan, _ ->
+        scale = (scale * change).coerceIn(1f, 5f)
+        offset = if (scale == 1f) androidx.compose.ui.geometry.Offset.Zero else offset + pan
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.92f))
-                .pressable(onDismiss, pressedScale = 1f),
-            contentAlignment = Alignment.Center,
-        ) {
-            bitmap?.let { Image(it.asImageBitmap(), contentDescription = "Receipt", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(16.dp)) }
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.94f))) {
+            bitmap?.let {
+                Image(
+                    it.asImageBitmap(),
+                    contentDescription = "Receipt photo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp, vertical = 72.dp)
+                        .transformable(zoom)
+                        .graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y },
+                )
+            }
+            RoundButton(Lucide.X, "Close", onDismiss, modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(16.dp), tint = Color.White)
+            if (onRemove != null) {
+                Row(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(bottom = 20.dp)
+                        .pressable({ onRemove(); onDismiss() }, pressedScale = 0.95f)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Lucide.Trash2, contentDescription = null, tint = Color(0xFFF58A8A), modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Remove photo", style = MaterialTheme.typography.labelLarge, color = Color(0xFFF58A8A))
+                }
+            }
         }
     }
 }
@@ -1164,6 +1638,64 @@ private fun DateStrip(selected: LocalDate, onSelect: (LocalDate) -> Unit, onOpen
             }
         }
         RoundButton(Lucide.Calendar, "Pick a date", onOpenCalendar, size = 52.dp, modifier = Modifier.padding(end = 16.dp))
+    }
+}
+
+/** With several people lent to or borrowed from: the whole amount each, an even split, or each person's own amount. */
+@Composable
+private fun OwedAmountsBody(viewModel: EditorViewModel, onDone: () -> Unit) {
+    val c = LocalAppColors.current
+    val money = LocalMoney.current
+    val total = viewModel.totalMinor
+    val shares = viewModel.owedShares()
+    val byAmount = viewModel.owedSplit == OwedSplit.BY_AMOUNT
+    val typed = shares.sumOf { it.second }
+    Column(
+        Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(if (viewModel.lent) "How much each one owes" else "How much you owe each", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+        SegmentedToggle(
+            options = OwedSplit.entries,
+            selected = viewModel.owedSplit,
+            label = { it.label },
+            onSelect = viewModel::chooseOwedSplit,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            when (viewModel.owedSplit) {
+                OwedSplit.EACH -> "Each one ${if (viewModel.lent) "owes you" else "is owed"} the whole ${money.format(total)}."
+                OwedSplit.SPLIT -> "${money.format(total)} split evenly between them."
+                OwedSplit.BY_AMOUNT -> "Type each amount. Together they make the ${money.format(total)}."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = c.textSecondary,
+        )
+        Glass(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(vertical = 6.dp)) {
+                shares.forEachIndexed { i, (name, amount) ->
+                    if (i > 0) com.leftovers.app.ui.components.RowDivider()
+                    com.leftovers.app.ui.components.ListRow(
+                        name,
+                        trailing = {
+                            if (byAmount) {
+                                MoneyField(viewModel.owedAmounts[name].orEmpty(), { viewModel.typeOwedAmount(name, it) }, Modifier.width(132.dp))
+                            } else {
+                                Text(money.format(amount), style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        if (byAmount && typed != total) {
+            Text(
+                if (typed < total) "${money.format(total - typed)} still to give someone" else "That's ${money.format(typed - total)} more than ${money.format(total)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.negative,
+            )
+        }
+        PrimaryButton("Done", onDone, Modifier.fillMaxWidth())
     }
 }
 

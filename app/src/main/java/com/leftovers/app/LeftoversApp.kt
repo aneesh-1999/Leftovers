@@ -19,6 +19,8 @@ class LeftoversApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // A crash leaves a short report the app offers to send next time; nothing is sent by itself.
+        com.leftovers.app.util.CrashReports.install(this)
         container = AppContainer(this)
         container.budgetAlerts.createChannel()
         Reminders.createChannel(this)
@@ -27,6 +29,7 @@ class LeftoversApp : Application(), Configuration.Provider {
         ShiftReminders.createChannel(this)
         com.leftovers.app.data.creditcard.CreditCardReminders.createChannel(this)
         com.leftovers.app.updater.worker.AppUpdateCheckWorker.createChannel(this)
+        com.leftovers.app.util.UpdateCheck.createChannel(this)
         DebtReminders.schedule(this, true)
         com.leftovers.app.data.creditcard.CreditCardReminders.schedule(this, true)
         AlarmScheduler.rescheduleAll(this)

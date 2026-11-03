@@ -25,6 +25,11 @@ data class BudgetPlan(
     val carryFrom: YearMonth? = null,
     /** In [CarryMode.ASK], the user's answer for each finished month: true = carry into the next. */
     val carryChoices: Map<YearMonth, Boolean> = emptyMap(),
+    /**
+     * Whether income from categories marked "adds to budget" (gifts, bonuses...) raises that month's budget.
+     * Off: the budget is the amount set, whatever comes in (#26).
+     */
+    val extraIncome: Boolean = false,
 ) {
     val isSet: Boolean
         get() = when (mode) {
@@ -47,11 +52,12 @@ data class BudgetPlan(
      * The total spending budget for [month]: the planned amount, plus income from categories that
      * add to the budget, plus anything carried over. [items] must contain all transactions.
      */
-    fun budgetFor(month: YearMonth, items: List<TransactionItem>): Long = breakdownFor(month, items).total
+    /** With no budget set there's nothing to spend against, even if extra income or a carry-over would add to it. */
+    fun budgetFor(month: YearMonth, items: List<TransactionItem>): Long = if (!isSet) 0 else breakdownFor(month, items).total
 
     fun breakdownFor(month: YearMonth, items: List<TransactionItem>): MonthBudget {
         val byMonth = items.groupBy { YearMonth.from(it.date) }
-        fun income(m: YearMonth) = byMonth[m].orEmpty().filter { it.type == TxType.INCOME && it.addsToBudget }.sumOf { it.amountMinor }
+        fun income(m: YearMonth) = if (!extraIncome) 0L else byMonth[m].orEmpty().filter { it.type == TxType.INCOME && it.addsToBudget }.sumOf { it.amountMinor }
         fun spent(m: YearMonth) = byMonth[m].orEmpty().filter { it.type == TxType.EXPENSE }.sumOf { it.amountMinor }
 
         var carried = 0L

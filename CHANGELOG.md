@@ -3,8 +3,150 @@
 All notable changes to Leftovers. Download any version from
 [Releases](https://github.com/saisaharsh3/Leftovers/releases).
 
-## Unreleased
+## 1.8.2
 
+- Pop-ups open on the app's own screen instead of in a window of their own. On some phones the app under such a
+  window stopped redrawing until the next touch, so a tapped card stayed behind its pop-up, vanished after it
+  closed, or showed an account's numbers only after a touch (#27)
+- "Safe to spend ₹0 · ₹0 of ₹0" once the month's budget is used up now says "Over this month's budget" and by how
+  much, on Home and in the widget
+- Sheets and dialogs are nearly solid, so their text is readable on phones that don't blur behind them, and the
+  date picker's year list no longer shows the days through it (#27)
+- Extra income adds to the budget is now a switch in the budget plan, off unless you turn it on, so side income
+  can go to savings (#26). Turn it on to keep the old behaviour; the per-category switches still choose which income
+- Every currency can be chosen, the Ghana cedi among them (#28)
+- Activity: By month or All time, to see an account's whole history at once (#29)
+- An account can have its own currency: its entries are entered and shown in it, and totals, budgets and charts
+  count them converted at the rate you set for the account (#30)
+- Tags have their own row in the note box, with suggestions, and show beside the note instead of inside it (#31)
+- Settings → Tell me about new versions (off unless turned on) and Check for a new version
+- The glass of pop-ups is frostier inside, so what's behind doesn't show through their text
+
+## 1.8.1
+
+- Pull down on Home to check for new payment emails, log subscriptions that have come due and sync with your
+  other phones right away; it says what it found
+- Pop-up cards (an entry, the balance, Money owed, subscriptions) are liquid glass like the tab bar on Android 13
+  and newer, bending the screen behind them at their edges
+- Home leads with Safe to spend today, large and on the background instead of in a card, and the total balance
+  card holds the month's spending and income under it
+- Sync between your devices, with no account: Settings → Sync. Use a folder that Syncthing or Nextcloud's app keeps
+  the same on each phone, or your own WebDAV server (Nextcloud, ownCloud and others). Each phone merges in the
+  others' entries when the app opens, every few hours and on Sync now; entries deleted or changed on one phone are
+  removed on the others (into Deleted entries, so they can be brought back). Files are encrypted with your backup
+  password
+- Quick add widget: log ₹50, ₹100, ₹200 or ₹500 in one tap from the home screen, with Undo. It shows what you've
+  spent today, switches category with a tap, and fits its size: a taller widget gets bigger buttons and an
+  Other amount button
+- Money owed: Remind sends someone who owes you a friendly message through WhatsApp, SMS or any app
+- A detected payment to a place you've logged before opens under the category you used last time
+- Haptic feedback: switches click as they flip, choosing a segment or chip ticks, and saving, deleting, paying back
+  and Undo confirm
+- If the app closes unexpectedly, it offers to report it on GitHub or by email on the next launch. You see the
+  report first, and nothing from your entries is in it
+- Settings showed an old version number (1.6.0) at the bottom; it shows the real one now
+- Each release is rebuilt from scratch and compared with the published APK, the way F-Droid checks it
+
+## 1.8.0
+
+- The tab bar is liquid glass on Android 13 and newer: what's behind it bends at its rounded edges, with a bright
+  rim. With Glass effects off, or on older phones, it's the frosted bar as before
+- Importing another app's backup keeps each entry's title and description (joined into its note) and its tags (as
+  #tags), and makes any category it had that Leftovers doesn't, with a fitting icon, instead of putting the entries
+  under Other. The import screen says which categories are new and shows the spending and income totals before
+  anything is added (#21)
+- Ivy Wallet backups import their transactions even when most of them are planned payments (#21)
+- The AI assistant says why a request was refused, in the service's own words, and tells a wrong key apart from a
+  key that isn't allowed to do something. Settings → AI assistant has a Test connection button that sends one
+  short message and says whether it worked (#22)
+- Settings rows always show their title in full; a long value beside it shortens itself instead
+- Import entries also reads other apps' JSON backups and exports, and backups that are a .zip of JSON. Entries keep
+  their category and account names, whichever app made the file; picking one under Restore offers its entries (#21)
+- Restoring a backup asks whether to keep what's in the app and add the backup's entries, or replace everything.
+  Keeping adds only what isn't already here, into the categories, accounts and goals with the same names, and
+  leaves your settings as they are
+- PDF bank statements can be imported too, password-protected ones included (the password is only used to open
+  the file on the phone). Each row's date and amounts are read, and the running balance says which way the money went
+- Savings goals can have a product link (Amazon, Flipkart or any shop). Check price reads the price from the shop's
+  page when you tap it, to compare with your target or use as the target; nothing is checked in the background
+- A lone Upcoming or Saving for card on Home lays out across the row instead of leaving the width empty
+- Pay back part of what's owed: Pay back on Money owed (or on someone's card on Home) starts at everything owed;
+  change the amount for part of it, and pick the account it went into. What's left stays open, and paying the
+  rest settles it (#20)
+- Import entries reads Excel files (.xlsx and the older .xls), the HTML ".xls" many banks download, and CSV or
+  tab-separated text in UTF-16 as well as UTF-8, from a bank or any other app. Moves between your own accounts
+  are left out (#21)
+- Picking a statement or another app's export under Restore no longer shows a technical error: it offers to import
+  its entries instead (#21)
+- On Home, one subscription or one savings goal fills the whole width, and two share it (#18)
+- Lent and borrowed money now moves your account balance while it's open: lending takes it out of the account
+  it was paid from, borrowing puts it into the account it came into, and marking it settled puts the balance back.
+  It still never counts as spending or touches the budget. Entries from before this update have no account, so
+  balances don't change until you pick one for them (#19)
+- Tapping an entry (on Home, in Activity or Stats) opens a card with its amount, category, account, date and
+  photos, to edit it or delete it with Undo
+- Tapping the balance on Home opens a card with every account, to switch which one Home shows. Tapping an account
+  in Accounts shows its balance, money in and out, and its latest entries
+- Pop-up cards grow out of what was tapped and shrink back into it, in the same glass as the other cards. Money
+  owed cards show each entry's photos
+- Bank messages from Kotak, Bank of Baroda, PNB, Canara, Union Bank, IDFC First, Yes Bank, IndusInd, Federal and
+  AU are recognised, plus card spends, ATM withdrawals, EMIs, salary, refunds and interest (#7)
+- Tapping a subscription (on Home or in Subscriptions) opens a card with its next charge, yearly cost and start, with
+  Edit and Pause or Resume
+- Payment apps: choose which apps' notifications are read (Settings → Payment apps), including your bank's own app
+  once it has sent you a notification, and pick the account each one's payments go to (#17)
+- Money owed on Home is one card with what you're owed and owe, and the people with the biggest balances and what
+  their latest entry was for. Tapping someone opens a card with every entry, to edit or mark settled (#18)
+- Photos: tapping a photo opens it full size, with pinch to zoom and Remove there; the small thumbnail no longer has
+  a cross to hit by mistake. Entries with a photo show a camera icon on Home and in Activity (#18)
+- Reading a bill photo also picks the account it was paid from: UPI or bank goes to a bank account, card to a
+  card, cash to cash
+- If reading a bill photo fails, a short message says why, and tapping it tries again
+- Bottom button bars (Add, Save) fade in at the top instead of starting with a hard edge (#11)
+- New screenshots in the README and the store listing
+
+## 1.7.1
+
+- App lock locks as soon as you leave the app (or after 30 seconds or 5 minutes, in Settings → Lock options).
+  Picking a photo or sharing a file doesn't lock it
+- App lock can use its own PIN or password instead of the phone's screen lock, with fingerprint or face as a
+  shortcut. Only a salted hash is kept, and after five wrong tries it makes you wait, longer each time
+
+## 1.7.0
+
+- Pure black (AMOLED) in Settings → Appearance: a black background with no glow, for OLED screens (#1)
+- AI: on the add screen, attach a bill photo and tap Fill in from this photo; the amount, date, category and note
+  are filled in for you to check. The photo is only sent when you tap
+- AI: Ask AI about this month on Insights, for what changed against last month and your budget, and what to do
+- AI: the assistant now knows Money owed (who owes you, lending, borrowing, settling up) and #tags, and splits a
+  shared bill into your share and what others owe
+- AI: waits longer before giving up when the AI service is busy
+- Activity shows the account chosen on Home however you open it, including from the tab bar (#13)
+- Detect payments from payment apps' notifications: FamApp, Google Pay, PhonePe, Paytm, BHIM and CRED (Settings →
+  Detect payment apps, then allow notification access). Only those apps are read, offers and reminders are skipped,
+  and money sent to you comes in as income. A payment also seen in a bank SMS shows up once
+- Statement as a PDF: pick any month or year with the arrows
+- Statement as a PDF (Insights → download button): one page for the month shown or the whole year, with income,
+  spending, budget, categories, biggest expenses and subscriptions; a year adds each month's totals. Notes are
+  left out unless you turn them on, and every entry can be listed on extra pages. Made on the phone, then shared
+- Lent or borrowed, right from the add screen: tap the hand button next to Split, pick I lent or I borrowed and
+  who it's with: one person or several, each the whole amount, split evenly, or each their own amount. It goes
+  to Money owed and stays out of your budget. Back returns to expense or income
+- Money owed on Home: a card for each person. Tap one to edit it or mark it settled
+- Entries on Money owed end in a chevron, like other rows you can open
+- Swipe across the amount to move between Expense and Income
+- Safe to spend, Total balance and Money owed cards on Home grow into the page they open, like Saving for does
+- Subscriptions: swipe the calendar to see what's charged in the coming months
+- Email detection reads FamPay (FamApp) payments
+- The add screen works in landscape: the keypad sits on the right and the rest scrolls
+- Time format in Settings → Appearance: like the phone, 12-hour or 24-hour
+- Notes: the cursor starts at the end of the note, tag suggestions work anywhere in it, and picking one puts
+  the cursor after it
+- Tags need a letter and must start a word, so "Order #4521" no longer makes a tag
+- Tapping an Upcoming card on Home opens that subscription, on its day in the calendar
+- With no budget set, Home shows what you spent today instead of "over budget"
+- CSV import saves everything in one go: a thousand entries take a couple of seconds instead of about seven
+- Rounded amounts round the same way whether spent or a balance, so 12.50 shows 13 in both
 - Split with people: when adding an expense, tap Split, pick who's sharing it, and split it equally or type
   each person's amount. Your share is your expense; each person's share goes to Money owed. Splitting across
   categories is in the same sheet, so it's one button

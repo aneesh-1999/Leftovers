@@ -154,6 +154,7 @@ class AppUpdateRepositoryTest {
         // 2. Simulate 20 minutes elapsed (cache expired)
         val expiredTime = System.currentTimeMillis() - (20 * 60 * 1000L)
         settingsRepository.touchUpdateCacheTimestamp(expiredTime)
+        settingsRepository.settings.first { it.updateCacheTimestamp == expiredTime }
 
         // 3. Second check sends If-None-Match header and handles 304
         val secondStatus = repo.checkForUpdates(currentVersionName = "1.7.0", currentVersionCode = 20L)
@@ -224,6 +225,7 @@ class AppUpdateRepositoryTest {
     fun checkForUpdates_activeRateLimit_skipsNetworkUntilReset() = runBlocking {
         val futureResetTime = System.currentTimeMillis() + 600_000L // 10 minutes from now
         settingsRepository.setUpdateRateLimitResetTime(futureResetTime)
+        settingsRepository.settings.first { it.updateRateLimitResetTime == futureResetTime }
 
         val mock = MockHttpTransport()
         var requestMade = false

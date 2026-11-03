@@ -92,20 +92,19 @@ class DebtAccountIntegrationTest {
         assertEquals(100_000L, accountRepo.accounts.first().first { it.id == cashId }.balanceMinor)
     }
 
-    @Test fun accountDeletionIsBlockedWhenDebtsAreLinked() = runBlocking {
+    @Test fun accountDeletionUnlinksDebtsAndKeepsMoneyOwed() = runBlocking {
         val wallet = Account(id = 1, name = "Wallet", icon = "wallet", color = 0xFF000000, openingMinor = 10_000)
         accountRepo.saveAccount(wallet)
         val debt = Debt(id = 1, person = "Frank", amountMinor = 5_000, note = "Snacks", accountId = wallet.id)
         planningRepo.saveDebt(debt)
 
         val usedCount = accountRepo.deleteAccount(wallet)
-        assertEquals(1, usedCount)
-        assertEquals(1, accountRepo.accounts.first().size)
-
-        // Remove debt and try deleting again
-        planningRepo.deleteDebt(debt)
-        val usedAfter = accountRepo.deleteAccount(wallet)
-        assertEquals(0, usedAfter)
+        assertEquals(0, usedCount)
         assertEquals(0, accountRepo.accounts.first().size)
+
+        // Debt remains in planningRepo with accountId unlinked to null
+        val remainingDebts = planningRepo.debts.first()
+        assertEquals(1, remainingDebts.size)
+        assertEquals(null, remainingDebts.first().accountId)
     }
 }

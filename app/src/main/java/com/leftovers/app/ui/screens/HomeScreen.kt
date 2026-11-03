@@ -1,5 +1,16 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.Haptics
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.TextButton
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import com.leftovers.app.data.AccountWithBalance
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -12,7 +23,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.leftovers.app.data.LeaveEntry
-import com.leftovers.app.data.RosterRepository
 import com.leftovers.app.data.Shift
 import com.leftovers.app.data.ShiftStatus
 import com.leftovers.app.data.Workplace
@@ -64,6 +74,7 @@ import com.leftovers.app.data.DailyBudget
 import com.leftovers.app.data.GoalWithSaved
 import com.leftovers.app.data.PlanningRepository
 import com.leftovers.app.data.forecastMonthEnd
+import com.leftovers.app.data.openBalances
 import com.leftovers.app.data.RecurringItem
 import com.leftovers.app.data.SettingsRepository
 import com.leftovers.app.data.SmsRepository
@@ -122,6 +133,8 @@ data class HomeUiState(
     val monthIncome: Long = 0,
     val upcoming: List<RecurringItem> = emptyList(),
     val goals: List<GoalWithSaved> = emptyList(),
+    /** Everyone with money still owed either way, largest first. */
+    val owed: List<com.leftovers.app.data.PersonBalance> = emptyList(),
     val recent: List<TransactionItem> = emptyList(),
     val smsSuggestions: List<SmsSuggestion> = emptyList(),
     /** Last month, when its recap hasn't been seen yet. */
@@ -137,35 +150,22 @@ data class HomeUiState(
     val accounts: List<AccountWithBalance> = emptyList(),
     /** The account Home is showing, or null for all of them. */
     val selectedAccount: AccountWithBalance? = null,
-    val shifts: List<Shift> = emptyList(),
-    val leaves: List<LeaveEntry> = emptyList(),
-    val workplaces: Map<Long, Workplace> = emptyMap(),
 )
 
 class HomeViewModel(
     repository: TransactionRepository,
     private val settings: SettingsRepository,
-    planning: PlanningRepository,
+    private val planning: PlanningRepository,
     private val sms: SmsRepository,
     accounts: AccountRepository,
-    roster: RosterRepository? = null,
 ) : ViewModel() {
-    private val rosterFlow = if (roster != null) {
-        combine(roster.shifts, roster.leaves, roster.workplaces) { shifts, leaves, workplaces ->
-            Triple(shifts, leaves, workplaces.associateBy { it.id })
-        }
-    } else {
-        flowOf(Triple(emptyList<Shift>(), emptyList<LeaveEntry>(), emptyMap<Long, Workplace>()))
-    }
-
     val state: StateFlow<HomeUiState> = combine(
         combine(repository.allTransactions, accounts.accounts, ::Pair),
         settings.settings,
-        planning.recurring,
+        combine(planning.recurring, planning.debts, ::Pair),
         planning.goals,
-        combine(sms.suggestions, rosterFlow, ::Pair),
-    ) { (all, accountList), s, recurring, goals, (suggestions, rosterData) ->
-        val (shifts, leaves, workplaces) = rosterData
+        sms.suggestions,
+    ) { (all, accountList), s, (recurring, debts), goals, suggestions ->
         val month = YearMonth.now()
         val todayDate = LocalDate.now()
         val defaultAccountIds = accountList.filter { it.currency == null || it.currency.equals(s.currencyCode, ignoreCase = true) }.map { it.id }.toSet()
@@ -196,6 +196,7 @@ class HomeViewModel(
                 .filter { it.toRecurring().nextChargeDate() <= todayDate.plusDays(30) }
                 .take(6),
             goals = goals.filter { !it.reached }.take(5),
+            owed = debts.openBalances().filter { it.netMinor != 0L },
             recent = shownAll.take(6),
             smsSuggestions = suggestions,
             recapMonth = month.minusMonths(1).takeIf { prev ->
@@ -208,14 +209,27 @@ class HomeViewModel(
             forecast = if (selected == null) forecastMonthEnd(defaultBalance, defaultCurrencyAll, recurring, todayDate) else null,
             accounts = accountList,
             selectedAccount = selected,
-            shifts = shifts,
-            leaves = leaves,
-            workplaces = workplaces,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
     fun answerCarry(carry: Boolean) {
         viewModelScope.launch { settings.setCarryChoice(YearMonth.now().minusMonths(1), carry) }
+    }
+
+    fun setSubscriptionActive(item: RecurringItem, active: Boolean) {
+        viewModelScope.launch { planning.saveRecurring(item.toRecurring().copy(active = active)) }
+    }
+
+    fun settleUp(person: String, amountMinor: Long, accountId: Long?) {
+        viewModelScope.launch { planning.settleUp(person, amountMinor, accountId, chosen = true) }
+    }
+
+    fun saveDebt(debt: com.leftovers.app.data.Debt) {
+        viewModelScope.launch { planning.saveDebt(debt) }
+    }
+
+    fun deleteDebt(debt: com.leftovers.app.data.Debt) {
+        viewModelScope.launch { planning.deleteDebt(debt) }
     }
 
     fun dismissSms(id: Long) {
@@ -243,14 +257,309 @@ fun HomeScreen(
     onOpenRecap: (YearMonth) -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenAssistant: () -> Unit,
-    onOpenRoster: (dateEpochDay: Long?, shiftId: Long?) -> Unit = { _, _ -> },
+    onOpenDebts: () -> Unit = {},
+    /** Opens Subscriptions on this one: its day in the calendar, and its details. */
+    onOpenSubscription: (RecurringItem) -> Unit = { onOpenSubscriptions(it.type == TxType.INCOME) },
     viewModel: HomeViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
     val money = LocalMoney.current
     if (!state.loaded) return
+    var owedOpen by remember { mutableStateOf<String?>(null) }
+    // The tapped card steps out of the way until its pop-up shrinks back into it.
+    var owedHidden by remember { mutableStateOf<String?>(null) }
+    var hiddenSubscription by remember { mutableStateOf<Long?>(null) }
+    // Where the tapped card was, for the pop-up to grow out of.
+    var owedFrom by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var subscriptionFrom by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var editingDebt by remember { mutableStateOf<com.leftovers.app.data.Debt?>(null) }
+    var settling by remember { mutableStateOf<String?>(null) }
+    val view = androidx.compose.ui.platform.LocalView.current
+    var viewingSubscription by remember { mutableStateOf<Long?>(null) }
+    val upcomingBounds = remember { mutableMapOf<Long, androidx.compose.ui.geometry.Rect>() }
+    // Tapping the balance opens a card with every account, to switch which one Home shows.
+    var balanceOpen by remember { mutableStateOf(false) }
+    var balanceHidden by remember { mutableStateOf(false) }
+    var balanceFrom by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var balanceBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    if (balanceOpen) state.balance?.let { balance ->
+        val selected = state.selectedAccount
+        MorphCard(from = balanceFrom, onDismiss = { balanceOpen = false; balanceHidden = false }, onReveal = { balanceHidden = false }, onShown = { balanceHidden = true }) { close ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (selected != null) CategoryIcon(selected.icon, selected.color, size = 52.dp) else IconTile(Lucide.Wallet, c.textPrimary, size = 52.dp)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(selected?.name ?: "Total balance", style = MaterialTheme.typography.titleLarge, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (selected != null) "One of ${state.accountCount} accounts" else if (state.accountCount == 1) "1 account" else "Across ${state.accountCount} accounts",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textSecondary,
+                    )
+                }
+            }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(c.glass)
+                    .border(1.dp, c.glassStrong, RoundedCornerShape(22.dp))
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+            ) {
+                Text("Balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
+                val own = state.selectedAccount?.takeIf { it.currency != null }
+                Text(own?.shownBalance(money) ?: money.format(balance), style = MaterialTheme.typography.displaySmall, color = if (own?.shownNegative ?: (balance < 0)) c.negative else c.textPrimary)
+                state.forecast?.let { f ->
+                    val end = state.month.atEndOfMonth().format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
+                    Text(
+                        "About ${money.formatWhole(f)} by $end",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (f < 0) c.negative else c.textSecondary,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
+            // Which account Home shows; the one showing has a tick.
+            if (state.accounts.size > 1) {
+                Column(Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())) {
+                    val rows = listOf<AccountWithBalance?>(null) + state.accounts
+                    rows.forEachIndexed { i, a ->
+                        if (i > 0) RowDivider(inset = 50.dp)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .pressable({ viewModel.showAccount(a?.id) }, pressedScale = 0.98f)
+                                .padding(vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (a != null) CategoryIcon(a.icon, a.color, size = 36.dp) else IconTile(Lucide.Wallet, c.textSecondary, size = 36.dp)
+                            Spacer(Modifier.width(14.dp))
+                            Text(a?.name ?: "All accounts", style = MaterialTheme.typography.bodyMedium, color = c.textPrimary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val amount = a?.balanceMinor ?: state.accounts.sumOf { it.balanceMinor }
+                            Text(
+                                a?.shownBalance(money, whole = true) ?: money.formatWhole(amount),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (a?.shownNegative ?: (amount < 0)) c.negative else c.textPrimary,
+                            )
+                            Box(Modifier.width(28.dp), contentAlignment = Alignment.CenterEnd) {
+                                if (a?.id == selected?.id) Icon(Lucide.Check, contentDescription = "Showing", tint = c.accent, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SecondaryButton("Accounts", { close(onOpenAccounts) }, Modifier.weight(1f))
+                PrimaryButton("See activity", { close { onOpenActivity(null, selected?.id) } }, Modifier.weight(1.4f), icon = Lucide.ArrowUpRight)
+            }
+        }
+    }
+    // Tapping an entry opens a card about it; Edit there opens the full editor.
+    val peek = rememberTransactionPeek()
+    TransactionPeekCard(peek, onEdit = onOpenTransaction)
+    state.upcoming.firstOrNull { it.id == viewingSubscription }?.let { r ->
+        SubscriptionCard(
+            r,
+            from = subscriptionFrom,
+            accountName = state.accounts.firstOrNull { it.id == r.accountId }?.name,
+            onDismiss = { viewingSubscription = null; hiddenSubscription = null },
+            onReveal = { hiddenSubscription = null },
+            onShown = { hiddenSubscription = r.id },
+            onEdit = {
+                viewingSubscription = null
+                onOpenSubscription(r)
+            },
+            onSetActive = { viewModel.setSubscriptionActive(r, it) },
+        )
+    }
 
+    // Tapping someone on Money owed: a card in the middle with everything about them, to edit or settle.
+    state.owed.firstOrNull { it.person.equals(owedOpen, ignoreCase = true) }?.let { b ->
+        val theyOwe = b.netMinor > 0
+        val tone = if (theyOwe) c.positive else c.warning
+        val entries = b.entries.sortedByDescending { it.epochDay }
+        val lent = b.entries.filter { !it.repayment && it.amountMinor > 0 }.sumOf { it.amountMinor }
+        val borrowed = b.entries.filter { !it.repayment && it.amountMinor < 0 }.sumOf { -it.amountMinor }
+        val paidBack = b.entries.filter { it.repayment }.sumOf { abs(it.amountMinor) }
+        // How it adds up, when there's more than one kind of entry.
+        val parts = listOfNotNull(
+            if (lent > 0) "Lent ${money.format(lent)}" else null,
+            if (borrowed > 0) "Borrowed ${money.format(borrowed)}" else null,
+            if (paidBack > 0) "Paid back ${money.format(paidBack)}" else null,
+        )
+        MorphCard(from = owedFrom, onDismiss = { owedOpen = null; owedHidden = null }, onReveal = { owedHidden = null }, onShown = { owedHidden = owedOpen }) { close ->
+                    // Who, and since when.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size(52.dp).clip(CircleShape).background(tone.copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(b.person.trim().take(1).uppercase(), style = MaterialTheme.typography.titleLarge, color = tone)
+                        }
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(b.person, style = MaterialTheme.typography.titleLarge, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "Since " + LocalDate.ofEpochDay(b.entries.minOf { it.epochDay }).friendlyLabel() +
+                                    " · ${b.entries.size} ${if (b.entries.size == 1) "entry" else "entries"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.textSecondary,
+                            )
+                        }
+                    }
+                    // The balance, on its own tinted panel.
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(tone.copy(alpha = 0.09f))
+                            .border(1.dp, tone.copy(alpha = 0.22f), RoundedCornerShape(22.dp))
+                            .padding(horizontal = 18.dp, vertical = 16.dp),
+                    ) {
+                        Text(if (theyOwe) "Owes you" else "You owe", style = MaterialTheme.typography.labelLarge, color = tone)
+                        Text(money.format(abs(b.netMinor)), style = MaterialTheme.typography.displaySmall, color = c.textPrimary)
+                        if (parts.size > 1) {
+                            Text(
+                                parts.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.textSecondary,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    // A photo on an entry opens full screen from here.
+                    var photo by remember { mutableStateOf<String?>(null) }
+                    photo?.let { ReceiptViewer(it, onDismiss = { photo = null }) }
+                    // Every entry; tapping one edits it.
+                    Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                        entries.forEachIndexed { i, d ->
+                            if (i > 0) RowDivider(inset = 44.dp)
+                            val out = d.amountMinor > 0
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .pressable({ close { editingDebt = d } }, pressedScale = 0.98f)
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    Modifier.size(32.dp).clip(CircleShape).background(c.glass),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        if (d.repayment) Lucide.Check else if (out) Lucide.ArrowUpRight else Lucide.ArrowDownLeft,
+                                        contentDescription = if (d.repayment) "Paid back" else if (out) "Lent" else "Borrowed",
+                                        tint = if (d.repayment) c.textSecondary else if (out) c.positive else c.warning,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        d.note.ifBlank { if (d.repayment) "Paid back" else if (out) "Lent" else "Borrowed" },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = c.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        LocalDate.ofEpochDay(d.epochDay).friendlyLabel(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textSecondary,
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(money.format(abs(d.amountMinor)), style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                    Text(if (d.repayment) "paid back" else if (out) "lent" else "borrowed", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                                }
+                            }
+                            if (d.photos.isNotEmpty()) {
+                                Row(
+                                    Modifier.padding(start = 44.dp, bottom = 10.dp).horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    d.photos.forEach { path -> ReceiptThumb(path, onOpen = { photo = path }, size = 52.dp) }
+                                }
+                            }
+                        }
+                    }
+                
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SecondaryButton("Edit", {
+                        // One entry opens right here; several are easier to see on Money owed.
+                        close { if (b.entries.size == 1) editingDebt = b.entries[0] else onOpenDebts() }
+                    }, Modifier.weight(1f))
+                    // Someone who owes you can be reminded, in a message you send from WhatsApp, SMS or any app.
+                    if (b.netMinor > 0) {
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        RoundButton(Lucide.Bell, "Remind ${b.person}", {
+                            com.leftovers.app.util.DebtReminder.share(context, com.leftovers.app.util.DebtReminder.message(b, money::format), b.person)
+                        }, size = 56.dp)
+                    }
+                    PrimaryButton("Pay back", { close { settling = b.person } }, Modifier.weight(1.4f), icon = Lucide.Check)
+                }
+            }
+    }
+    state.owed.firstOrNull { it.person.equals(settling, ignoreCase = true) }?.let { b ->
+        SettleSheet(b, state.accounts, onDismiss = { settling = null }) { amount, account ->
+            viewModel.settleUp(b.person, amount, account)
+            Haptics.confirm(view)
+            settling = null
+        }
+    }
+    editingDebt?.let { debt ->
+        DebtEditor(
+            initial = debt,
+            people = state.owed.map { it.person },
+            accounts = state.accounts,
+            onDismiss = { editingDebt = null },
+            onSave = {
+                viewModel.saveDebt(it)
+                editingDebt = null
+            },
+            onDelete = {
+                viewModel.deleteDebt(debt)
+                editingDebt = null
+            },
+        )
+    }
+
+    // Pull down to run every check now (email, subscriptions due, sync) and reload.
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val refreshScope = androidx.compose.runtime.rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
+    var refreshNote by remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(refreshNote) {
+        if (refreshNote != null) {
+            kotlinx.coroutines.delay(2200)
+            refreshNote = null
+        }
+    }
+    val pull = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
+    @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = {
+            refreshing = true
+            refreshScope.launch {
+                val note = (appContext as com.leftovers.app.LeftoversApp).container.refreshNow()
+                refreshing = false
+                refreshNote = note
+                Haptics.tick(view)
+            }
+        },
+        state = pull,
+        modifier = Modifier.fillMaxSize(),
+        indicator = {
+            androidx.compose.material3.pulltorefresh.PullToRefreshDefaults.Indicator(
+                state = pull,
+                isRefreshing = refreshing,
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                color = c.accent,
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding(),
+            )
+        },
+    ) {
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier
@@ -330,50 +639,58 @@ fun HomeScreen(
             state.balance?.let { balance ->
                 item {
                     val displayMoney = state.selectedAccount?.currency?.let { Money(it) } ?: money
-                    Glass(Modifier.fillMaxWidth().padding(top = 12.dp).appear(2), onClick = onOpenAccounts) {
-                        Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                            IconTile(Lucide.Wallet, c.textPrimary, size = 44.dp)
-                            Spacer(Modifier.width(14.dp))
-                            Column(Modifier.weight(1f)) {
-                                if (state.accounts.size > 1) {
-                                    AccountSwitch(state.accounts, state.selectedAccount, viewModel::showAccount)
-                                } else {
-                                    Text("Total balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
-                                }
-                                RollingText(displayMoney.formatWhole(balance), MaterialTheme.typography.headlineSmall, if (balance < 0) c.negative else c.textPrimary)
-                                state.forecast?.let { f ->
-                                    val end = state.month.atEndOfMonth().format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
-                                    Text(
-                                        "About ${displayMoney.formatWhole(f)} by $end",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = if (f < 0) c.negative else c.textSecondary,
+                    Glass(
+                        Modifier
+                            .padding(top = 12.dp)
+                            .sharedContainer("accounts")
+                            .fillMaxWidth()
+                            .appear(2)
+                            .trackScreenBounds { balanceBounds = it }
+                            .graphicsLayer { alpha = if (balanceHidden) 0f else 1f },
+                    ) {
+                        Column {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .pressable({ balanceFrom = balanceBounds; balanceOpen = true }, pressedScale = 0.98f)
+                                    .padding(18.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                IconTile(Lucide.Wallet, c.textPrimary, size = 44.dp)
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(state.selectedAccount?.name ?: "Total balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
+                                    val shown = state.selectedAccount?.takeIf { it.currency != null }
+                                    RollingText(
+                                        shown?.shownBalance(money, whole = true) ?: money.formatWhole(balance),
+                                        MaterialTheme.typography.headlineSmall,
+                                        if (shown?.shownNegative ?: (balance < 0)) c.negative else c.textPrimary,
                                     )
+                                    state.forecast?.let { f ->
+                                        val end = state.month.atEndOfMonth().format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
+                                        Text(
+                                            "About ${displayMoney.formatWhole(f)} by $end",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (f < 0) c.negative else c.textSecondary,
+                                        )
+                                    }
                                 }
+                                // On narrow phones the balance needs the room.
+                                if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 400) {
+                                    Text(
+                                        if (state.accountCount == 1) "1 account" else "${state.accountCount} accounts",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textSecondary,
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
                             }
-                            // On narrow phones the balance needs the room; the arrow still opens Accounts.
-                            if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 400) {
-                                Text(
-                                    if (state.accountCount == 1) "1 account" else "${state.accountCount} accounts",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = c.textSecondary,
-                                )
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
+                            // The month's money out and in, under the balance it changes.
+                            Box(Modifier.padding(horizontal = 18.dp).fillMaxWidth().height(1.dp).background(c.borderTop.copy(alpha = c.borderTop.alpha * 0.6f)))
+                            MonthSplit(state, onOpenActivity)
                         }
                     }
-                }
-            }
-
-            if (state.shifts.isNotEmpty() || state.workplaces.isNotEmpty()) {
-                item {
-                    DashboardWeeklyRosterCard(
-                        shifts = state.shifts,
-                        leaves = state.leaves,
-                        workplaces = state.workplaces,
-                        onOpenRoster = onOpenRoster,
-                        modifier = Modifier.padding(top = 12.dp).appear(2),
-                    )
                 }
             }
 
@@ -390,7 +707,7 @@ fun HomeScreen(
                                         s.sender.ifBlank {
                                             when (s.source) {
                                                 SmsSuggestion.SOURCE_EMAIL -> "email"
-                                                SmsSuggestion.SOURCE_NOTIFICATION -> "notification"
+                                                SmsSuggestion.SOURCE_NOTIFICATION, SmsSuggestion.SOURCE_APP -> "payment app"
                                                 SmsSuggestion.SOURCE_ROOM_EXPENSE -> "Room Expense"
                                                 else -> "bank SMS"
                                             }
@@ -398,11 +715,10 @@ fun HomeScreen(
                                     leading = {
                                         val icon = when (s.source) {
                                             SmsSuggestion.SOURCE_EMAIL -> Lucide.Mail
-                                            SmsSuggestion.SOURCE_NOTIFICATION -> Lucide.Bell
+                                            SmsSuggestion.SOURCE_NOTIFICATION, SmsSuggestion.SOURCE_APP -> Lucide.Bell
                                             SmsSuggestion.SOURCE_ROOM_EXPENSE -> Lucide.Building2
                                             else -> Lucide.Smartphone
                                         }
-                                        IconTile(icon, if (s.source == SmsSuggestion.SOURCE_ROOM_EXPENSE) c.accent else c.textPrimary, size = 42.dp)
                                     },
                                     trailing = {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -423,7 +739,8 @@ fun HomeScreen(
                 }
             }
 
-            item {
+            // Without a balance to show, the month's money out and in keep their own row.
+            if (state.balance == null) item {
                 Row(
                     Modifier
                         .padding(top = 12.dp)
@@ -453,18 +770,21 @@ fun HomeScreen(
             if (state.upcoming.isNotEmpty()) {
                 item { SectionHeader("Upcoming", Modifier.appear(3), action = "Manage", onAction = { onOpenSubscriptions(false) }) }
                 item {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.appear(3)) {
-                        items(state.upcoming, key = { it.id }) { r -> UpcomingCard(r) { onOpenSubscriptions(r.type == TxType.INCOME) } }
+                    CardStrip(state.upcoming, key = { it.id }, modifier = Modifier.appear(3)) { r, size ->
+                        UpcomingCard(r, size ?: Modifier.width(156.dp), hidden = hiddenSubscription == r.id, onBounds = { upcomingBounds[r.id] = it }) { subscriptionFrom = upcomingBounds[r.id]; viewingSubscription = r.id }
                     }
                 }
+            }
+
+            if (state.owed.isNotEmpty()) {
+                item { SectionHeader("Money owed", Modifier.appear(3), action = "See all", onAction = onOpenDebts) }
+                item { OwedSummary(state.owed, Modifier.appear(3), open = owedHidden, onOpen = { person, at -> owedFrom = at; owedOpen = person }, onSeeAll = onOpenDebts) }
             }
 
             if (state.goals.isNotEmpty()) {
                 item { SectionHeader("Saving for", Modifier.appear(4), action = "All goals", onAction = onOpenGoals) }
                 item {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.appear(4)) {
-                        items(state.goals, key = { it.id }) { g -> GoalMiniCard(g) { onOpenGoal(g.id) } }
-                    }
+                    CardStrip(state.goals, key = { it.id }, modifier = Modifier.appear(4)) { g, size -> GoalMiniCard(g, size ?: Modifier.width(200.dp)) { onOpenGoal(g.id) } }
                 }
             }
 
@@ -477,7 +797,7 @@ fun HomeScreen(
                         Column(Modifier.padding(vertical = 6.dp)) {
                             state.recent.forEachIndexed { i, item ->
                                 if (i > 0) RowDivider()
-                                TransactionRow(item, onClick = { onOpenTransaction(item.id) }, subtitle = item.date.friendlyLabel())
+                                TransactionRow(item, onClick = { peek.show(item) }, subtitle = item.date.friendlyLabel(), modifier = Modifier.peekSource(peek, item.id))
                             }
                         }
                     }
@@ -491,6 +811,25 @@ fun HomeScreen(
                 .windowInsetsTopHeight(WindowInsets.statusBars)
                 .background(Brush.verticalGradient(listOf(c.background.copy(alpha = 0.85f), Color.Transparent))),
         )
+        // What the pull found, for a moment.
+        androidx.compose.animation.AnimatedVisibility(
+            refreshNote != null,
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 8.dp),
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(initialScale = 0.9f),
+            exit = androidx.compose.animation.fadeOut(),
+        ) {
+            Text(
+                refreshNote.orEmpty(),
+                style = MaterialTheme.typography.labelLarge,
+                color = c.textPrimary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .border(1.dp, c.borderTop, RoundedCornerShape(50))
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
+            )
+        }
+    }
     }
 }
 
@@ -507,18 +846,54 @@ private fun greeting(name: String = ""): String {
     return if (name.isNotBlank()) "$base, $name" else base
 }
 
+/** Spent and income this month, side by side; each opens Activity filtered to it. */
+@Composable
+private fun MonthSplit(state: HomeUiState, onOpenActivity: (TxType?, Long?) -> Unit) {
+    val c = LocalAppColors.current
+    val money = LocalMoney.current
+    val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 400
+    // The rolling numbers can't be measured ahead, so the divider has a set height rather than matching the row.
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        SplitHalf(if (wide) "Spent this month" else "Spent", money.formatWhole(state.monthSpent), Lucide.ArrowUpRight, c.negative, Modifier.weight(1f)) {
+            onOpenActivity(TxType.EXPENSE, state.selectedAccount?.id)
+        }
+        Box(Modifier.width(1.dp).height(40.dp).background(c.borderTop.copy(alpha = c.borderTop.alpha * 0.6f)))
+        SplitHalf("Income", money.formatWhole(state.monthIncome), Lucide.ArrowDownLeft, c.positive, Modifier.weight(1f)) {
+            onOpenActivity(TxType.INCOME, state.selectedAccount?.id)
+        }
+    }
+}
+
+@Composable
+private fun SplitHalf(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, tint: androidx.compose.ui.graphics.Color, modifier: Modifier, onClick: () -> Unit) {
+    val c = LocalAppColors.current
+    Column(modifier.pressable(onClick, pressedScale = 0.96f).padding(horizontal = 18.dp, vertical = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, color = c.textSecondary, maxLines = 1)
+        }
+        Spacer(Modifier.height(6.dp))
+        RollingText(value, MaterialTheme.typography.titleLarge, c.textPrimary)
+    }
+}
+
 @Composable
 private fun TodayCard(state: HomeUiState, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalAppColors.current
     val money = LocalMoney.current
     val budget = state.today
-    Glass(modifier.fillMaxWidth(), strong = true, shape = RoundedCornerShape(32.dp), onClick = onClick) {
-        Column(Modifier.padding(24.dp)) {
-            val over = budget != null && budget.leftToday < 0
+    // The one number that matters most sits large on the background itself, not in a card, so nothing competes with it.
+    Box(modifier.sharedContainer("budget").fillMaxWidth().pressable(onClick, pressedScale = 0.98f)) {
+        Column(Modifier.padding(horizontal = 6.dp, vertical = 8.dp)) {
+            // The month's budget already used up: say so, and by how much, instead of "₹0 of ₹0".
+            val usedUp = budget != null && budget.monthUsedUp
+            val over = budget != null && (usedUp || budget.leftToday < 0)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     when {
                         budget == null -> "Spent today"
+                        usedUp -> "Over this month's budget"
                         over -> "Over today's budget"
                         else -> "Safe to spend today"
                     },
@@ -528,19 +903,26 @@ private fun TodayCard(state: HomeUiState, onClick: () -> Unit, modifier: Modifie
                 )
                 Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(2.dp))
             RollingText(
-                text = money.formatWhole(if (budget == null) state.spentToday else abs(budget.leftToday)),
-                style = MaterialTheme.typography.displayMedium,
+                text = money.formatWhole(
+                    when {
+                        budget == null -> state.spentToday
+                        usedUp -> abs(budget.monthLeft)
+                        else -> abs(budget.leftToday)
+                    },
+                ),
+                style = MaterialTheme.typography.displayLarge,
                 color = if (over) c.negative else c.textPrimary,
             )
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(14.dp))
             if (budget != null) {
                 ProgressLine(budget.usedFraction)
                 Spacer(Modifier.height(10.dp))
                 Row {
                     Text(
-                        "${money.formatWhole(state.spentToday)} of ${money.formatWhole(budget.dailyLimit)}",
+                        if (usedUp) "${money.formatWhole(budget.monthlyBudget - budget.monthLeft)} of ${money.formatWhole(budget.monthlyBudget)} this month"
+                        else "${money.formatWhole(state.spentToday)} of ${money.formatWhole(budget.dailyLimit)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textSecondary,
                         modifier = Modifier.weight(1f),
@@ -558,400 +940,166 @@ private fun TodayCard(state: HomeUiState, onClick: () -> Unit, modifier: Modifie
     }
 }
 
+/**
+ * A row of small cards that fills the width: one card spans it, two share it equally, and more scroll
+ * sideways at their own size. [content] gets the size to give its card, or null for its usual one; a lone card
+ * gets [WideCard], and lays itself out in a row so the width isn't left empty.
+ */
+/** The size a card gets when it's the only one in its row. */
+private val WideCard = Modifier.fillMaxWidth()
+
 @Composable
-private fun UpcomingCard(r: RecurringItem, onClick: () -> Unit) {
-    val c = LocalAppColors.current
-    val baseMoney = LocalMoney.current
-    val money = r.accountCurrency?.let { com.leftovers.app.util.Money(it) } ?: baseMoney
-    Glass(Modifier.width(156.dp), shape = RoundedCornerShape(24.dp), onClick = onClick) {
-        Column(Modifier.padding(16.dp)) {
-            CategoryIcon(r.categoryEmoji, r.categoryColor, size = 36.dp)
-            Spacer(Modifier.height(12.dp))
-            Text(r.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(r.toRecurring().nextChargeDate().friendlyLabel(), style = MaterialTheme.typography.bodySmall, color = c.textSecondary, maxLines = 1)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                (if (r.type == TxType.INCOME) "+" else "") + money.format(r.amountMinor),
-                style = MaterialTheme.typography.titleMedium,
-                color = if (r.type == TxType.INCOME) c.positive else c.textPrimary,
-            )
+private fun <T> CardStrip(items: List<T>, key: (T) -> Any, modifier: Modifier = Modifier, content: @Composable (T, Modifier?) -> Unit) {
+    when (items.size) {
+        1 -> Box(modifier.fillMaxWidth()) { content(items[0], WideCard) }
+        2 -> Row(modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items.forEach { item -> Box(Modifier.weight(1f)) { content(item, Modifier.fillMaxWidth().fillMaxHeight()) } }
+        }
+        else -> LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = modifier) {
+            items(items, key = key) { item -> content(item, null) }
         }
     }
 }
 
 @Composable
-private fun GoalMiniCard(g: GoalWithSaved, onClick: () -> Unit) {
-    val c = LocalAppColors.current
-    val money = LocalMoney.current
-    Glass(Modifier.sharedContainer("goal-${g.id}").width(200.dp), shape = RoundedCornerShape(24.dp), onClick = onClick) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CategoryIcon(g.emoji, g.color, size = 36.dp)
-                Spacer(Modifier.width(10.dp))
-                Text(g.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            Spacer(Modifier.height(14.dp))
-            Text(money.format(g.savedMinor), style = MaterialTheme.typography.titleMedium, color = c.textPrimary)
-            Text("of ${money.format(g.targetMinor)}", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
-            Spacer(Modifier.height(10.dp))
-            ProgressLine(g.fraction, color = Color(g.color), height = 5.dp)
-        }
-    }
-}
-
-/** "Total balance ⌄" or the chosen account: tap to show one account's money, like switching wallets. */
-@Composable
-private fun AccountSwitch(accounts: List<AccountWithBalance>, selected: AccountWithBalance?, onSelect: (Long?) -> Unit) {
-    val c = LocalAppColors.current
-    val money = LocalMoney.current
-    val defaultAccounts = accounts.filter { it.currency == null || it.currency.equals(money.currency.currencyCode, ignoreCase = true) }
-    val hasOtherCurrencies = accounts.any { it.currency != null && !it.currency.equals(money.currency.currencyCode, ignoreCase = true) }
-    var open by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            Modifier.clip(CircleShape).pressable({ open = true }, pressedScale = 0.95f).padding(vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(selected?.name ?: if (hasOtherCurrencies) "Main (${money.currency.currencyCode})" else "Total balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
-            Spacer(Modifier.width(4.dp))
-            Icon(Lucide.ChevronDown, contentDescription = "Choose account", tint = c.textSecondary, modifier = Modifier.size(14.dp))
-        }
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-            shape = RoundedCornerShape(20.dp),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        ) {
-            DropdownMenuItem(
-                text = {
-                    Column {
-                        Text(if (hasOtherCurrencies) "Main (${money.currency.currencyCode})" else "All accounts", color = c.textPrimary)
-                        Text(money.formatWhole(defaultAccounts.sumOf { it.balanceMinor }), style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
-                    }
-                },
-                leadingIcon = { Icon(Lucide.Wallet, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(18.dp)) },
-                trailingIcon = if (selected == null) {
-                    { Icon(Lucide.Check, contentDescription = "Selected", tint = c.accent, modifier = Modifier.size(18.dp)) }
-                } else {
-                    null
-                },
-                onClick = {
-                    onSelect(null)
-                    open = false
-                },
-            )
-            accounts.forEach { a ->
-                val accMoney = a.currency?.let { Money(it) } ?: money
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(a.name, color = c.textPrimary)
-                            Text(accMoney.formatWhole(a.balanceMinor), style = MaterialTheme.typography.bodySmall, color = if (a.balanceMinor < 0) c.negative else c.textSecondary)
-                        }
-                    },
-                    leadingIcon = { Icon(CategoryIcons[a.icon], contentDescription = null, tint = Color(a.color), modifier = Modifier.size(18.dp)) },
-                    trailingIcon = if (a.id == selected?.id) {
-                        { Icon(Lucide.Check, contentDescription = "Selected", tint = c.accent, modifier = Modifier.size(18.dp)) }
-                    } else {
-                        null
-                    },
-                    onClick = {
-                        onSelect(a.id)
-                        open = false
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DashboardWeeklyRosterCard(
-    shifts: List<Shift>,
-    leaves: List<LeaveEntry>,
-    workplaces: Map<Long, Workplace>,
-    onOpenRoster: (dateEpochDay: Long?, shiftId: Long?) -> Unit,
-    modifier: Modifier = Modifier,
+private fun UpcomingCard(
+    r: RecurringItem,
+    size: Modifier = Modifier.width(156.dp),
+    hidden: Boolean = false,
+    onBounds: (androidx.compose.ui.geometry.Rect) -> Unit = {},
+    onClick: () -> Unit,
 ) {
     val c = LocalAppColors.current
-    val today = remember { LocalDate.now() }
-    var weekOffset by rememberSaveable { mutableStateOf(0) }
-    var selectedDate by rememberSaveable { mutableStateOf(today) }
-
-    val baseDate = remember(weekOffset) { today.plusWeeks(weekOffset.toLong()) }
-    val startOfWeek = remember(baseDate) { baseDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)) }
-    val endOfWeek = remember(startOfWeek) { startOfWeek.plusDays(6) }
-
-    val activeDate = remember(selectedDate, startOfWeek, endOfWeek, weekOffset) {
-        if (selectedDate.isBefore(startOfWeek) || selectedDate.isAfter(endOfWeek)) {
-            if (weekOffset == 0) today else startOfWeek
-        } else {
-            selectedDate
-        }
-    }
-
-    val monthDayFormat = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
-    val fullDayFormat = remember { DateTimeFormatter.ofPattern("EEEE, MMM d", Locale.US) }
-    val timeFormat = remember { DateTimeFormatter.ofPattern("HH:mm", Locale.US) }
-
-    val weekShifts = remember(shifts, startOfWeek, endOfWeek) {
-        shifts.filter { s ->
-            val d = s.startDate
-            !d.isBefore(startOfWeek) && !d.isAfter(endOfWeek) && s.status != ShiftStatus.CANCELLED
-        }
-    }
-
-    val totalMinutes = remember(weekShifts) { weekShifts.sumOf { it.netWorkingMinutes } }
-    val totalHours = totalMinutes / 60
-    val totalMins = totalMinutes % 60
-    val totalHoursStr = if (totalMins > 0) "${totalHours}h ${totalMins}m" else "${totalHours}h"
-    val rangeText = "${startOfWeek.format(monthDayFormat)} – ${endOfWeek.format(monthDayFormat)}"
-
-    val selectedDayShifts = remember(weekShifts, activeDate) {
-        weekShifts.filter { it.startDate == activeDate }
-    }
-    val selectedDayLeaves = remember(leaves, activeDate) {
-        leaves.filter { it.containsDate(activeDate) }
-    }
-    val primaryShift = selectedDayShifts.firstOrNull()
-
-    Glass(modifier = modifier.fillMaxWidth(), strong = true) {
-        Column(Modifier.padding(16.dp)) {
-            // Header Row: Title & Range on left, Navigation on right
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .pressable({ onOpenRoster(activeDate.toEpochDay(), primaryShift?.id) }),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "WEEK ROSTER",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = c.accent,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Icon(
-                            Lucide.ArrowUpRight,
-                            contentDescription = null,
-                            tint = c.accent,
-                            modifier = Modifier.size(12.dp),
-                        )
-                    }
-                    Text(
-                        rangeText,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = c.textPrimary,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (weekOffset != 0) {
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(c.glassStrong)
-                                .pressable({
-                                    weekOffset = 0
-                                    selectedDate = today
-                                })
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                        ) {
-                            Text("Today", style = MaterialTheme.typography.labelSmall, color = c.accent)
-                        }
-                        Spacer(Modifier.width(4.dp))
-                    }
-
-                    RoundButton(
-                        icon = Lucide.ChevronLeft,
-                        contentDescription = "Previous week",
-                        onClick = {
-                            weekOffset -= 1
-                            selectedDate = startOfWeek.minusWeeks(1)
-                        },
-                        size = 32.dp,
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    RoundButton(
-                        icon = Lucide.ChevronRight,
-                        contentDescription = "Next week",
-                        onClick = {
-                            weekOffset += 1
-                            selectedDate = startOfWeek.plusWeeks(1)
-                        },
-                        size = 32.dp,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(c.glassStrong)
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                    ) {
-                        Text(
-                            "${weekShifts.size} shifts · $totalHoursStr",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = c.accent,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // 7 Days Strip (Mo, Tu, We, Th, Fr, Sa, Su)
-            val dayNames = listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                (0L..6L).forEach { offset ->
-                    val dayDate = startOfWeek.plusDays(offset)
-                    val isToday = dayDate == today
-                    val isSelected = dayDate == activeDate
-                    val dayShifts = weekShifts.filter { it.startDate == dayDate }
-                    val dayLeaves = leaves.filter { it.containsDate(dayDate) }
-                    val pShift = dayShifts.firstOrNull()
-                    val isDone = dayShifts.any { it.status == ShiftStatus.COMPLETED }
-
-                    val shiftTag = when {
-                        pShift != null -> {
-                            val h = pShift.netWorkingMinutes / 60.0
-                            if (h % 1.0 == 0.0) "${h.toInt()}h" else String.format(Locale.US, "%.1fh", h)
-                        }
-                        dayLeaves.isNotEmpty() -> "Off"
-                        else -> "—"
-                    }
-
-                    val bgColor: Color = when {
-                        isToday -> c.accent
-                        isSelected -> c.glassStrong
-                        dayShifts.isNotEmpty() -> c.glass
-                        else -> Color.Transparent
-                    }
-
-                    val textColor = when {
-                        isToday -> Color(0xFF151A04)
-                        isSelected -> c.accent
-                        dayShifts.isNotEmpty() -> c.textPrimary
-                        else -> c.textTertiary
-                    }
-
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(bgColor)
-                            .pressable({
-                                if (isSelected) {
-                                    onOpenRoster(dayDate.toEpochDay(), pShift?.id)
-                                } else {
-                                    selectedDate = dayDate
-                                }
-                            })
-                            .padding(vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(
-                            dayNames.getOrElse(offset.toInt()) { dayDate.dayOfWeek.name.take(2) },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = textColor,
-                            fontWeight = if (isToday || isSelected) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            dayDate.dayOfMonth.toString(),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = textColor,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            shiftTag,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = when {
-                                isToday -> Color(0xFF151A04)
-                                isDone -> c.accent
-                                isSelected -> c.accent
-                                dayShifts.isNotEmpty() -> c.textSecondary
-                                else -> c.textTertiary
-                            },
-                            fontWeight = if (pShift != null) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            // Bottom Selected Day Schedule Banner
-            val statusSuffix = when {
-                primaryShift == null -> ""
-                primaryShift.status == ShiftStatus.COMPLETED -> " · DONE ✓"
-                else -> " · SCHEDULED"
-            }
-            val headerText = when {
-                activeDate == today -> "TODAY · ${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
-                activeDate == today.plusDays(1) -> "TOMORROW · ${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
-                activeDate == today.minusDays(1) -> "YESTERDAY · ${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
-                else -> "${activeDate.format(fullDayFormat).uppercase(Locale.US)}$statusSuffix"
-            }
-
-            val subtitleText = when {
-                primaryShift != null -> {
-                    val start = Instant.ofEpochMilli(primaryShift.startEpochMillis).atZone(ZoneId.systemDefault()).toLocalTime().format(timeFormat)
-                    val end = Instant.ofEpochMilli(primaryShift.endEpochMillis).atZone(ZoneId.systemDefault()).toLocalTime().format(timeFormat)
-                    val wpName = primaryShift.workplace ?: primaryShift.workplaceId?.let { workplaces[it]?.name }
-                    val wpLabel = if (!wpName.isNullOrBlank()) " · $wpName" else ""
-                    val shiftHours = primaryShift.netWorkingMinutes / 60.0
-                    val hoursStr = if (shiftHours % 1.0 == 0.0) "${shiftHours.toInt()}h" else String.format(Locale.US, "%.1fh", shiftHours)
-                    "$start – $end$wpLabel ($hoursStr)"
-                }
-                selectedDayLeaves.isNotEmpty() -> {
-                    val l = selectedDayLeaves.first()
-                    "${l.type.label} ${l.type.emoji}"
-                }
-                else -> "Day Off / No shift scheduled"
-            }
-
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(c.glassStrong)
-                    .pressable({ onOpenRoster(activeDate.toEpochDay(), primaryShift?.id) })
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+    val money = LocalMoney.current
+    Glass(size.trackScreenBounds(onBounds).graphicsLayer { alpha = if (hidden) 0f else 1f }, shape = RoundedCornerShape(24.dp), onClick = onClick) {
+        val amount = (if (r.type == TxType.INCOME) "+" else "") + money.format(r.amountMinor)
+        val tint = if (r.type == TxType.INCOME) c.positive else c.textPrimary
+        if (size === WideCard) {
+            // On its own: icon, name and date, and the amount across one row.
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                CategoryIcon(r.categoryEmoji, r.categoryColor, size = 44.dp)
+                Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        headerText,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = c.accent,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        maxLines = 1,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        subtitleText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = c.textPrimary,
-                        maxLines = 1,
-                    )
+                    Text(r.name, style = MaterialTheme.typography.titleMedium, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(r.toRecurring().nextChargeDate().friendlyLabel(), style = MaterialTheme.typography.bodySmall, color = c.textSecondary, maxLines = 1)
                 }
-                Icon(
-                    Lucide.ChevronRight,
-                    contentDescription = "View shift details",
-                    tint = c.textTertiary,
-                    modifier = Modifier.size(18.dp),
+                Spacer(Modifier.width(12.dp))
+                Text(amount, style = MaterialTheme.typography.titleLarge, color = tint)
+            }
+        } else {
+            Column(Modifier.padding(16.dp)) {
+                CategoryIcon(r.categoryEmoji, r.categoryColor, size = 36.dp)
+                Spacer(Modifier.height(12.dp))
+                Text(r.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(r.toRecurring().nextChargeDate().friendlyLabel(), style = MaterialTheme.typography.bodySmall, color = c.textSecondary, maxLines = 1)
+                Spacer(Modifier.height(8.dp))
+                Text(amount, style = MaterialTheme.typography.titleMedium, color = tint)
+            }
+        }
+    }
+}
+
+/**
+ * Money owed on Home: the totals, then the people with the biggest balances, each with what their latest entry
+ * was for. Tapping someone offers Edit or Settled.
+ */
+@Composable
+private fun OwedSummary(
+    owed: List<com.leftovers.app.data.PersonBalance>,
+    modifier: Modifier = Modifier,
+    open: String? = null,
+    onOpen: (String, androidx.compose.ui.geometry.Rect?) -> Unit,
+    onSeeAll: () -> Unit,
+) {
+    val rows = remember { mutableMapOf<String, androidx.compose.ui.geometry.Rect>() }
+    val c = LocalAppColors.current
+    val money = LocalMoney.current
+    val owedToYou = owed.filter { it.netMinor > 0 }.sumOf { it.netMinor }
+    val youOwe = owed.filter { it.netMinor < 0 }.sumOf { -it.netMinor }
+    val shown = owed.sortedByDescending { abs(it.netMinor) }.take(3)
+    Glass(modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp)) {
+        Column(Modifier.padding(vertical = 6.dp)) {
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("You're owed", style = MaterialTheme.typography.labelMedium, color = c.textSecondary)
+                    Text(money.format(owedToYou), style = MaterialTheme.typography.titleLarge, color = if (owedToYou > 0) c.positive else c.textPrimary)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("You owe", style = MaterialTheme.typography.labelMedium, color = c.textSecondary)
+                    Text(money.format(youOwe), style = MaterialTheme.typography.titleLarge, color = c.textPrimary)
+                }
+            }
+            shown.forEach { b ->
+                val theyOwe = b.netMinor > 0
+                val latest = b.entries.maxByOrNull { it.epochDay }
+                RowDivider(inset = 16.dp)
+                com.leftovers.app.ui.components.ListRow(
+                    b.person,
+                    subtitle = latest?.let { d ->
+                        listOfNotNull(d.note.ifBlank { null }, LocalDate.ofEpochDay(d.epochDay).friendlyLabel()).joinToString(" · ") +
+                            if (b.entries.size > 1) " · +${b.entries.size - 1} more" else ""
+                    },
+                    leading = { IconTile(Lucide.HandCoins, if (theyOwe) c.positive else c.warning, size = 38.dp) },
+                    trailing = {
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(money.format(abs(b.netMinor)), style = MaterialTheme.typography.titleSmall, color = if (theyOwe) c.positive else c.textPrimary)
+                            Text(if (theyOwe) "owes you" else "you owe", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                        }
+                    },
+                    onClick = { onOpen(b.person, rows[b.person]) },
+                    modifier = Modifier.sharedContainer("owed-${b.person.lowercase()}").trackScreenBounds { rows[b.person] = it }
+                        .graphicsLayer { alpha = if (b.person.equals(open, ignoreCase = true)) 0f else 1f },
                 )
+            }
+            if (owed.size > shown.size) {
+                RowDivider(inset = 16.dp)
+                Text(
+                    "${owed.size - shown.size} more · See all",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = c.textSecondary,
+                    modifier = Modifier.fillMaxWidth().pressable(onSeeAll, pressedScale = 0.98f).padding(horizontal = 18.dp, vertical = 12.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GoalMiniCard(g: GoalWithSaved, size: Modifier = Modifier.width(200.dp), onClick: () -> Unit) {
+    val c = LocalAppColors.current
+    val money = LocalMoney.current
+    Glass(Modifier.sharedContainer("goal-${g.id}").then(size), shape = RoundedCornerShape(24.dp), onClick = onClick) {
+        if (size === WideCard) {
+            // On its own: the goal on the left, how far along on the right, and the bar under both.
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CategoryIcon(g.emoji, g.color, size = 44.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(g.name, style = MaterialTheme.typography.titleMedium, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${(g.fraction * 100).toInt()}% saved", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(money.format(g.savedMinor), style = MaterialTheme.typography.titleLarge, color = c.textPrimary)
+                        Text("of ${money.format(g.targetMinor)}", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                ProgressLine(g.fraction, color = Color(g.color), height = 5.dp)
+            }
+        } else {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CategoryIcon(g.emoji, g.color, size = 36.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(g.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(money.format(g.savedMinor), style = MaterialTheme.typography.titleMedium, color = c.textPrimary)
+                Text("of ${money.format(g.targetMinor)}", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                Spacer(Modifier.height(10.dp))
+                ProgressLine(g.fraction, color = Color(g.color), height = 5.dp)
             }
         }
     }

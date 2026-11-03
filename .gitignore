@@ -32,3 +32,6 @@ docs/*.md
 .DS_Store
 Thumbs.db
 .aider-desk/
+
+# Local knowledge graph (graphify)
+graphify-out/

@@ -27,6 +27,8 @@ import com.leftovers.app.widget.WeekRosterWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -44,9 +46,13 @@ class AppContainer(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val settings = SettingsRepository(context)
-    val repository = TransactionRepository(database.transactionDao(), database.categoryDao(), database.recurringDao(), database.deletedDao())
+    val syncRemoved = com.leftovers.app.util.SyncRemoved(File(context.filesDir, "sync-removed.json"))
+    val repository = TransactionRepository(database.transactionDao(), database.categoryDao(), database.recurringDao(), database.deletedDao(), syncRemoved)
     val planning = PlanningRepository(database)
     val accounts = AccountRepository(database.accountDao(), database.transferDao(), database.transactionDao(), database.debtDao())
+    val syncLogin = com.leftovers.app.util.SyncLogin(context)
+    val passcode = com.leftovers.app.util.AppPasscode(context)
+    val paymentApps = com.leftovers.app.util.PaymentAppPrefs(context)
     val sms = SmsRepository(database.smsDao(), database.transactionDao())
     val detectionPipeline = com.leftovers.app.data.detection.TransactionDetectionPipeline(
         context = context,
@@ -114,6 +120,10 @@ class AppContainer(private val context: Context) {
         assistant.disconnect()
         backup.password.set(null)
         authManager.signOut()
+        passcode.clear()
+        paymentApps.clear()
+        syncLogin.set(null)
+        syncRemoved.clear()
         DetectionLog.clear(context)
         settings.clearAll()
     }
@@ -127,6 +137,7 @@ class AppContainer(private val context: Context) {
         scope.launch {
             runCatching { SafeToSpendWidget().updateAll(context) }
             runCatching { MonthBudgetWidget().updateAll(context) }
+            runCatching { com.leftovers.app.widget.QuickAddWidget().updateAll(context) }
             runCatching { WeekRosterWidget().updateAll(context) }
         }
         // Keep the home-screen widgets in step with the data.
@@ -136,6 +147,7 @@ class AppContainer(private val context: Context) {
                     delay(600)
                     runCatching { SafeToSpendWidget().updateAll(context) }
                     runCatching { MonthBudgetWidget().updateAll(context) }
+                    runCatching { com.leftovers.app.widget.QuickAddWidget().updateAll(context) }
                 }
         }
         scope.launch {
@@ -144,6 +156,20 @@ class AppContainer(private val context: Context) {
                     delay(600)
                     runCatching { WeekRosterWidget().updateAll(context) }
                 }
+        }
+        // Sync between devices: every few hours, and once each time the app starts.
+        scope.launch {
+            settings.settings.map { it.syncDir != null || it.syncServer != null }
+                .distinctUntilChanged()
+                .collect { on ->
+                    com.leftovers.app.util.DeviceSync.schedule(context, on)
+                    if (on) com.leftovers.app.util.DeviceSync.runIfOn(context)
+                }
+        }
+        scope.launch {
+            settings.settings.map { it.updateCheck }
+                .distinctUntilChanged()
+                .collect { com.leftovers.app.util.UpdateCheck.schedule(context, it) }
         }
         // Clear deleted entries older than the user's chosen keep period.
         scope.launch {
@@ -220,6 +246,32 @@ class AppContainer(private val context: Context) {
                     com.leftovers.app.updater.worker.AppUpdateCheckWorker.schedulePeriodicCheck(context, enabled, wifiOnly)
                 }
         }
+    }
+
+    /**
+     * Home's pull to refresh: every check that can run on demand (subscriptions that have come due, the email
+     * account if one is connected, Sync between devices if it's on), and a few words on what it found.
+     */
+    suspend fun refreshNow(): String = coroutineScope {
+        val email = async {
+            if (emailAccount.connection.value == null) null else com.leftovers.app.util.EmailChecker.check(context)
+        }
+        val sync = async { com.leftovers.app.util.DeviceSync.runIfOn(context) }
+        syncRecurring()
+        val parts = buildList {
+            email.await()?.fold(
+                { found -> if (found > 0) add("$found new ${if (found == 1) "payment" else "payments"} from email") },
+                { add("Couldn't check email") },
+            )
+            sync.await()?.fold(
+                { o ->
+                    val changed = o.added + o.removed
+                    if (changed > 0) add("$changed ${if (changed == 1) "change" else "changes"} from your other phones")
+                },
+                { add("Couldn't sync") },
+            )
+        }
+        parts.joinToString(" · ").ifEmpty { "Up to date" }
     }
 
     /** Logs subscriptions/recurring income that have come due, then checks budgets. */

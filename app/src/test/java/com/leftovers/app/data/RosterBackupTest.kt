@@ -140,8 +140,8 @@ class RosterBackupTest {
         // Restore from backup
         val importResult = backupManager.import(uri)
         assertTrue("Import should succeed", importResult.isSuccess)
-        val restoredCount = importResult.getOrThrow()
-        assertTrue("Restored count should be at least 4", restoredCount >= 4)
+        val restored = importResult.getOrThrow()
+        assertTrue("Restored count should be at least 4", restored.entries >= 4)
 
         // Verify Workplace
         val workplaces = workplaceDao.getAll()

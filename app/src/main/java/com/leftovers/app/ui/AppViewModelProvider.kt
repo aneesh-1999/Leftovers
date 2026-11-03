@@ -26,18 +26,19 @@ import com.leftovers.app.ui.screens.RosterViewModel
 import com.leftovers.app.ui.screens.SettingsViewModel
 import com.leftovers.app.ui.screens.StatsViewModel
 import com.leftovers.app.ui.screens.SubscriptionsViewModel
+import com.leftovers.app.ui.screens.TransactionPeekViewModel
 
 object AppViewModelProvider {
     val Factory = viewModelFactory {
-        initializer { HomeViewModel(container().repository, container().settings, container().planning, container().sms, container().accounts, container().roster) }
+        initializer { HomeViewModel(container().repository, container().settings, container().planning, container().sms, container().accounts) }
         initializer {
             val c = container()
-            EditorViewModel(createSavedStateHandle(), app(), c.repository, c.accounts, c.settings, c.sms, c.planning, c.budgetAlerts, c.roomExpenseDao)
+            EditorViewModel(createSavedStateHandle(), app(), c.repository, c.accounts, c.settings, c.sms, c.planning, c.budgetAlerts, c.roomExpenseDao, c.assistant)
         }
         initializer { AccountsViewModel(container().accounts, container().settings, container().repository, container().planning) }
         initializer { RecapViewModel(createSavedStateHandle(), container().repository, container().planning, container().roster, container().remittances, container().settings) }
-        initializer { HistoryViewModel(container().repository, container().accounts, container().planning) }
-        initializer { StatsViewModel(container().repository, container().settings) }
+        initializer { HistoryViewModel(container().repository, container().accounts, container().planning, container().settings) }
+        initializer { StatsViewModel(container().repository, container().settings, container().planning) }
         initializer { PlanViewModel(container().repository, container().settings, container().planning) }
         initializer { BudgetsViewModel(container().repository, container().settings, container().planning) }
         initializer { BudgetPlanViewModel(container().settings, container().repository) }
@@ -46,10 +47,11 @@ object AppViewModelProvider {
             SubscriptionsViewModel(c.planning, c.repository, c.accounts, c.settings) { c.syncRecurring() }
         }
         initializer { GoalsViewModel(container().planning) }
-        initializer { DebtsViewModel(container().planning, container().accounts) }
+        initializer { DebtsViewModel(container().planning, container().accounts, container().settings) }
         initializer { DeletedViewModel(container().repository, container().roster, container().settings) }
         initializer { GoalDetailViewModel(createSavedStateHandle(), container().planning) }
         initializer { CategoriesViewModel(container().repository) }
+        initializer { TransactionPeekViewModel(container().repository, container().accounts) }
         initializer {
             val c = container()
             SettingsViewModel(c.repository, c.settings, c.backup, c.assistant, c.planning, c.accounts) { c.resetEverything() }

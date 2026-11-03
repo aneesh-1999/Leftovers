@@ -44,16 +44,18 @@ val LocalHazeState = staticCompositionLocalOf { HazeState() }
 
 /**
  * Frosted-glass effect for anything floating above content (headers, tab bar). With [fadeBottom] the frost
- * fades out over its lower part instead of ending in a hard edge, for bars that sit over the top of a screen.
+ * fades out over its lower part instead of ending in a hard edge, for bars that sit over the top of a screen;
+ * [fadeTop] does the same at the top, for button bars at the bottom of a screen.
  */
 @Composable
-fun Modifier.frosted(colors: AppColors = LocalAppColors.current, fadeBottom: Boolean = false): Modifier = hazeBlur(
+fun Modifier.frosted(colors: AppColors = LocalAppColors.current, fadeBottom: Boolean = false, fadeTop: Boolean = false): Modifier = hazeBlur(
     input = HazeInput.Sources(LocalHazeState.current),
     style = HazeBlurStyle {
         blurRadius(28.dp)
         noiseFactor(0.04f)
         colorEffects(listOf(HazeColorEffect.tint(colors.barTint)))
         if (fadeBottom) mask(Brush.verticalGradient(0f to Color.Black, 0.74f to Color.Black, 1f to Color.Transparent))
+        if (fadeTop) mask(Brush.verticalGradient(0f to Color.Transparent, 0.25f to Color.Black, 1f to Color.Black))
     },
 )
 
@@ -64,33 +66,33 @@ fun Modifier.frosted(colors: AppColors = LocalAppColors.current, fadeBottom: Boo
 @Composable
 fun AuroraBackground(modifier: Modifier = Modifier) {
     val c = LocalAppColors.current
+    Canvas(modifier.fillMaxSize()) { drawAurora(c) }
+}
+
+/** Draws the aurora; also used for the copy of the screen the liquid tab bar bends. */
+fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAurora(c: AppColors) {
+    drawRect(c.background)
+    val w = size.width
+    val h = size.height
     val drift = 0.5f
-    Canvas(
-        modifier
-            .fillMaxSize()
-            .background(c.background),
-    ) {
-        val w = size.width
-        val h = size.height
-        fun blob(color: Color, x: Float, y: Float, radius: Float, alpha: Float) {
-            val center = Offset(x, y)
-            drawCircle(
-                brush = Brush.radialGradient(listOf(color.copy(alpha = alpha), Color.Transparent), center = center, radius = radius),
-                radius = radius,
-                center = center,
-            )
-        }
-        val strength = if (c.isDark) 1f else 2.1f
-        blob(c.auroraA, w * (0.1f + 0.3f * drift), h * (0.06f + 0.05f * drift), w * 1.0f, 0.42f * strength)
-        blob(c.auroraB, w * (1.0f - 0.25f * drift), h * (0.32f + 0.12f * drift), w * 0.85f, 0.24f * strength)
-        blob(c.auroraC, w * (0.2f + 0.35f * drift), h * (0.98f - 0.1f * drift), w * 0.8f, 0.14f * strength)
+    fun blob(color: Color, x: Float, y: Float, radius: Float, alpha: Float) {
+        val center = Offset(x, y)
+        drawCircle(
+            brush = Brush.radialGradient(listOf(color.copy(alpha = alpha), Color.Transparent), center = center, radius = radius),
+            radius = radius,
+            center = center,
+        )
     }
+    val strength = if (c.isDark) 1f else 2.1f
+    blob(c.auroraA, w * (0.1f + 0.3f * drift), h * (0.06f + 0.05f * drift), w * 1.0f, 0.42f * strength)
+    blob(c.auroraB, w * (1.0f - 0.25f * drift), h * (0.32f + 0.12f * drift), w * 0.85f, 0.24f * strength)
+    blob(c.auroraC, w * (0.2f + 0.35f * drift), h * (0.98f - 0.1f * drift), w * 0.8f, 0.14f * strength)
 }
 
 fun glassBorder(c: AppColors) = Brush.verticalGradient(listOf(c.borderTop, c.borderBottom))
 
 /** A see-through fill catches light at the top, like a pane of glass, in both themes; solid fills stay flat. */
-private fun glassFill(fill: Color): Brush =
+internal fun glassFill(fill: Color): Brush =
     if (fill.alpha >= 0.9f) androidx.compose.ui.graphics.SolidColor(fill)
     else Brush.verticalGradient(listOf(fill.copy(alpha = (fill.alpha * 1.7f).coerceAtMost(1f)), fill))
 

@@ -28,8 +28,8 @@ android {
         applicationId = "com.leftovers.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 24
-        versionName = "1.7.4"
+        versionCode = 25
+        versionName = "1.8.2"
         resourceConfigurations += listOf("en")
 
         // Injected securely from local.properties or CI environment variables (never committed to git)
@@ -113,8 +113,15 @@ android {
                 "META-INF/LICENSE",
                 "META-INF/DEPENDENCIES",
                 "META-INF/INDEX.LIST",
+                "org/bouncycastle/pqc/**",
+                "org/bouncycastle/x509/**/*.properties",
             )
         }
+    }
+    androidResources {
+        // The PDF library's font for drawing pages, and its Chinese, Japanese and Korean character maps, aren't needed
+        // to read a bank statement's text. Identity mappings stay, for PDFs whose fonts use them.
+        ignoreAssetsPatterns += listOf("!LiberationSans-*.ttf", "!Uni*", "!Adobe-*", "!GB*", "!B5*", "!ETen*", "!HKscs*", "!KSC*", "!83pv*", "!90*", "!Add-*", "!CNS*", "!EUC*", "!Ext-*", "!H", "!V", "!78*", "!NWP*", "!RKSJ*", "!Hankaku", "!Hiragana", "!Katakana", "!Roman", "!WP-Symbol")
     }
 
     // Database upgrade tests run on the JVM (Robolectric), which reads the debug build's assets;
@@ -138,6 +145,9 @@ dependencies {
     testImplementation(libs.junit)
     // Real org.json for unit tests (the Android stub only throws on the JVM).
     testImplementation(libs.org.json)
+    // A local HTTPS server for testing the WebDAV sync.
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.okhttp.tls)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.room.testing)
@@ -165,8 +175,13 @@ dependencies {
 
     implementation(libs.haze)
     implementation(libs.haze.blur)
+    // Liquid glass (the picture behind bends at the edges) for the tab bar, on Android 13 and newer. Apache-2.0.
+    implementation(libs.kyant.backdrop)
+    implementation(libs.kyant.shapes)
 
     implementation(libs.androidx.glance.appwidget)
+    // WebDAV for Sync between devices (Nextcloud, ownCloud...): needs PROPFIND, which HttpURLConnection can't send.
+    implementation(libs.okhttp)
     implementation(libs.androidx.glance.material3)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.biometric)
@@ -175,6 +190,7 @@ dependencies {
     implementation(libs.androidx.startup)
     // Email payment detection (IMAP over TLS). Only used when the user connects a mailbox.
     implementation(libs.angus.mail)
+    implementation(libs.pdfbox.android)
 
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.firestore)

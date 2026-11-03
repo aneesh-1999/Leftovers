@@ -1,8 +1,18 @@
 package com.leftovers.app.ui
 
+import com.leftovers.app.ui.components.Haptics
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import com.leftovers.app.ui.components.LocalUndo
+import com.leftovers.app.ui.components.drawAurora
+import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.shapes.Capsule
 import com.leftovers.app.ui.components.UndoBar
 import com.leftovers.app.ui.components.UndoRequest
 import com.leftovers.app.ui.components.UndoState
@@ -120,8 +130,9 @@ private object Routes {
     const val EDIT = "edit/{id}"
     const val BUDGET = "budget"
     const val BUDGET_PLAN = "budget/plan"
-    const val SUBSCRIPTIONS = "subscriptions?income={income}"
-    fun subscriptions(income: Boolean = false) = "subscriptions?income=$income"
+    const val SUBSCRIPTIONS = "subscriptions?income={income}&open={open}"
+    /** [open] is a subscription to show straight away, or -1. */
+    fun subscriptions(income: Boolean = false, open: Long = -1) = "subscriptions?income=$income&open=$open"
     const val GOALS = "goals"
     const val GOAL = "goals/{id}"
     const val ACCOUNTS = "accounts"
@@ -130,7 +141,9 @@ private object Routes {
     fun roster(date: Long = -1L, shiftId: Long = -1L) = "roster?date=$date&shiftId=$shiftId"
     const val SETTINGS = "settings"
     const val CATEGORIES = "categories"
-    const val ASSISTANT = "assistant"
+    const val ASSISTANT = "assistant?ask={ask}"
+    /** Opens the assistant; a non-empty [ask] is sent as the first question. */
+    fun assistant(ask: String = "") = "assistant?ask=" + android.net.Uri.encode(ask)
     const val REMITTANCE = "remittance"
     const val REMITTANCE_DETAIL = "remittance/{id}"
     const val REMITTANCE_RECIPIENTS = "remittance/recipients"
@@ -213,6 +226,15 @@ fun LeftoversNavHost(
     val appScope = rememberCoroutineScope()
     val undo = remember { UndoState(appScope) }
     val onTab = currentRoute in Routes.tabs
+    val view = androidx.compose.ui.platform.LocalView.current
+    val colors = LocalAppColors.current
+    // The tab bar is liquid glass on Android 13 and newer (it bends the picture behind it with a GPU shader),
+    // while glass effects are on; otherwise it's the frosted bar.
+    val liquid = android.os.Build.VERSION.SDK_INT >= 33 && colors.glass.alpha < 0.9f
+    // What the tab bar bends: the aurora and the screen above it, recorded apart from what's shown.
+    val onDrawBackdrop = remember(colors) { { scope: androidx.compose.ui.graphics.drawscope.ContentDrawScope -> scope.drawAurora(colors); scope.drawContent() } }
+    val backdrop = rememberLayerBackdrop(onDraw = onDrawBackdrop)
+    val popups = remember { com.leftovers.app.ui.components.PopupLayer() }
 
     LaunchedEffect(toast) {
         if (toast != null) {
@@ -257,13 +279,19 @@ fun LeftoversNavHost(
     val swipeThreshold = with(LocalDensity.current) { 72.dp.toPx() }
 
     SharedTransitionLayout(Modifier.fillMaxSize()) {
-        CompositionLocalProvider(LocalSharedTransitionScope provides this, LocalUndo provides undo) {
+        CompositionLocalProvider(
+            LocalSharedTransitionScope provides this,
+            LocalUndo provides undo,
+            com.leftovers.app.ui.components.LocalScreenBackdrop provides if (liquid) backdrop else null,
+            com.leftovers.app.ui.components.LocalPopupLayer provides popups,
+        ) {
             Box(Modifier.fillMaxSize()) {
                 NavHost(
                     navController = nav,
                     startDestination = Routes.HOME,
                     modifier = Modifier
                         .fillMaxSize()
+                        .then(if (liquid) Modifier.layerBackdrop(backdrop) else Modifier)
                         // Swipe sideways on a tab to move to the next one. Anything inside that handles its own
                         // sideways drag (swipeable rows, scrolling card rows, the chart) gets it first.
                         .pointerInput(currentRoute) {
@@ -339,13 +367,14 @@ fun LeftoversNavHost(
                             onReviewSms = { s -> nav.navigate(Routes.add(s.epochDay, s.amountMinor, s.merchant, s.id)) },
                             onOpenRecap = { nav.navigate(Routes.recap(it.toString())) },
                             onOpenAccounts = { nav.navigate(Routes.ACCOUNTS) },
-                            onOpenAssistant = { nav.navigate(Routes.ASSISTANT) },
-                            onOpenRoster = { date, shiftId ->
-                                nav.navigate(Routes.roster(date ?: -1L, shiftId ?: -1L))
-                            },
+                            onOpenAssistant = { nav.navigate(Routes.assistant()) },
+                            onOpenDebts = { nav.navigate(Routes.DEBTS) },
+                            onOpenSubscription = { r -> nav.navigate(Routes.subscriptions(r.type == TxType.INCOME, r.id)) },
                         )
                     }
-                    screen(Routes.ASSISTANT) { AssistantScreen(onBack = back) }
+                    screen(Routes.ASSISTANT, listOf(navArgument("ask") { type = NavType.StringType; defaultValue = "" })) { entry ->
+                        AssistantScreen(onBack = back, ask = entry.arguments?.getString("ask").orEmpty())
+                    }
                     screen(Routes.ACTIVITY) {
                         HistoryScreen(
                             onOpenTransaction = { nav.navigate(Routes.edit(it)) },
@@ -360,6 +389,7 @@ fun LeftoversNavHost(
                             onOpenRecap = { nav.navigate(Routes.recap(it.toString())) },
                             onOpenYear = { nav.navigate(Routes.recap(it.toString())) },
                             onOpenTransaction = { nav.navigate(Routes.edit(it)) },
+                            onAskAi = { nav.navigate(Routes.assistant(it)) },
                         )
                     }
                     screen(Routes.PLAN) {
@@ -446,6 +476,7 @@ fun LeftoversNavHost(
                             onClose = back,
                             onSaved = {
                                 toast = it
+                                Haptics.confirm(view)
                                 back()
                             },
                             onManageCategories = { nav.navigate(Routes.CATEGORIES) },
@@ -456,6 +487,7 @@ fun LeftoversNavHost(
                             onClose = back,
                             onSaved = {
                                 toast = it
+                                Haptics.confirm(view)
                                 back()
                             },
                             onManageCategories = { nav.navigate(Routes.CATEGORIES) },
@@ -470,8 +502,18 @@ fun LeftoversNavHost(
                         )
                     }
                     screen(Routes.BUDGET_PLAN) { BudgetPlanScreen(onBack = back) }
-                    screen(Routes.SUBSCRIPTIONS, listOf(navArgument("income") { type = NavType.BoolType; defaultValue = false })) { entry ->
-                        SubscriptionsScreen(onBack = back, startOnIncome = entry.arguments?.getBoolean("income") == true)
+                    screen(
+                        Routes.SUBSCRIPTIONS,
+                        listOf(
+                            navArgument("income") { type = NavType.BoolType; defaultValue = false },
+                            navArgument("open") { type = NavType.LongType; defaultValue = -1L },
+                        ),
+                    ) { entry ->
+                        SubscriptionsScreen(
+                            onBack = back,
+                            startOnIncome = entry.arguments?.getBoolean("income") == true,
+                            openId = entry.arguments?.getLong("open") ?: -1L,
+                        )
                     }
                     screen(Routes.GOALS) { GoalsScreen(onBack = back, onOpenGoal = { nav.navigate(Routes.goal(it)) }) }
                     screen(Routes.GOAL, idArg) { GoalDetailScreen(onBack = back) }
@@ -496,6 +538,7 @@ fun LeftoversNavHost(
                 ) {
                     CompositionLocalProvider(LocalNavAnimatedScope provides this) {
                         FloatingDock(
+                            backdrop = if (liquid) backdrop else null,
                             current = currentRoute,
                             onTab = { nav.switchTab(it) },
                             onAdd = { nav.navigate(Routes.add()) },
@@ -517,7 +560,7 @@ fun LeftoversNavHost(
                         .padding(start = 16.dp, end = 16.dp, bottom = undoLift),
                 ) {
                     lastUndo?.let { request ->
-                        UndoBar(request, onUndo = { undo.undo(request) }, onDismiss = { undo.dismiss(request) })
+                        UndoBar(request, onUndo = { Haptics.tick(view); undo.undo(request) }, onDismiss = { undo.dismiss(request) })
                     }
                 }
 
@@ -532,6 +575,9 @@ fun LeftoversNavHost(
                 ) {
                     Toast(toast.orEmpty())
                 }
+
+                // Pop-up cards, above the tab bar and everything else.
+                popups.Content()
             }
         }
     }
@@ -547,7 +593,7 @@ private fun NavHostController.switchTab(route: String) {
 
 /** Floating frosted tab bar with the add button in the middle; the active tab shows its name. */
 @Composable
-private fun FloatingDock(current: String?, onTab: (String) -> Unit, onAdd: () -> Unit) {
+private fun FloatingDock(backdrop: LayerBackdrop?, current: String?, onTab: (String) -> Unit, onAdd: () -> Unit) {
     val c = LocalAppColors.current
     // On narrow phones the selected tab's name is dropped and items sit closer, so every tab fits.
     val compact = LocalConfiguration.current.screenWidthDp < 400
@@ -555,12 +601,30 @@ private fun FloatingDock(current: String?, onTab: (String) -> Unit, onAdd: () ->
         Modifier
             .navigationBarsPadding()
             .padding(bottom = 14.dp)
-            .clip(CircleShape)
-            // Light mode: a lighter tint than the headers, so the bar is glass like the cards, not milky white.
-            .frosted(if (c.isDark) c else c.copy(barTint = Color.White.copy(alpha = 0.18f)))
-            // A soft top-lit sheen, so the bar reads as glass in both themes.
-            .background(Brush.verticalGradient(listOf(c.glassStrong, c.glass.copy(alpha = c.glass.alpha * 0.4f))))
-            .border(1.dp, glassBorder(c), CircleShape)
+            .then(
+                if (backdrop != null) {
+                    // Liquid glass: what's behind bends at the bar's rounded edges, a little colour splits at the
+                    // rim, and a bright edge catches the light.
+                    Modifier.drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { Capsule() },
+                        effects = {
+                            vibrancy()
+                            blur(6.dp.toPx())
+                            lens(18.dp.toPx(), 36.dp.toPx(), chromaticAberration = true)
+                        },
+                        onDrawSurface = { drawRect(if (c.isDark) Color(0xFF0E0E13).copy(alpha = 0.28f) else Color.White.copy(alpha = 0.32f)) },
+                    )
+                } else {
+                    Modifier
+                        .clip(CircleShape)
+                        // Light mode: a lighter tint than the headers, so the bar is glass like the cards, not milky white.
+                        .frosted(if (c.isDark) c else c.copy(barTint = Color.White.copy(alpha = 0.18f)))
+                        // A soft top-lit sheen, so the bar reads as glass in both themes.
+                        .background(Brush.verticalGradient(listOf(c.glassStrong, c.glass.copy(alpha = c.glass.alpha * 0.4f))))
+                        .border(1.dp, glassBorder(c), CircleShape)
+                },
+            )
             .padding(6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp),

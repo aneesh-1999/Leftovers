@@ -14,6 +14,12 @@
 -dontwarn org.graalvm.**
 -dontwarn javax.security.auth.callback.**
 
+# PdfBox can decode JPEG 2000 images with an optional library; statements are only read for their text.
+-dontwarn com.gemalto.jp2.**
+
+# Glance creates a widget button's ActionCallback by reflection, so its no-argument constructor must stay.
+-keep class * implements androidx.glance.appwidget.action.ActionCallback { <init>(); }
+
 # Optimization passes and access modification for faster execution & smaller code size
 -optimizationpasses 5
 -allowaccessmodification

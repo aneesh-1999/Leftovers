@@ -42,6 +42,10 @@ interface TransactionDao {
     @Upsert
     suspend fun upsert(transaction: Transaction): Long
 
+    /** Many at once in one database transaction, so screens update once instead of once per entry. */
+    @Upsert
+    suspend fun upsertAll(transactions: List<Transaction>)
+
     @Delete
     suspend fun delete(transaction: Transaction)
 
@@ -168,11 +172,30 @@ interface AccountDao {
                         FROM transactions t WHERE t.accountId = a.id), 0)
             + COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE toAccountId = a.id), 0)
             - COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE fromAccountId = a.id), 0)
-            - COALESCE((SELECT SUM(d.amountMinor) FROM debts d WHERE d.accountId = a.id AND d.settled = 0), 0) AS balanceMinor
+            - COALESCE((SELECT SUM(amountMinor) FROM debts WHERE accountId = a.id), 0) AS balanceMinor
         FROM accounts a ORDER BY a.id
         """,
     )
     fun observeWithBalance(): Flow<List<AccountWithBalance>>
+
+    /**
+     * For accounts with their own currency: what was entered in that currency ([NativeParts.inCurrency]), and
+     * the rest (older entries, transfers, money owed), which is in the app's currency and still needs converting.
+     */
+    @Query(
+        """
+        SELECT a.id AS accountId,
+            COALESCE((SELECT SUM(CASE WHEN t.type = 'INCOME' THEN t.foreignMinor ELSE -t.foreignMinor END)
+                      FROM transactions t WHERE t.accountId = a.id AND t.foreignCurrency = a.currency), 0) AS inCurrency,
+            COALESCE((SELECT SUM(CASE WHEN t.type = 'INCOME' THEN t.amountMinor ELSE -t.amountMinor END)
+                      FROM transactions t WHERE t.accountId = a.id AND (t.foreignCurrency IS NULL OR t.foreignCurrency <> a.currency)), 0)
+            + COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE toAccountId = a.id), 0)
+            - COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE fromAccountId = a.id), 0)
+            - COALESCE((SELECT SUM(amountMinor) FROM debts WHERE accountId = a.id), 0) AS inAppCurrency
+        FROM accounts a WHERE a.currency IS NOT NULL
+        """,
+    )
+    fun observeNativeParts(): Flow<List<NativeParts>>
 
     @Query("SELECT * FROM accounts ORDER BY id")
     suspend fun getAll(): List<Account>
@@ -278,6 +301,19 @@ interface DebtDao {
 
     @Query("UPDATE debts SET accountId = :toId WHERE accountId = :fromId")
     suspend fun moveAccount(fromId: Long, toId: Long)
+
+    @Query("SELECT * FROM debts WHERE settled = 0 AND LOWER(TRIM(person)) = LOWER(TRIM(:person)) ORDER BY createdAt DESC")
+    suspend fun openFor(person: String): List<Debt>
+
+    @Query("SELECT id FROM debts WHERE accountId = :accountId")
+    suspend fun idsForAccount(accountId: Long): List<Long>
+
+    @Query("UPDATE debts SET accountId = :accountId WHERE id IN (:ids)")
+    suspend fun setAccount(ids: List<Long>, accountId: Long)
+
+    /** A deleted account's entries stay in Money owed, just no longer tied to an account. */
+    @Query("UPDATE debts SET accountId = NULL WHERE accountId = :accountId")
+    suspend fun unlinkAccount(accountId: Long)
 }
 
 @Dao
@@ -471,6 +507,7 @@ interface BackupDao {
     @Query("SELECT * FROM recipients") suspend fun recipients(): List<Recipient>
     @Query("SELECT * FROM remittances") suspend fun remittances(): List<Remittance>
     @Query("SELECT * FROM remittance_status_history") suspend fun remittanceStatusHistory(): List<RemittanceStatusHistory>
+    @Query("SELECT id FROM deleted_transactions") suspend fun deletedIds(): List<Long>
 
     @Query("DELETE FROM goal_deposits") suspend fun clearDeposits()
     @Query("DELETE FROM debts") suspend fun clearDebts()
@@ -506,4 +543,8 @@ interface BackupDao {
     @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertRecipients(items: List<Recipient>)
     @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertRemittances(items: List<Remittance>)
     @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertRemittanceStatusHistory(items: List<RemittanceStatusHistory>)
+
+    /** Sync between devices: entries another phone removed go to Deleted entries here. */
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE) suspend fun insertDeleted(item: DeletedTransaction)
+    @androidx.room.Delete suspend fun deleteTransactions(items: List<Transaction>)
 }

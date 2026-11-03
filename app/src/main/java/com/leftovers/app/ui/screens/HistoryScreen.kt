@@ -1,5 +1,7 @@
 package com.leftovers.app.ui.screens
 
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.ColumnScope
@@ -105,6 +107,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -116,7 +120,8 @@ enum class TypeFilter(val label: String) { ALL("All"), EXPENSE("Spent"), INCOME(
 data class DayGroup(val date: LocalDate, val items: List<TransactionItem>)
 
 /** Narrows the list to one account, one category and/or one #tag. A tag looks across all months. */
-data class ActivityFilters(val accountId: Long? = null, val categoryId: Long? = null, val tag: String? = null) {
+/** [allTime]: every entry instead of one month's (#29); it isn't a filter, so it doesn't make the list "filtered". */
+data class ActivityFilters(val accountId: Long? = null, val categoryId: Long? = null, val tag: String? = null, val allTime: Boolean = false) {
     val active get() = accountId != null || categoryId != null || tag != null
 }
 
@@ -145,11 +150,22 @@ class HistoryViewModel(
     private val repository: TransactionRepository,
     accountRepository: AccountRepository,
     planning: PlanningRepository,
+    settings: com.leftovers.app.data.SettingsRepository,
 ) : ViewModel() {
     private val month = MutableStateFlow(YearMonth.now())
     private val filter = MutableStateFlow(TypeFilter.ALL)
     private val query = MutableStateFlow("")
     private val filters = MutableStateFlow(ActivityFilters())
+
+    init {
+        // Activity shows the account Home is showing, however it's opened; all accounts on Home shows them all.
+        // It can still be cleared here, until Home switches account again.
+        viewModelScope.launch {
+            settings.settings.map { it.homeAccountId }.distinctUntilChanged().collect { id ->
+                filters.value = filters.value.copy(accountId = id)
+            }
+        }
+    }
 
     val state: StateFlow<HistoryUiState> =
         combine(
@@ -168,6 +184,8 @@ class HistoryViewModel(
                 }
             } else if (fl.tag != null) {
                 all.filter { fl.tag in hashtags(it.note) }
+            } else if (fl.allTime) {
+                all
             } else {
                 monthItems
             }
@@ -194,7 +212,7 @@ class HistoryViewModel(
                     .map { FilterOption(it.categoryId, it.categoryName, it.categoryEmoji, it.categoryColor) },
                 tags = all.allTags(),
             )
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HistoryUiState())
+        }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HistoryUiState())
 
     fun setMonth(value: YearMonth) { month.value = value }
     fun setFilter(value: TypeFilter) { filter.value = value }
@@ -228,6 +246,9 @@ fun HistoryScreen(
     var mode by rememberSaveable { mutableStateOf(ActivityView.LIST) }
     var selectedDay by rememberSaveable { mutableStateOf(LocalDate.now().toEpochDay()) }
     var filterSheet by rememberSaveable { mutableStateOf(false) }
+    // Tapping an entry opens a card about it; Edit there opens the full editor.
+    val peek = rememberTransactionPeek()
+    TransactionPeekCard(peek, onEdit = onOpenTransaction)
     LaunchedEffect(requestedFilter) {
         requestedFilter?.let {
             mode = ActivityView.LIST
@@ -277,10 +298,22 @@ fun HistoryScreen(
                 if (searchOpen) {
                     GlassTextField(state.query, viewModel::setQuery, placeholder = "Search notes, #tags, categories or amounts")
                 } else if (state.filters.tag == null || mode == ActivityView.CALENDAR) {
-                    MonthSwitcher(state.month, {
-                        viewModel.setMonth(it)
-                        selectedDay = (if (it == YearMonth.now()) LocalDate.now() else it.atDay(1)).toEpochDay()
-                    })
+                    // One month at a time, or everything (on the list; the calendar is always one month).
+                    if (mode == ActivityView.LIST) {
+                        SegmentedToggle(
+                            listOf(false, true),
+                            state.filters.allTime,
+                            { if (it) "All time" else "By month" },
+                            { viewModel.setFilters(state.filters.copy(allTime = it)) },
+                            Modifier.fillMaxWidth().padding(bottom = if (state.filters.allTime) 0.dp else 10.dp),
+                        )
+                    }
+                    if (!state.filters.allTime || mode == ActivityView.CALENDAR) {
+                        MonthSwitcher(state.month, {
+                            viewModel.setMonth(it)
+                            selectedDay = (if (it == YearMonth.now()) LocalDate.now() else it.atDay(1)).toEpochDay()
+                        })
+                    }
                 }
                 if (state.filters.active && mode == ActivityView.LIST) {
                     ActiveFilters(state, onChange = viewModel::setFilters, modifier = Modifier.padding(top = if (searchOpen || state.filters.tag == null) 10.dp else 0.dp))
@@ -301,7 +334,7 @@ fun HistoryScreen(
                 }
                 item {
                     val day = LocalDate.ofEpochDay(selectedDay)
-                    DayPanel(day, state.monthItems.filter { it.epochDay == selectedDay }, onAdd = { onAddForDay(day) }, onOpen = onOpenTransaction)
+                    DayPanel(day, state.monthItems.filter { it.epochDay == selectedDay }, onAdd = { onAddForDay(day) }, peek = peek)
                 }
                 return@LazyColumn
             }
@@ -317,6 +350,7 @@ fun HistoryScreen(
                             when {
                                 state.query.isNotBlank() -> "$what in results"
                                 state.filters.tag != null -> "$what on #${state.filters.tag} · all time"
+                                state.filters.allTime -> "$what · all time" + if (state.filters.active) " · filtered" else ""
                                 state.filters.active -> "$what this month · filtered"
                                 else -> "$what this month"
                             },
@@ -353,7 +387,8 @@ fun HistoryScreen(
                     if (state.query.isNotBlank() || state.filters.active) {
                         EmptyState(Lucide.Search, "No matches", if (state.filters.active) "Nothing matches these filters." else "Try a different word.")
                     } else {
-                        EmptyState(Lucide.ReceiptText, "No entries this month", "Switch to the calendar view to add something you forgot.")
+                        if (state.filters.allTime) EmptyState(Lucide.ReceiptText, "No entries yet", "Tap the + button below to add your first one.")
+                        else EmptyState(Lucide.ReceiptText, "No entries this month", "Switch to the calendar view to add something you forgot.")
                     }
                 }
             }
@@ -386,7 +421,7 @@ fun HistoryScreen(
                         ) {
                             if (i > 0) RowDivider()
                             // No swipe actions: they fired by accident. A tap opens the entry, where it can be edited or deleted.
-                            TransactionRow(item, onClick = { onOpenTransaction(item.id) })
+                            TransactionRow(item, onClick = { peek.show(item) }, modifier = Modifier.peekSource(peek, item.id))
                         }
                     }
                 }
@@ -581,7 +616,7 @@ private fun MonthCalendar(
 }
 
 @Composable
-private fun DayPanel(day: LocalDate, items: List<TransactionItem>, onAdd: () -> Unit, onOpen: (Long) -> Unit) {
+private fun DayPanel(day: LocalDate, items: List<TransactionItem>, onAdd: () -> Unit, peek: TransactionPeek) {
     val c = LocalAppColors.current
     val baseMoney = LocalMoney.current
     val spent = items.filter { it.type == TxType.EXPENSE }.sumOf { it.amountMinor }
@@ -605,7 +640,7 @@ private fun DayPanel(day: LocalDate, items: List<TransactionItem>, onAdd: () -> 
                     Column(Modifier.padding(vertical = 4.dp)) {
                         items.forEachIndexed { i, item ->
                             if (i > 0) RowDivider()
-                            TransactionRow(item, onClick = { onOpen(item.id) })
+                            TransactionRow(item, onClick = { peek.show(item) }, modifier = Modifier.peekSource(peek, item.id))
                         }
                     }
                 } else {

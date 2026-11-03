@@ -10,6 +10,7 @@ import com.leftovers.app.data.BudgetPlan
 import com.leftovers.app.data.CarryMode
 import com.leftovers.app.data.Category
 import com.leftovers.app.data.Debt
+import com.leftovers.app.data.DeletedTransaction
 import com.leftovers.app.data.Goal
 import com.leftovers.app.data.GoalDeposit
 import com.leftovers.app.data.LeaveEntry
@@ -62,7 +63,37 @@ class BackupManager(
         val isEncrypted: Boolean,
     )
 
+    /** [removed]: for Sync between devices, the entries this phone deleted or changed, so the others remove them too. */
+    suspend fun export(target: Uri, removed: List<SyncRemoved.Removed> = emptyList()): Result<Int> =
+        exportBytes(removed).mapCatching { (bytes, count) ->
+            withContext(Dispatchers.IO) {
+                context.contentResolver.openOutputStream(target, "wt")?.use { it.write(bytes) } ?: error("Couldn't open the file")
+            }
+            count
+        }
+
     suspend fun createBackupPayload(encryptIfPasswordSet: Boolean = true): BackupPayload = withContext(Dispatchers.IO) {
+        val (json, count) = buildBackupJson()
+        val pwd = if (encryptIfPasswordSet) password.get() else null
+        val isEnc = pwd != null
+        val text = pwd?.let { BackupCrypto.encrypt(json.toString(), it).toString(2) } ?: json.toString(2)
+        BackupPayload(
+            jsonString = text,
+            totalItems = count,
+            isEncrypted = isEnc,
+        )
+    }
+
+    /** The backup file's contents, and how many entries are in it. */
+    suspend fun exportBytes(removed: List<SyncRemoved.Removed> = emptyList()): Result<Pair<ByteArray, Int>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val (json, count) = buildBackupJson(removed)
+            val text = password.get()?.let { BackupCrypto.encrypt(json.toString(), it).toString(2) } ?: json.toString(2)
+            text.toByteArray() to count
+        }
+    }
+
+    private suspend fun buildBackupJson(removed: List<SyncRemoved.Removed> = emptyList()): Pair<JSONObject, Int> {
         val transactions = dao.transactions()
             val s = settings.settings.first()
             val debtList = dao.debts()
@@ -109,6 +140,7 @@ class BackupManager(
                     put("split", s.plan.split.name)
                     put("custom", BudgetPlan.encodeCustom(s.plan.custom))
                     put("carryMode", s.plan.carry.name)
+                    put("extraIncome", s.plan.extraIncome)
                     put("carryChoices", BudgetPlan.encodeChoices(s.plan.carryChoices))
                     s.plan.carryFrom?.let { put("carryFrom", it.toString()) }
                     put("budgetAlerts", s.budgetAlerts)
@@ -132,7 +164,7 @@ class BackupManager(
                 put("accounts", JSONArray(accountList.map { a ->
                     JSONObject().put("id", a.id).put("name", a.name).put("icon", a.icon).put("color", a.color)
                         .put("opening", a.openingMinor).put("createdAt", a.createdAt).put("smsDigits", a.smsDigits ?: JSONObject.NULL)
-                        .put("currency", a.currency ?: JSONObject.NULL)
+.put("currency", a.currency ?: JSONObject.NULL).put("openingNative", a.openingNative ?: JSONObject.NULL)
                 }))
                 put("transactions", JSONArray(transactions.map { t ->
                     JSONObject().put("id", t.id).put("amount", t.amountMinor).put("type", t.type.name)
@@ -154,6 +186,8 @@ class BackupManager(
                 put("goals", JSONArray(goalList.map { g ->
                     JSONObject().put("id", g.id).put("name", g.name).put("icon", g.emoji).put("color", g.color)
                         .put("target", g.targetMinor).put("targetMonth", g.targetMonth).put("createdAt", g.createdAt)
+                        .put("link", g.link ?: JSONObject.NULL).put("linkPrice", g.linkPriceMinor ?: JSONObject.NULL)
+                        .put("linkCheckedAt", g.linkCheckedAt ?: JSONObject.NULL)
                 }))
                 put("deposits", JSONArray(depositList.map { d ->
                     JSONObject().put("id", d.id).put("goalId", d.goalId).put("amount", d.amountMinor)
@@ -162,9 +196,11 @@ class BackupManager(
                 put("debts", JSONArray(debtList.map { d ->
                     JSONObject().put("id", d.id).put("person", d.person).put("amount", d.amountMinor).put("note", d.note)
                         .put("day", d.epochDay).put("settled", d.settled).put("createdAt", d.createdAt)
-                        .put("dueDate", d.dueDateEpochDay ?: JSONObject.NULL)
+.put("dueDate", d.dueDateEpochDay ?: JSONObject.NULL)
                         .put("reminderEnabled", d.reminderEnabled)
                         .put("accountId", d.accountId ?: JSONObject.NULL)
+                        .put("account", d.accountId ?: JSONObject.NULL)
+                        .put("repayment", d.repayment)
                         .put("receipts", JSONArray(d.photos.map { photoRef(it) }.filter { it != JSONObject.NULL }))
                 }))
                 put("workplaces", JSONArray(workplaceList.map { w ->
@@ -237,48 +273,58 @@ class BackupManager(
                         .put("note", h.note ?: JSONObject.NULL)
                 }))
                 if (photos.length() > 0) put("photos", photos)
+                if (removed.isNotEmpty()) put("removed", SyncRemoved.encode(removed))
             }
-        val pwd = if (encryptIfPasswordSet) password.get() else null
-        val isEnc = pwd != null
-        val text = pwd?.let { BackupCrypto.encrypt(json.toString(), it).toString(2) } ?: json.toString(2)
         val totalExported = transactions.size + debtList.size + shiftList.size + workplaceList.size + leaveList.size + paymentList.size + remittanceList.size
-        BackupPayload(
-            jsonString = text,
-            totalItems = totalExported,
-            isEncrypted = isEnc,
-        )
+        return json to totalExported
     }
 
-    suspend fun export(target: Uri): Result<Int> = withContext(Dispatchers.IO) {
-        runCatching {
-            val payload = createBackupPayload(encryptIfPasswordSet = true)
-            context.contentResolver.openOutputStream(target, "wt")?.use { it.write(payload.jsonString.toByteArray()) }
-                ?: error("Couldn't open the file")
-            payload.totalItems
-        }
-    }
+    /** What a restore did: entries brought in, and (keeping what's here) how many were already in the app. */
+    data class Restored(val entries: Int, val alreadyHere: Int = 0, val removed: Int = 0)
 
     /**
-     * Replaces all data with the backup's contents. A protected backup is opened with [typedPassword],
+     * Replaces all data with the backup's contents, or with [keep], adds the backup's data to what's already here
+     * (see [BackupMerge]) and leaves the settings as they are. A protected backup is opened with [typedPassword],
      * or else the saved backup password; without the right one it fails with [BackupPasswordException].
      */
-    suspend fun import(source: Uri, typedPassword: String? = null): Result<Int> = withContext(Dispatchers.IO) {
-        runCatching {
-            val text = context.contentResolver.openInputStream(source)?.use { it.readBytes().decodeToString() }
-                ?: error("Couldn't open the file")
-            restoreFromJsonText(text, typedPassword).getOrThrow()
-        }
+    /**
+     * With [sync] (another phone's sync file, always kept), entries that phone deleted or changed are removed here
+     * too (into Deleted entries, so they can be brought back), and entries deleted here, listed in [mine], aren't added back.
+     */
+    suspend fun import(
+        source: Uri,
+        typedPassword: String? = null,
+        keep: Boolean = false,
+        sync: Boolean = false,
+        mine: List<SyncRemoved.Removed> = emptyList(),
+    ): Result<Restored> = withContext(Dispatchers.IO) {
+        runCatching { context.contentResolver.openInputStream(source)?.use { it.readBytes() } ?: error("Couldn't open the file") }
+            .fold({ importBytes(it, typedPassword, keep, sync, mine) }, { Result.failure(it) })
     }
 
-    suspend fun restoreFromJsonText(text: String, typedPassword: String? = null): Result<Int> = withContext(Dispatchers.IO) {
+    /** [import], from a backup file's contents. */
+    suspend fun restoreFromJsonText(text: String, typedPassword: String? = null): Result<Int> =
+        importBytes(text.toByteArray(), typedPassword).map { it.entries }
+
+    suspend fun importBytes(
+        bytes: ByteArray,
+        typedPassword: String? = null,
+        keep: Boolean = false,
+        sync: Boolean = false,
+        mine: List<SyncRemoved.Removed> = emptyList(),
+    ): Result<Restored> = withContext(Dispatchers.IO) {
         runCatching {
-            var json = JSONObject(text)
+            // A spreadsheet or another app's export picked here by mistake: say so, rather than a JSON error.
+            val text = StatementFile.decodeText(bytes).trimStart()
+            if (!text.startsWith("{")) throw NotABackupException()
+            var json = runCatching { JSONObject(text) }.getOrElse { throw NotABackupException() }
             if (BackupCrypto.isEncrypted(json)) {
                 val key = typedPassword ?: password.get() ?: throw BackupPasswordException("This backup has a password")
                 json = JSONObject(BackupCrypto.decrypt(json, key))
             }
             // "cash-tracker" is the app's previous name; keep accepting those backups.
-            require(json.optString("app") in setOf("leftovers", "cash-tracker")) { "This isn't a Leftovers backup" }
+            // Another app's JSON backup: its entries can still be imported (see StatementFile).
+            if (json.optString("app") !in setOf("leftovers", "cash-tracker")) throw NotABackupException()
 
             fun JSONObject.longOrNull(key: String): Long? =
                 if (isNull(key) || !has(key)) null else optLong(key)
@@ -309,7 +355,11 @@ class BackupManager(
                 Category(it.optLong("id", 0L), name, it.optString("icon", "📦"), it.optLong("color", 0xFF00897BL), type, it.longOrNull("budget"), adds)
             }
             val accounts = json.optJSONArray("accounts")?.objects().orEmpty().map {
-                Account(it.optLong("id", 0L), it.optString("name", "Account"), it.optString("icon", "💳"), it.optLong("color", 0xFF00897BL), it.optLong("opening", 0L), it.optLong("createdAt", System.currentTimeMillis()), it.stringOrNull("smsDigits"), it.stringOrNull("currency"))
+                Account(
+                    it.optLong("id", 0L), it.optString("name", "Account"), it.optString("icon", "💳"), it.optLong("color", 0xFF00897BL),
+                    it.optLong("opening", 0L), it.optLong("createdAt", System.currentTimeMillis()), it.stringOrNull("smsDigits"),
+                    currency = it.stringOrNull("currency"), openingNative = it.longOrNull("openingNative"),
+                )
             }
             val transactions = json.optJSONArray("transactions")?.objects().orEmpty().map {
                 Transaction(
@@ -345,7 +395,11 @@ class BackupManager(
                 )
             }
             val goals = json.optJSONArray("goals")?.objects().orEmpty().map {
-                Goal(it.optLong("id", 0L), it.optString("name", ""), it.optString("icon", "🎯"), it.optLong("color", 0xFF00897BL), it.optLong("target", 0L), it.optString("targetMonth", ""), it.optLong("createdAt", System.currentTimeMillis()))
+                Goal(
+                    it.optLong("id", 0L), it.optString("name", ""), it.optString("icon", "🎯"), it.optLong("color", 0xFF00897BL),
+                    it.optLong("target", 0L), it.optString("targetMonth", ""), it.optLong("createdAt", System.currentTimeMillis()),
+                    link = it.stringOrNull("link"), linkPriceMinor = it.longOrNull("linkPrice"), linkCheckedAt = it.longOrNull("linkCheckedAt"),
+                )
             }
             val deposits = json.optJSONArray("deposits")?.objects().orEmpty().map {
                 GoalDeposit(it.optLong("id", 0L), it.optLong("goalId", 0L), it.optLong("amount", 0L), it.optLong("day", 0L), it.optLong("createdAt", System.currentTimeMillis()))
@@ -364,7 +418,8 @@ class BackupManager(
                     receiptPath = photosToPath(names.mapNotNull(::restorePhoto)),
                     dueDateEpochDay = it.longOrNull("dueDate"),
                     reminderEnabled = it.optBoolean("reminderEnabled", false),
-                    accountId = it.longOrNull("accountId") ?: it.longOrNull("account"),
+                    accountId = if (it.isNull("account") && it.isNull("accountId")) null else (it.longOrNull("accountId") ?: it.longOrNull("account")),
+                    repayment = it.optBoolean("repayment", false),
                 )
             }
             val workplaces = json.optJSONArray("workplaces")?.objects().orEmpty().map {
@@ -493,6 +548,46 @@ class BackupManager(
                 )
             }
 
+            if (keep || sync) {
+                // Newest removal of each entry: only entries made before it count as that entry.
+                fun latest(list: List<SyncRemoved.Removed>): Map<List<Any>, Long> = list.groupBy { listOf<Any>(it.day, it.amount, it.type, SyncRemoved.key(it.note)) }
+                    .mapValues { (_, same) -> same.maxOf { it.at } }
+                fun Map<List<Any>, Long>.has(t: Transaction) =
+                    get(listOf<Any>(t.epochDay, t.amountMinor, t.type, SyncRemoved.key(t.note)))?.let { t.createdAt <= it } == true
+                val theirList = if (sync) SyncRemoved.decode(json.optJSONArray("removed")) else emptyList()
+                val theirs = latest(theirList)
+                val gone = latest(theirList + if (sync) mine else emptyList())
+                var removedHere = 0
+                val plan = database.withTransaction {
+                    if (theirs.isNotEmpty()) {
+                        val drop = dao.transactions().filter { theirs.has(it) }
+                        val at = System.currentTimeMillis()
+                        drop.forEach { dao.insertDeleted(DeletedTransaction.from(it, at)) }
+                        dao.deleteTransactions(drop)
+                        removedHere = drop.size
+                    }
+                    val existing = BackupMerge.Data(
+                        dao.categories(), dao.accounts(), dao.transactions(), dao.transfers(), dao.recurring(), dao.goals(), dao.deposits(), dao.debts(),
+                    )
+                    val plan = BackupMerge.plan(existing, BackupMerge.Data(categories, accounts, transactions.filterNot { gone.has(it) }, transfers, recurring, goals, deposits, debts), dao.deletedIds())
+                    with(plan.add) {
+                        dao.insertCategories(this.categories)
+                        dao.insertAccounts(this.accounts)
+                        dao.insertTransactions(this.transactions)
+                        dao.insertTransfers(this.transfers)
+                        dao.insertRecurring(this.recurring)
+                        dao.insertGoals(this.goals)
+                        dao.insertDeposits(this.deposits)
+                        dao.insertDebts(this.debts)
+                    }
+                    plan
+                }
+                // Photos of entries that were already here were written out for nothing.
+                val used = (plan.add.transactions.mapNotNull { it.receiptPath } + plan.add.debts.flatMap { it.photos }).toSet()
+                restoredPhotos.values.filter { it !in used }.forEach(ReceiptStore::delete)
+                return@runCatching Restored(plan.add.transactions.size, plan.skipped, removedHere)
+            }
+
             database.withTransaction {
                 dao.clearRemittanceStatusHistory()
                 dao.clearRemittances()
@@ -548,6 +643,7 @@ class BackupManager(
                     split = com.leftovers.app.data.YearSplit.entries.firstOrNull { it.name == s.optString("split") } ?: com.leftovers.app.data.YearSplit.EVEN,
                     custom = BudgetPlan.decodeCustom(s.optString("custom")),
                     carry = CarryMode.entries.firstOrNull { it.name == s.optString("carryMode") } ?: CarryMode.ASK,
+                    extraIncome = s.optBoolean("extraIncome", false),
                     carryChoices = BudgetPlan.decodeChoices(s.optString("carryChoices")),
                     carryFrom = s.optString("carryFrom").takeIf { it.isNotEmpty() }?.let { runCatching { YearMonth.parse(it) }.getOrNull() },
                 )
@@ -588,7 +684,10 @@ class BackupManager(
                 )
             }
             val totalRestored = transactions.size + debts.size + shifts.size + workplaces.size + leaveEntries.size + workplacePayments.size + remittances.size
-            totalRestored
+            Restored(totalRestored)
         }
     }
 }
+
+/** The file picked to restore isn't a Leftovers backup, e.g. a bank statement or another app's export. */
+class NotABackupException : Exception("This isn't a Leftovers backup")
