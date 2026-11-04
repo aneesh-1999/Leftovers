@@ -1,7 +1,17 @@
 # Changelog
 
 All notable changes to Leftovers. Download any version from
-[Releases](https://github.com/saisaharsh3/Leftovers/releases).
+[Releases](https://github.com/aneesh-1999/Leftovers/releases).
+
+## 1.8.3
+
+- Custom payment apps: Add your own payment and banking apps (e.g. Revolut, eSewa, Khalti, Monzo, Wise, or any bank app)
+  by picking directly from installed apps on your device with native icons, or typing a package name. Route transactions
+  to specific accounts, toggle notifications on or off, and remove custom apps with a confirmation dialog.
+- Settings reorganized: Dedicated Security, Reminders (daily expense reminders with time picker, bill & subscription due dates,
+  credit card payments, and shift/roster advance notifications grouped together), and Payment detection sections.
+- In-app updater hardened: Variant matching ensures production releases download the release APK with matching SHA-256
+  checksum validation.
 
 ## 1.8.2
 
