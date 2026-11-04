@@ -107,4 +107,16 @@ class DebtAccountIntegrationTest {
         assertEquals(1, remainingDebts.size)
         assertEquals(null, remainingDebts.first().accountId)
     }
+
+    @Test fun debtInAccountCurrencyAffectsNativeBalance() = runBlocking {
+        val usdAccountId = accountRepo.saveAccount(Account(name = "USD Card", icon = "credit-card", color = 0xFF000000, openingMinor = 92_000, currency = "USD", openingNative = 100_000))
+
+        // Lent $30 (3,000 cents) from USD account to Bob in USD (converted to €27.60 = 2760 minor)
+        planningRepo.saveDebt(Debt(person = "Bob", amountMinor = 2_760, note = "Dinner", accountId = usdAccountId, currency = "USD", nativeMinor = 3_000))
+
+        val accounts = accountRepo.accounts.first()
+        val usdAcc = accounts.first { it.id == usdAccountId }
+        assertEquals(92_000L - 2_760L, usdAcc.balanceMinor)
+        assertEquals(100_000L - 3_000L, usdAcc.nativeMinor)
+    }
 }

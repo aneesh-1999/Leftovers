@@ -30,9 +30,15 @@ data class Debt(
     val accountId: Long? = null,
     /** Money paid back, all or part of what was owed; its sign is the opposite of what it pays off. */
     val repayment: Boolean = false,
+    /** The debt's own currency when it isn't the app's (e.g. "USD", "EUR", "NPR"); null for the app's. */
+    val currency: String? = null,
+    /** With [currency]: the amount in that currency ([amountMinor] holds it converted). */
+    val nativeMinor: Long? = null,
 ) {
     val photos: List<String> get() = receiptPath?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
     val dueDate: LocalDate? get() = dueDateEpochDay?.let { LocalDate.ofEpochDay(it) }
+    /** Amount in debt's own currency if set, else in app currency. */
+    val nativeAmount: Long get() = nativeMinor ?: amountMinor
 }
 
 /** Joins photo paths for [Debt.receiptPath]; null when there are none. */

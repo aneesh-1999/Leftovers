@@ -113,6 +113,7 @@ import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -220,8 +221,13 @@ class HomeViewModel(
         viewModelScope.launch { planning.saveRecurring(item.toRecurring().copy(active = active)) }
     }
 
-    fun settleUp(person: String, amountMinor: Long, accountId: Long?) {
-        viewModelScope.launch { planning.settleUp(person, amountMinor, accountId, chosen = true) }
+    val rates: StateFlow<Map<String, String>> =
+        settings.settings.map { it.foreignRates }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    fun setForeignRate(code: String, rate: String) = viewModelScope.launch { settings.setForeignRate(code, rate) }
+
+    fun settleUp(person: String, amountMinor: Long, accountId: Long?, currency: String? = null, nativeMinor: Long? = null) {
+        viewModelScope.launch { planning.settleUp(person, amountMinor, accountId, chosen = true, currency = currency, nativeMinor = nativeMinor) }
     }
 
     fun saveDebt(debt: com.leftovers.app.data.Debt) {
@@ -263,6 +269,7 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val rates by viewModel.rates.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
     val money = LocalMoney.current
     if (!state.loaded) return
@@ -468,9 +475,15 @@ fun HomeScreen(
                                         color = c.textSecondary,
                                     )
                                 }
+                                val entryMoney = d.currency?.let { com.leftovers.app.util.Money(it) } ?: money
+                                val displayAmount = abs(d.nativeAmount)
                                 Column(horizontalAlignment = Alignment.End) {
-                                    Text(money.format(abs(d.amountMinor)), style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
-                                    Text(if (d.repayment) "paid back" else if (out) "lent" else "borrowed", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                                    Text(entryMoney.format(displayAmount), style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                    if (d.currency != null && d.currency != money.currency.currencyCode) {
+                                        Text("≈ ${money.format(abs(d.amountMinor))}", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                                    } else {
+                                        Text(if (d.repayment) "paid back" else if (out) "lent" else "borrowed", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                                    }
                                 }
                             }
                             if (d.photos.isNotEmpty()) {
@@ -501,8 +514,8 @@ fun HomeScreen(
             }
     }
     state.owed.firstOrNull { it.person.equals(settling, ignoreCase = true) }?.let { b ->
-        SettleSheet(b, state.accounts, onDismiss = { settling = null }) { amount, account ->
-            viewModel.settleUp(b.person, amount, account)
+        SettleSheet(b, state.accounts, onDismiss = { settling = null }) { amount, account, currency, nativeMinor ->
+            viewModel.settleUp(b.person, amount, account, currency = currency, nativeMinor = nativeMinor)
             Haptics.confirm(view)
             settling = null
         }
@@ -512,6 +525,8 @@ fun HomeScreen(
             initial = debt,
             people = state.owed.map { it.person },
             accounts = state.accounts,
+            rates = rates,
+            onSaveRate = viewModel::setForeignRate,
             onDismiss = { editingDebt = null },
             onSave = {
                 viewModel.saveDebt(it)

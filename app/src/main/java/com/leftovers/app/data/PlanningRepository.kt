@@ -42,6 +42,8 @@ class PlanningRepository(private val database: AppDatabase) {
         accountId: Long? = null,
         chosen: Boolean = false,
         epochDay: Long = LocalDate.now().toEpochDay(),
+        currency: String? = null,
+        nativeMinor: Long? = null,
     ) {
         database.withTransaction {
             val open = debtDao.openFor(person)
@@ -51,6 +53,7 @@ class PlanningRepository(private val database: AppDatabase) {
                 return@withTransaction
             }
             val paid = (amountMinor ?: kotlin.math.abs(net)).coerceIn(1, kotlin.math.abs(net))
+            val cur = currency ?: open.map { it.currency }.distinct().singleOrNull()
             debtDao.upsert(
                 Debt(
                     person = open.first().person.trim(),
@@ -59,6 +62,8 @@ class PlanningRepository(private val database: AppDatabase) {
                     epochDay = epochDay,
                     accountId = if (chosen) accountId else open.firstNotNullOfOrNull { it.accountId },
                     repayment = true,
+                    currency = cur,
+                    nativeMinor = nativeMinor?.let { if (net > 0) -it else it },
                 ),
             )
             if (paid == kotlin.math.abs(net)) debtDao.settle(person)

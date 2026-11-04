@@ -103,7 +103,8 @@ object DebtReminders {
             val d = dueTodayOrOverdue[0]
             val isOverdue = d.dueDateEpochDay!! < todayEpochDay
             val isLent = d.amountMinor > 0
-            val formattedAmount = money.format(abs(d.amountMinor))
+            val curMoney = d.currency?.let { Money(it) } ?: money
+            val formattedAmount = curMoney.format(abs(d.nativeAmount))
             if (isOverdue) {
                 title = if (isLent) "Overdue: ${d.person} owes you" else "Overdue: You owe ${d.person}"
                 val daysAgo = todayEpochDay - d.dueDateEpochDay
@@ -127,7 +128,8 @@ object DebtReminders {
             }
             text = dueTodayOrOverdue.joinToString(" · ") { d ->
                 val prefix = if (d.amountMinor > 0) d.person else "To ${d.person}"
-                "$prefix: ${money.format(abs(d.amountMinor))}"
+                val curMoney = d.currency?.let { Money(it) } ?: money
+                "$prefix: ${curMoney.format(abs(d.nativeAmount))}"
             }
         }
 

@@ -35,7 +35,7 @@ import com.leftovers.app.data.roomexpense.RoomExpenseDao
         StatementPaymentAllocation::class,
         RoomExpense::class,
     ],
-    version = 24,
+    version = 25,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -67,6 +67,17 @@ abstract class AppDatabase : RoomDatabase() {
                 .addCallback(SeedCategories)
                 .addMigrations(*ALL_MIGRATIONS)
                 .build()
+    }
+}
+
+/**
+ * v25 adds optional currency and nativeMinor to debts so money lent/borrowed can be in another
+ * currency (e.g. USD, EUR, NPR) like accounts and transactions.
+ */
+private val MIGRATION_24_25 = object : Migration(24, 25) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `debts` ADD COLUMN `currency` TEXT")
+        db.execSQL("ALTER TABLE `debts` ADD COLUMN `nativeMinor` INTEGER")
     }
 }
 
@@ -776,5 +787,5 @@ val DefaultCategories = listOf(
 
 /** Every upgrade step, oldest first; also used by the migration tests. */
 internal val ALL_MIGRATIONS: Array<Migration>
-    get() = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
+    get() = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
 

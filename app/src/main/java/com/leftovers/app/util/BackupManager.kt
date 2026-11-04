@@ -201,6 +201,8 @@ class BackupManager(
                         .put("accountId", d.accountId ?: JSONObject.NULL)
                         .put("account", d.accountId ?: JSONObject.NULL)
                         .put("repayment", d.repayment)
+                        .put("currency", d.currency ?: JSONObject.NULL)
+                        .put("nativeMinor", d.nativeMinor ?: JSONObject.NULL)
                         .put("receipts", JSONArray(d.photos.map { photoRef(it) }.filter { it != JSONObject.NULL }))
                 }))
                 put("workplaces", JSONArray(workplaceList.map { w ->
@@ -420,6 +422,8 @@ class BackupManager(
                     reminderEnabled = it.optBoolean("reminderEnabled", false),
                     accountId = if (it.isNull("account") && it.isNull("accountId")) null else (it.longOrNull("accountId") ?: it.longOrNull("account")),
                     repayment = it.optBoolean("repayment", false),
+                    currency = it.optString("currency").takeIf { s -> s.isNotBlank() && s != "null" },
+                    nativeMinor = it.longOrNull("nativeMinor"),
                 )
             }
             val workplaces = json.optJSONArray("workplaces")?.objects().orEmpty().map {

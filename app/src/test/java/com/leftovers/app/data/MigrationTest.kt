@@ -36,7 +36,7 @@ class MigrationTest {
             close()
         }
 
-        val db = helper.runMigrationsAndValidate(name, 24, true, *ALL_MIGRATIONS)
+        val db = helper.runMigrationsAndValidate(name, 25, true, *ALL_MIGRATIONS)
 
         db.query("SELECT amountMinor, note, accountId FROM transactions WHERE id = 1").use {
             it.moveToFirst()
@@ -166,5 +166,23 @@ class MigrationTest {
         helper.runMigrationsAndValidate(name, 22, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 23, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 24, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 25, true, *ALL_MIGRATIONS).close()
+    }
+
+    @Test fun upgradesFromVersion24KeepingDebts() {
+        helper.createDatabase(name, 24).apply {
+            execSQL("INSERT INTO debts (id, person, amountMinor, note, epochDay, settled, createdAt, reminderEnabled, repayment) VALUES (1, 'Alice', 5000, 'Lunch', 20000, 0, 1000, 0, 0)")
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(name, 25, true, *ALL_MIGRATIONS)
+        db.query("SELECT id, person, amountMinor, currency, nativeMinor FROM debts WHERE id = 1").use {
+            it.moveToFirst()
+            assertEquals(1L, it.getLong(0))
+            assertEquals("Alice", it.getString(1))
+            assertEquals(5000L, it.getLong(2))
+            assertEquals(null, it.getString(3))
+            org.junit.Assert.assertTrue(it.isNull(4))
+        }
     }
 }
