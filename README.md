@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/icon-96.png" width="96" alt="Leftovers app icon">
+<img src="docs/icon-96.png" width="96" alt="Leftovers app icon">
 
 # Leftovers
 
@@ -8,49 +8,21 @@
 A fast, private expense tracker for Android. Log a spend in two taps, see what's safe to spend
 today, plan for the things you want, and ask an AI about your money if you'd like to.
 
-**[saisaharsh3.github.io/Leftovers](https://saisaharsh3.github.io/Leftovers/)**
-
-[![Build](https://github.com/saisaharsh3/Leftovers/actions/workflows/build.yml/badge.svg)](https://github.com/saisaharsh3/Leftovers/actions/workflows/build.yml)
-[![Download](https://img.shields.io/badge/Download-latest%20APK-CDF46F?logo=android&logoColor=black)](https://github.com/saisaharsh3/Leftovers/releases/latest)
+[![Download](https://img.shields.io/badge/Download-latest%20APK-CDF46F?logo=android&logoColor=black)](https://github.com/aneesh-1999/Leftovers/releases/latest)
 ![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)
 ![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](https://github.com/saisaharsh3/Leftovers/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](https://github.com/aneesh-1999/Leftovers/blob/main/LICENSE)
 
-![Home, adding an expense, Insights and Plan](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row1.png)
+![Home, adding an expense, Insights and Plan](docs/screenshots/row1.png)
 
-![Activity calendar, lent or borrowed, Money owed and the AI assistant](https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/screenshots/row2.png)
+![Activity calendar, lent or borrowed, Money owed and the AI assistant](docs/screenshots/row2.png)
 
-<a href="https://github.com/aneesh-1999/Leftovers/releases/latest"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-download.png" height="40" alt="Download the APK"></a>&nbsp;
-<a href="https://f-droid.org/packages/com.leftovers.app/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" height="40" alt="Get it on F-Droid"></a>&nbsp;
-<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/aneesh-1999/Leftovers"><img src="https://raw.githubusercontent.com/saisaharsh3/Leftovers/main/docs/badge-obtainium.png" height="40" alt="Get it on Obtainium"></a>
-
-If Leftovers is useful to you, a ⭐ helps other people find it.
+<a href="https://github.com/aneesh-1999/Leftovers/releases/latest"><img src="docs/badge-download.png" height="40" alt="Download the APK"></a>
 
 </div>
 
 > [!NOTE]
-> ### 📌 Personal Fork & Modification Notice
-> This repository is a **custom modified version of Leftovers** maintained by **[Aneesh](https://github.com/aneesh-1999)** for personal use and customized financial workflows.
-> 
-> ### ❤️ Heartfelt Credits & Appreciation
-> All original credit, design architecture, and foundation belong to **[C. Sai Saharsh](https://github.com/saisaharsh3)** — the original creator and mastermind behind **[Leftovers](https://github.com/saisaharsh3/Leftovers)**.
-> 
-> **Why the original app is extraordinary:**
-> - **Stunning UI & Aesthetics**: The frosted glassmorphism interface, clean animations, and modern typography set a benchmark for beautiful Android craftsmanship.
-> - **Privacy-First Philosophy**: Truly offline-first with zero tracking, zero ads, and strict data isolation.
-> - **Exceptional Architecture**: Highly modular Kotlin MVVM, unidirectional data flows, and clean Room migrations.
->
-> If you love this project, please visit and star the original upstream repository: **[github.com/saisaharsh3/Leftovers](https://github.com/saisaharsh3/Leftovers)** ⭐!
->
-> ---
-> **Custom features added in this personal fork:**
-> - **Firebase Cloud Backup & Restore**: Google & Email Authentication with automatic daily sync and full user data isolation.
-> - **Permanent Cloud Deletion**: Users can permanently erase all cloud backups and their cloud account from Firestore at any time.
-> - **Room Expense & Shared Ledger Sync**: Splitting and reconciliation for household expenses.
-> - **Notification Detection**: Real-time parsing for bank/wallet notifications (eSewa, Revolut, etc.) to confirm transactions in one tap.
-> - **Credit Card Reminders & Investments**: Track statement cycles, credit limits, and stock/crypto portfolios.
-> - **Work Shift & Roster Management**: Glance-based homescreen widgets with automated reminder alarms.
-> - **App Size & Speed Optimizations**: R8 full-mode optimization and stripped unused resources for a 5.2 MB lightweight APK.
+> **Credits:** Original app created and designed by **C. Sai Saharsh**. Custom features, payment app integrations, and enhancements added by **Aneesh**.
 
 ## Why Leftovers?
 
@@ -232,14 +204,11 @@ the two without losing data.
 
 **From GitHub:**
 
-1. Open the [latest release](https://github.com/saisaharsh3/Leftovers/releases/latest) on your phone and download `leftovers-<version>.apk`.
+1. Open the [latest release](https://github.com/aneesh-1999/Leftovers/releases/latest) on your phone and download `Leftovers-<version>-release.apk`.
 2. Open the file. If Android asks, allow your browser or file manager to **install unknown apps**.
 3. Tap **Install**. Updates install over the top and keep your data.
 
-**Automatic updates:** add the repo to [Obtainium](https://github.com/ImranR98/Obtainium) with the badge at the
-top, and new releases install straight from GitHub.
-
-Requires Android 8.0 (API 26) or newer. What's new in each version is in [CHANGELOG.md](https://github.com/saisaharsh3/Leftovers/blob/main/CHANGELOG.md).
+Requires Android 8.0 (API 26) or newer.
 
 ## Development
 
@@ -248,7 +217,7 @@ Requires Android 8.0 (API 26) or newer. What's new in each version is in [CHANGE
 You need **JDK 17 or newer** and the **Android SDK**; [Android Studio](https://developer.android.com/studio) provides both.
 
 ```bash
-git clone https://github.com/saisaharsh3/Leftovers.git
+git clone https://github.com/aneesh-1999/Leftovers.git
 cd Leftovers
 
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
@@ -324,31 +293,10 @@ app/src/main/java/com/leftovers/app/
 - The `INTERNET` permission is used only by the AI assistant and email detection, after you connect them, and by
   **Check price** on a savings goal, which fetches that one shop page when you tap it.
 
-## Get involved
-
-- **Try the newest changes:** every push to `dev` is published as a
-  [Dev build](https://github.com/saisaharsh3/Leftovers/releases/tag/dev-build) that installs next to the real app, with its
-  own data. To get each new one automatically, [add Leftovers Dev to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522com.leftovers.app.dev%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fsaisaharsh3%252FLeftovers%2522%252C%2522author%2522%253A%2522saisaharsh3%2522%252C%2522name%2522%253A%2522Leftovers%2520Dev%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522includePrereleases%255C%2522%253A%2520true%252C%2520%255C%2522fallbackToOlderReleases%255C%2522%253A%2520false%252C%2520%255C%2522filterReleaseTitlesByRegEx%255C%2522%253A%2520%255C%2522%255EDev%2520build%255C%2522%252C%2520%255C%2522filterReleaseNotesByRegEx%255C%2522%253A%2520%255C%2522%255C%2522%252C%2520%255C%2522verifyLatestTag%255C%2522%253A%2520false%252C%2520%255C%2522useLatestAssetDateAsReleaseDate%255C%2522%253A%2520true%252C%2520%255C%2522releaseTitleAsVersion%255C%2522%253A%2520false%252C%2520%255C%2522trackOnly%255C%2522%253A%2520false%252C%2520%255C%2522versionExtractionRegEx%255C%2522%253A%2520%255C%2522%255C%2522%252C%2520%255C%2522matchGroupToUse%255C%2522%253A%2520%255C%2522%255C%2522%252C%2520%255C%2522versionDetection%255C%2522%253A%2520false%252C%2520%255C%2522releaseDateAsVersion%255C%2522%253A%2520true%252C%2520%255C%2522apkFilterRegEx%255C%2522%253A%2520%255C%2522leftovers-dev%255C%255C%255C%255C.apk%255C%2522%252C%2520%255C%2522invertAPKFilter%255C%2522%253A%2520false%252C%2520%255C%2522autoApkFilterByArch%255C%2522%253A%2520true%252C%2520%255C%2522appName%255C%2522%253A%2520%255C%2522Leftovers%2520Dev%255C%2522%257D%2522%257D) (tap **Continue** when it asks to import).
-- **Report a bug or suggest an idea** with the [issue forms](https://github.com/saisaharsh3/Leftovers/issues/new/choose),
-  or ask a question in [Discussions](https://github.com/saisaharsh3/Leftovers/discussions).
-- **Your bank's messages not detected?** Paste one (with personal details removed) in an issue; adding it to
-  the tests is a great first contribution.
-- **Write code:** start with a
-  [good first issue](https://github.com/saisaharsh3/Leftovers/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or one marked
-  [help wanted](https://github.com/saisaharsh3/Leftovers/issues?q=is%3Aopen+label%3A%22help+wanted%22). Read
-  [CONTRIBUTING.md](https://github.com/saisaharsh3/Leftovers/blob/main/CONTRIBUTING.md) and open your pull request against the **`dev`** branch.
-
-### Contributors
-
-[![Contributors](https://contrib.rocks/image?repo=saisaharsh3/Leftovers)](https://github.com/saisaharsh3/Leftovers/graphs/contributors)
-
 ## Acknowledgements & Credits
 
-- **Original Creator & Architect**: **[C. Sai Saharsh](https://github.com/saisaharsh3)** — Sincere thanks and appreciation for creating the wonderful open-source **[Leftovers](https://github.com/saisaharsh3/Leftovers)** app!
-- **Modified Fork**: Maintained with personalized features by **[Aneesh](https://github.com/aneesh-1999)**.
+- Original app created and architected by **C. Sai Saharsh**.
 
 ## License
 
-[MIT](https://github.com/saisaharsh3/Leftovers/blob/main/LICENSE). Third-party assets are listed in [THIRD_PARTY_NOTICES.md](https://github.com/saisaharsh3/Leftovers/blob/main/THIRD_PARTY_NOTICES.md).
-
-Original project made by C. Sai Saharsh · [github.com/saisaharsh3](https://github.com/saisaharsh3)
+[MIT](LICENSE). Third-party assets are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
