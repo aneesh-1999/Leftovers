@@ -50,6 +50,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -691,7 +692,7 @@ fun SettingsScreen(
                 }
             }
 
-            item { SectionHeader("Security & reminders") }
+            item { SectionHeader("Security") }
             item {
                 Glass(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(vertical = 6.dp)) {
@@ -716,17 +717,15 @@ fun SettingsScreen(
                                 } + " · " + lockAfterLabel(s.lockAfterSeconds).lowercase(),
                             ) { showLockOptions = true }
                         }
-                        RowDivider()
-                        ToggleRow(Lucide.Repeat, "Remind me before bills", s.billReminders, { on ->
-                            if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            viewModel.setBillReminders(on)
-                        })
-                        RowDivider()
-                        ToggleRow(Lucide.CreditCard, "Credit card bill reminders", s.creditCardRemindersEnabled, { on ->
-                            if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            viewModel.setCreditCardReminders(on)
-                        })
-                        RowDivider()
+                    }
+                }
+            }
+
+            item { SectionHeader("Reminders") }
+            item {
+                Glass(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(vertical = 6.dp)) {
+                        // 1. Daily expense check-in
                         ToggleRow(Lucide.Bell, "Daily reminder", s.reminderEnabled, { on ->
                             if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             viewModel.setReminder(on, s.reminderMinutes)
@@ -735,7 +734,26 @@ fun SettingsScreen(
                             RowDivider()
                             NavRow(Lucide.CalendarClock, "Remind me at", Reminders.label(s.reminderMinutes, com.leftovers.app.util.LocalUse24Hour.current)) { showTime = true }
                         }
+
                         RowDivider()
+
+                        // 2. Upcoming recurring bills & subscriptions
+                        ToggleRow(Lucide.Repeat, "Upcoming bill reminders", s.billReminders, { on ->
+                            if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            viewModel.setBillReminders(on)
+                        })
+
+                        RowDivider()
+
+                        // 3. Credit Card Payment Due Dates
+                        ToggleRow(Lucide.CreditCard, "Credit card bill reminders", s.creditCardRemindersEnabled, { on ->
+                            if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            viewModel.setCreditCardReminders(on)
+                        })
+
+                        RowDivider()
+
+                        // 4. Work shifts & roster reminders
                         ToggleRow(Lucide.Briefcase, "Shift & roster reminders", s.shiftRemindersEnabled, { on ->
                             if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                             viewModel.setShiftRemindersEnabled(on)
@@ -750,11 +768,14 @@ fun SettingsScreen(
                                 viewModel.setShiftReminderAlarmSuggestion(it)
                             })
                         }
-                        RowDivider()
-                        ToggleRow(Lucide.Smartphone, "Detect bank SMS", s.smsDetection, { on ->
-                            if (on) smsPermission.launch(Manifest.permission.RECEIVE_SMS) else viewModel.setSmsDetection(false)
-                        })
-                        RowDivider()
+                    }
+                }
+            }
+
+            item { SectionHeader("Payment detection") }
+            item {
+                Glass(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(vertical = 6.dp)) {
                         ToggleRow(Lucide.Bell, "Detect payment apps", (s.appNotifications || s.notificationDetection) && notificationAccess, { on ->
                             viewModel.setAppNotifications(on)
                             viewModel.setNotificationDetection(on)
@@ -773,8 +794,12 @@ fun SettingsScreen(
                             RowDivider()
                             val apps by (context.applicationContext as com.leftovers.app.LeftoversApp).container.paymentApps.apps.collectAsStateWithLifecycle()
                             val reading = apps.count { it.read }
-                            NavRow(Lucide.Smartphone, "Payment apps", "$reading ${if (reading == 1) "app" else "apps"}") { showPaymentApps = true }
+                            NavRow(Lucide.Smartphone, "Payment apps", "$reading reading · ${apps.size} configured") { showPaymentApps = true }
                         }
+                        RowDivider()
+                        ToggleRow(Lucide.MessageCircle, "Detect bank SMS", s.smsDetection, { on ->
+                            if (on) smsPermission.launch(Manifest.permission.RECEIVE_SMS) else viewModel.setSmsDetection(false)
+                        })
                         RowDivider()
                         NavRow(Lucide.Mail, "Detect payments in email", emailConnection?.address ?: "Off") { showEmail = true }
                         if (s.smsDetection || emailConnection != null) {
@@ -783,12 +808,12 @@ fun SettingsScreen(
                         }
                     }
                 }
-                if (s.appNotifications) {
+                if (s.appNotifications || s.notificationDetection) {
                     Text(
                         if (notificationAccess) {
-                            "Reads only notifications from ${com.leftovers.app.util.PaymentApps.names.values.joinToString(", ")}, and only a fingerprint of each is kept. Offers and reminders are skipped."
+                            "Reads payment notifications from configured apps and suggests transactions for you to review."
                         } else {
-                            "Turn on notification access for Leftovers in the screen that opened, then come back."
+                            "Turn on notification access for Leftovers in the settings screen that opened, then return here."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textSecondary,
@@ -1574,36 +1599,162 @@ private fun LockOptionsSheet(
     }
 }
 
+private data class InstalledAppItem(val packageName: String, val label: String, val icon: android.graphics.drawable.Drawable?)
+
 /**
  * Which apps' notifications are read for payments: the built-in payment apps, and any app that has sent a
- * notification recently (a bank's own app, say). Each can put its payments in a chosen account.
+ * notification recently (a bank's own app, say), or custom apps added by the user. Each can put its payments in a chosen account.
  */
 @Composable
 private fun PaymentAppsSheet(onDismiss: () -> Unit) {
     val c = LocalAppColors.current
-    val container = (LocalContext.current.applicationContext as com.leftovers.app.LeftoversApp).container
+    val context = LocalContext.current
+    val container = (context.applicationContext as com.leftovers.app.LeftoversApp).container
     val apps by container.paymentApps.apps.collectAsStateWithLifecycle()
     val accounts by container.accounts.accounts.collectAsStateWithLifecycle(emptyList())
+
+    var showAddAppDialog by rememberSaveable { mutableStateOf(false) }
+    var appToRemove by remember { mutableStateOf<com.leftovers.app.util.PaymentAppPrefs.App?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+
+    val filteredApps = remember(apps, searchQuery) {
+        if (searchQuery.isBlank()) apps
+        else apps.filter { it.name.contains(searchQuery, ignoreCase = true) || it.pkg.contains(searchQuery, ignoreCase = true) }
+    }
+
     GlassSheet(onDismiss) {
         Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+            Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Payment apps", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Payment apps", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                    Text(
+                        "${apps.count { it.read }} active · ${apps.size} apps configured",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.accent,
+                    )
+                }
+                RoundButton(
+                    icon = Lucide.Plus,
+                    contentDescription = "Add payment app",
+                    onClick = { showAddAppDialog = true },
+                    size = 40.dp,
+                    tint = c.accent,
+                )
+            }
+
             Text(
-                "Only the apps switched on are read. Apps that sent you a notification lately show up here too, so you can add your bank's app.",
+                "Only enabled apps are read for transactions. You can route any app's payments to a designated account, or add custom banking apps (Revolut, eSewa, etc.).",
                 style = MaterialTheme.typography.bodySmall,
                 color = c.textSecondary,
             )
+
+            // Search filter if there are many apps
+            if (apps.size > 5) {
+                Glass(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Lucide.Search, contentDescription = "Search", tint = c.textTertiary, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.textPrimary),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            decorationBox = { innerTextField ->
+                                if (searchQuery.isEmpty()) {
+                                    Text("Filter payment apps...", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary)
+                                }
+                                innerTextField()
+                            },
+                        )
+                        if (searchQuery.isNotEmpty()) {
+                            Icon(
+                                Lucide.X,
+                                contentDescription = "Clear",
+                                tint = c.textTertiary,
+                                modifier = Modifier.size(16.dp).clickable { searchQuery = "" },
+                            )
+                        }
+                    }
+                }
+            }
+
             Glass(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(vertical = 4.dp)) {
-                    apps.forEachIndexed { i, app ->
+                    if (filteredApps.isEmpty()) {
+                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            Text("No apps match \"$searchQuery\"", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary)
+                        }
+                    }
+                    filteredApps.forEachIndexed { i, app ->
                         if (i > 0) RowDivider()
                         var choosing by remember { mutableStateOf(false) }
                         val account = accounts.firstOrNull { it.id == app.accountId }
-                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val appIcon = remember(app.pkg) {
+                            runCatching { context.packageManager.getApplicationIcon(app.pkg) }.getOrNull()
+                        }
+
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // App Icon
+                            Box(
+                                Modifier
+                                    .size(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(c.glass),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (appIcon != null) {
+                                    androidx.compose.ui.viewinterop.AndroidView(
+                                        factory = { ctx ->
+                                            android.widget.ImageView(ctx).apply {
+                                                setImageDrawable(appIcon)
+                                                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                                            }
+                                        },
+                                        update = { it.setImageDrawable(appIcon) },
+                                        modifier = Modifier.size(28.dp),
+                                    )
+                                } else {
+                                    Icon(Lucide.Smartphone, contentDescription = null, tint = c.accent, modifier = Modifier.size(20.dp))
+                                }
+                            }
+
+                            Spacer(Modifier.width(12.dp))
+
                             Column(Modifier.weight(1f)) {
-                                Text(app.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(app.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                    if (app.isCustom) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Box(
+                                            Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(c.accent.copy(alpha = 0.15f))
+                                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                                        ) {
+                                            Text("Custom", style = MaterialTheme.typography.labelSmall, color = c.accent)
+                                        }
+                                    }
+                                }
                                 if (app.read && accounts.size > 1) {
                                     Box {
                                         Row(
@@ -1630,10 +1781,22 @@ private fun PaymentAppsSheet(onDismiss: () -> Unit) {
                                             }
                                         }
                                     }
-                                } else if (!app.read && app.pkg !in com.leftovers.app.util.PaymentApps.names) {
+                                } else if (!app.read && app.pkg !in com.leftovers.app.util.PaymentApps.names && !app.isCustom) {
                                     Text("Sent you a notification lately", style = MaterialTheme.typography.bodySmall, color = c.textTertiary)
+                                } else if (!app.read) {
+                                    Text(app.pkg, style = MaterialTheme.typography.bodySmall, color = c.textTertiary, maxLines = 1)
                                 }
                             }
+
+                            if (app.isCustom) {
+                                androidx.compose.material3.IconButton(
+                                    onClick = { appToRemove = app },
+                                    modifier = Modifier.size(36.dp),
+                                ) {
+                                    Icon(Lucide.Trash2, contentDescription = "Remove app", tint = c.negative.copy(alpha = 0.8f), modifier = Modifier.size(18.dp))
+                                }
+                            }
+
                             Switch(
                                 checked = app.read,
                                 onCheckedChange = toggleHaptic({ container.paymentApps.setRead(app.pkg, it) }),
@@ -1643,11 +1806,283 @@ private fun PaymentAppsSheet(onDismiss: () -> Unit) {
                     }
                 }
             }
+
+            PrimaryButton(
+                text = "Add other app",
+                icon = Lucide.Plus,
+                onClick = { showAddAppDialog = true },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
             Text(
                 "With no account chosen, the message's last digits or bank name pick it, like bank SMS.",
                 style = MaterialTheme.typography.bodySmall,
                 color = c.textSecondary,
             )
+        }
+    }
+
+    if (showAddAppDialog) {
+        AddPaymentAppSheet(
+            existingPackages = apps.map { it.pkg }.toSet(),
+            onAddApp = { pkg, name ->
+                container.paymentApps.addCustomApp(pkg, name, read = true)
+                showAddAppDialog = false
+            },
+            onDismiss = { showAddAppDialog = false },
+        )
+    }
+
+    appToRemove?.let { app ->
+        AlertDialog(
+            onDismissRequest = { appToRemove = null },
+            title = { Text("Remove ${app.name}?", color = c.textPrimary) },
+            text = { Text("Leftovers will stop reading payment notifications from ${app.name}.", color = c.textSecondary) },
+            confirmButton = {
+                Text(
+                    "Remove",
+                    color = c.negative,
+                    modifier = Modifier.clickable {
+                        container.paymentApps.removeCustomApp(app.pkg)
+                        appToRemove = null
+                    }.padding(8.dp),
+                )
+            },
+            dismissButton = {
+                Text(
+                    "Cancel",
+                    color = c.textPrimary,
+                    modifier = Modifier.clickable { appToRemove = null }.padding(8.dp),
+                )
+            },
+            containerColor = c.background,
+        )
+    }
+}
+
+@Composable
+private fun AddPaymentAppSheet(
+    existingPackages: Set<String>,
+    onAddApp: (pkg: String, name: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAppColors.current
+    val context = LocalContext.current
+    var selectedTab by rememberSaveable { mutableStateOf(0) } // 0 = Installed, 1 = Manual package
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+
+    var manualName by rememberSaveable { mutableStateOf("") }
+    var manualPkg by rememberSaveable { mutableStateOf("") }
+
+    var installedApps by remember { mutableStateOf<List<InstalledAppItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val pm = context.packageManager
+            val rawList = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
+            val filtered = rawList.filter { appInfo ->
+                val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                val isUpdated = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                (!isSystem || isUpdated) && appInfo.packageName != context.packageName
+            }.map { appInfo ->
+                InstalledAppItem(
+                    packageName = appInfo.packageName,
+                    label = pm.getApplicationLabel(appInfo).toString(),
+                    icon = runCatching { pm.getApplicationIcon(appInfo) }.getOrNull(),
+                )
+            }.sortedBy { it.label.lowercase() }
+
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                installedApps = filtered
+                isLoading = false
+            }
+        }
+    }
+
+    val filteredInstalled = remember(installedApps, searchQuery) {
+        if (searchQuery.isBlank()) installedApps
+        else installedApps.filter { it.label.contains(searchQuery, ignoreCase = true) || it.packageName.contains(searchQuery, ignoreCase = true) }
+    }
+
+    GlassSheet(onDismiss) {
+        Column(
+            Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Add payment app", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                RoundButton(
+                    icon = Lucide.X,
+                    contentDescription = "Close",
+                    onClick = onDismiss,
+                    size = 36.dp,
+                )
+            }
+
+            SegmentedToggle(
+                options = listOf("Installed apps", "Custom package"),
+                selected = if (selectedTab == 0) "Installed apps" else "Custom package",
+                onSelect = { selectedTab = if (it == "Installed apps") 0 else 1 },
+                label = { it },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            if (selectedTab == 0) {
+                // Search installed apps
+                Glass(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Lucide.Search, contentDescription = "Search", tint = c.textTertiary, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.textPrimary),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            decorationBox = { inner ->
+                                if (searchQuery.isEmpty()) {
+                                    Text("Search installed apps (Revolut, eSewa, bank...)", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary)
+                                }
+                                inner()
+                            },
+                        )
+                    }
+                }
+
+                if (isLoading) {
+                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text("Loading installed apps...", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary)
+                    }
+                } else if (filteredInstalled.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text("No apps found", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary)
+                    }
+                } else {
+                    Glass(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(vertical = 4.dp)) {
+                            filteredInstalled.take(50).forEachIndexed { index, appItem ->
+                                if (index > 0) RowDivider()
+                                val isAdded = appItem.packageName in existingPackages
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !isAdded) { onAddApp(appItem.packageName, appItem.label) }
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(c.glass),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        if (appItem.icon != null) {
+                                            androidx.compose.ui.viewinterop.AndroidView(
+                                                factory = { ctx ->
+                                                    android.widget.ImageView(ctx).apply {
+                                                        setImageDrawable(appItem.icon)
+                                                        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                                                    }
+                                                },
+                                                update = { it.setImageDrawable(appItem.icon) },
+                                                modifier = Modifier.size(26.dp),
+                                            )
+                                        } else {
+                                            Icon(Lucide.Smartphone, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(appItem.label, style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                        Text(appItem.packageName, style = MaterialTheme.typography.bodySmall, color = c.textTertiary, maxLines = 1)
+                                    }
+                                    if (isAdded) {
+                                        Box(
+                                            Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(c.accent.copy(alpha = 0.15f))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text("Added", style = MaterialTheme.typography.labelSmall, color = c.accent)
+                                        }
+                                    } else {
+                                        Icon(Lucide.Plus, contentDescription = "Add", tint = c.accent, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Manual Package Entry
+                Glass(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("App Name", style = MaterialTheme.typography.labelMedium, color = c.textSecondary)
+                        Glass(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+                            androidx.compose.foundation.text.BasicTextField(
+                                value = manualName,
+                                onValueChange = { manualName = it },
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.textPrimary),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                decorationBox = { inner ->
+                                    if (manualName.isEmpty()) Text("e.g. Revolut or eSewa", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary)
+                                    inner()
+                                },
+                            )
+                        }
+
+                        Text("Package Name", style = MaterialTheme.typography.labelMedium, color = c.textSecondary)
+                        Glass(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+                            androidx.compose.foundation.text.BasicTextField(
+                                value = manualPkg,
+                                onValueChange = { manualPkg = it },
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.textPrimary),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                decorationBox = { inner ->
+                                    if (manualPkg.isEmpty()) Text("e.g. com.revolut.revolut", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary)
+                                    inner()
+                                },
+                            )
+                        }
+
+                        Text(
+                            "The Android package name uniquely identifies the app. It can be found in the Google Play Store web link after '?id='.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.textTertiary,
+                        )
+
+                        PrimaryButton(
+                            text = "Add app",
+                            icon = Lucide.Plus,
+                            onClick = {
+                                if (manualPkg.isNotBlank()) {
+                                    val name = manualName.ifBlank { manualPkg.substringAfterLast('.').replaceFirstChar { it.uppercase() } }
+                                    onAddApp(manualPkg.trim(), name.trim())
+                                }
+                            },
+                            enabled = manualPkg.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
         }
     }
 }

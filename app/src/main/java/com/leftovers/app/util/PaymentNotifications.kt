@@ -21,15 +21,31 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 
+import com.leftovers.app.util.detection.PaymentNotificationParserRegistry
+import com.leftovers.app.data.detection.CandidateType
+
 /** Payment apps read by default, by package, with the name shown for them. The user can add or remove apps. */
 object PaymentApps {
     val names: Map<String, String> = linkedMapOf<String, String>(
-        "com.fampay.in" to "FamApp",
         "com.google.android.apps.nbu.paisa.user" to "Google Pay",
         "com.phonepe.app" to "PhonePe",
         "net.one97.paytm" to "Paytm",
         "in.org.npci.upiapp" to "BHIM",
         "com.dreamplug.androidapp" to "CRED",
+        "com.fampay.in" to "FamApp",
+        "com.revolut.revolut" to "Revolut",
+        "com.revolut.business" to "Revolut Business",
+        "com.f1soft.esewa" to "eSewa",
+        "com.esewa.mobile" to "eSewa Mobile",
+        "com.khalti" to "Khalti",
+        "com.f1soft.banksmart.siddhartha" to "Siddhartha BankSmart",
+        "com.f1soft.banksmart.global" to "Global Smart Plus",
+        "com.f1soft.banksmart.nabil" to "Nabil SmartBank",
+        "co.uk.getmondo" to "Monzo",
+        "com.wise.android" to "Wise",
+        "com.paypal.android.p2pmobile" to "PayPal",
+        "com.squareup.cash" to "Cash App",
+        "com.venmo" to "Venmo",
     )
 
     /** Whether the user has given Leftovers notification access in the phone's settings. */
@@ -44,7 +60,13 @@ object PaymentApps {
  * picked without the "see all apps" permission. Kept on the phone, never in backups.
  */
 class PaymentAppPrefs(context: Context) {
-    data class App(val pkg: String, val name: String, val read: Boolean, val accountId: Long?)
+    data class App(
+        val pkg: String,
+        val name: String,
+        val read: Boolean,
+        val accountId: Long?,
+        val isCustom: Boolean = false,
+    )
 
     private val prefs = context.getSharedPreferences("payment_apps", Context.MODE_PRIVATE)
     private val _apps = MutableStateFlow(load())
@@ -52,6 +74,11 @@ class PaymentAppPrefs(context: Context) {
     val apps: StateFlow<List<App>> = _apps.asStateFlow()
 
     private fun selected(): Set<String> = prefs.getStringSet(SELECTED, null) ?: PaymentApps.names.keys
+
+    private fun custom(): Map<String, String> = runCatching {
+        val o = org.json.JSONObject(prefs.getString(CUSTOM, "{}") ?: "{}")
+        o.keys().asSequence().associateWith { o.getString(it) }
+    }.getOrDefault(emptyMap())
 
     private fun seen(): Map<String, String> = runCatching {
         val o = org.json.JSONObject(prefs.getString(SEEN, "{}") ?: "{}")
@@ -65,16 +92,27 @@ class PaymentAppPrefs(context: Context) {
 
     private fun load(): List<App> {
         val read = selected()
+        val custom = custom()
         val seen = seen()
         val accounts = accounts()
-        val names = PaymentApps.names + seen.filterKeys { it !in PaymentApps.names }
-        val order = PaymentApps.names.keys.toList() + read.filter { it !in PaymentApps.names } + seen.keys.filter { it !in PaymentApps.names && it !in read }
-        return order.distinct().map { pkg -> App(pkg, names[pkg] ?: pkg.substringAfterLast('.'), pkg in read, accounts[pkg]) }
+        val names = PaymentApps.names + custom + seen.filterKeys { it !in PaymentApps.names && it !in custom }
+        val order = PaymentApps.names.keys.toList() + custom.keys.toList() + read.filter { it !in PaymentApps.names && it !in custom } + seen.keys.filter { it !in PaymentApps.names && it !in custom && it !in read }
+        return order.distinct().map { pkg ->
+            App(
+                pkg = pkg,
+                name = names[pkg] ?: pkg.substringAfterLast('.'),
+                read = pkg in read,
+                accountId = accounts[pkg],
+                isCustom = pkg in custom.keys,
+            )
+        }
     }
 
     fun isRead(pkg: String): Boolean = pkg in selected()
 
     fun accountFor(pkg: String): Long? = accounts()[pkg]
+
+    fun nameFor(pkg: String): String? = custom()[pkg] ?: PaymentApps.names[pkg] ?: seen()[pkg]
 
     fun setRead(pkg: String, read: Boolean) {
         val now = selected().toMutableSet().apply { if (read) add(pkg) else remove(pkg) }
@@ -87,6 +125,42 @@ class PaymentAppPrefs(context: Context) {
         val o = org.json.JSONObject(prefs.getString(ACCOUNTS, "{}") ?: "{}")
         if (accountId == null) o.remove(pkg) else o.put(pkg, accountId)
         prefs.edit().putString(ACCOUNTS, o.toString()).apply()
+        _apps.value = load()
+    }
+
+    /** Adds a custom app configured by the user. */
+    fun addCustomApp(pkg: String, name: String, read: Boolean = true, accountId: Long? = null) {
+        val trimmedPkg = pkg.trim()
+        if (trimmedPkg.isBlank()) return
+        val trimmedName = name.trim().ifEmpty { trimmedPkg.substringAfterLast('.').replaceFirstChar { it.uppercase() } }
+        val o = runCatching { org.json.JSONObject(prefs.getString(CUSTOM, "{}") ?: "{}") }.getOrDefault(org.json.JSONObject())
+        o.put(trimmedPkg, trimmedName)
+        val edit = prefs.edit().putString(CUSTOM, o.toString())
+        if (read) {
+            val nowSelected = selected().toMutableSet().apply { add(trimmedPkg) }
+            edit.putStringSet(SELECTED, nowSelected)
+        }
+        if (accountId != null) {
+            val nowAccounts = runCatching { org.json.JSONObject(prefs.getString(ACCOUNTS, "{}") ?: "{}") }.getOrDefault(org.json.JSONObject())
+            nowAccounts.put(trimmedPkg, accountId)
+            edit.putString(ACCOUNTS, nowAccounts.toString())
+        }
+        edit.apply()
+        _apps.value = load()
+    }
+
+    /** Removes a custom app configured by the user. */
+    fun removeCustomApp(pkg: String) {
+        val o = runCatching { org.json.JSONObject(prefs.getString(CUSTOM, "{}") ?: "{}") }.getOrDefault(org.json.JSONObject())
+        o.remove(pkg)
+        val nowSelected = selected().toMutableSet().apply { remove(pkg) }
+        val nowAccounts = runCatching { org.json.JSONObject(prefs.getString(ACCOUNTS, "{}") ?: "{}") }.getOrDefault(org.json.JSONObject())
+        nowAccounts.remove(pkg)
+        prefs.edit()
+            .putString(CUSTOM, o.toString())
+            .putStringSet(SELECTED, nowSelected)
+            .putString(ACCOUNTS, nowAccounts.toString())
+            .apply()
         _apps.value = load()
     }
 
@@ -112,6 +186,7 @@ class PaymentAppPrefs(context: Context) {
         const val SELECTED = "selected"
         const val SEEN = "seen"
         const val ACCOUNTS = "accounts"
+        const val CUSTOM = "custom_apps"
     }
 }
 
@@ -157,16 +232,23 @@ class PaymentNotificationListener : NotificationListenerService() {
         val container = (applicationContext as LeftoversApp).container
         val apps = container.paymentApps
         // The app's name for the picker, from the notification itself; the package name if it isn't there.
-        val name = PaymentApps.names[pkg] ?: appName(sbn) ?: pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() }
+        val name = apps.nameFor(pkg) ?: appName(sbn) ?: pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() }
         scope.launch {
             val s = container.settings.settings.first()
-            if (!s.appNotifications) return@launch
+            if (!s.appNotifications && !s.notificationDetection) return@launch
             apps.noteSeen(pkg, name)
             if (!apps.isRead(pkg)) return@launch
             val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
             val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
             val app = name
-            val parsed = NotificationParser.parse(title, text) ?: return@launch
+            val parsed = NotificationParser.parse(title, text)
+                ?: PaymentNotificationParserRegistry.parse(pkg, title, text, null, sbn.postTime, "")?.let { candidate ->
+                    SmsParser.Parsed(
+                        amountMinor = candidate.amountMinor,
+                        merchant = candidate.merchant.orEmpty(),
+                        isIncome = candidate.type == CandidateType.INCOME,
+                    )
+                } ?: return@launch
             val at = sbn.postTime
             val added = container.sms.add(
                 SmsSuggestion(
