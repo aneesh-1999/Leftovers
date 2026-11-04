@@ -99,7 +99,7 @@ class AppUpdateNotificationDeduplicationTest {
         val sampleReleaseJson = """{"id":1,"tag_name":"v1.7.1","name":"Leftovers 1.7.1","body":"","draft":false,"prerelease":false,"published_at":"2026-10-15T15:00:00Z","assets":[{"name":"leftovers.apk","size":1000,"browser_download_url":"https://github.com/aneesh-1999/Leftovers/releases/download/v1.7.1/leftovers.apk","content_type":"application/vnd.android.package-archive"}]}"""
         settingsRepository.setUpdateCache(sampleReleaseJson, "\"etag123\"", now)
 
-        val updated = settingsRepository.settings.first()
+        val updated = settingsRepository.settings.first { it.updateCachedReleaseJson.isNotBlank() }
         assertEquals(sampleReleaseJson, updated.updateCachedReleaseJson)
         assertEquals("\"etag123\"", updated.updateCachedEtag)
         assertEquals(now, updated.updateCacheTimestamp)

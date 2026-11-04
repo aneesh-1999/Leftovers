@@ -41,6 +41,7 @@ class AppUpdateRepositoryTest {
         settingsRepository = SettingsRepository(context)
         runBlocking {
             settingsRepository.clearAll()
+            settingsRepository.settings.first { it.updateCachedReleaseJson.isEmpty() && it.updateRateLimitResetTime == 0L }
         }
     }
 

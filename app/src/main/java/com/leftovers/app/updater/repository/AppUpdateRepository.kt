@@ -658,8 +658,8 @@ class AppUpdateRepository(
 
         // Parse assets
         val assetsArray = json.optJSONArray("assets") ?: JSONArray()
-        var apkAsset: GitHubReleaseAsset? = null
-        var sha256AssetUrl: String? = null
+        val allApks = mutableListOf<GitHubReleaseAsset>()
+        val checksumAssets = mutableMapOf<String, String>()
 
         for (i in 0 until assetsArray.length()) {
             val a = assetsArray.getJSONObject(i)
@@ -668,17 +668,30 @@ class AppUpdateRepository(
             val downloadUrl = a.optString("browser_download_url", "")
             val contentType = a.optString("content_type", "")
 
-            if (aName.endsWith(".apk", ignoreCase = true) && apkAsset == null) {
-                apkAsset = GitHubReleaseAsset(
-                    name = aName,
-                    size = aSize,
-                    downloadUrl = downloadUrl,
-                    contentType = contentType,
+            if (aName.endsWith(".apk", ignoreCase = true)) {
+                allApks.add(
+                    GitHubReleaseAsset(
+                        name = aName,
+                        size = aSize,
+                        downloadUrl = downloadUrl,
+                        contentType = contentType,
+                    ),
                 )
             } else if (aName.endsWith(".sha256", ignoreCase = true) || aName.contains("checksum", ignoreCase = true)) {
-                sha256AssetUrl = downloadUrl
+                checksumAssets[aName.lowercase()] = downloadUrl
             }
         }
+
+        val isDev = context.packageName.endsWith(".dev")
+        val apkAsset = if (isDev) {
+            allApks.firstOrNull { it.name.contains("dev", ignoreCase = true) } ?: allApks.firstOrNull()
+        } else {
+            allApks.firstOrNull { it.name.contains("release", ignoreCase = true) } ?: allApks.firstOrNull()
+        }
+
+        val sha256AssetUrl = apkAsset?.let { apk ->
+            checksumAssets["${apk.name.lowercase()}.sha256"] ?: checksumAssets.values.firstOrNull()
+        } ?: checksumAssets.values.firstOrNull()
 
         // Extract expected SHA-256 from checksum asset or release body
         var expectedChecksum: String? = null
