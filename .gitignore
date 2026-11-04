@@ -8,6 +8,7 @@
 .cxx/
 *.apk
 *.aab
+*.sha256
 
 # Machine-specific config
 /local.properties
