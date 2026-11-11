@@ -80,7 +80,7 @@ service cloud.firestore {
 
     // Default deny: any other collection or document cannot be accessed
     match /{document=**} {
-      allow read, write: false;
+      allow read, write: if false;
     }
   }
 }
