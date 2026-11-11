@@ -1,22 +1,87 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Helper functions for strict authentication & authorization
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Validation for top-level user record
+    function isValidUserDoc() {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['lastBackupAt', 'deviceModel', 'userName', 'userEmail', 'backupVersion'])
+        && (!('lastBackupAt' in data) || data.lastBackupAt is int)
+        && (!('deviceModel' in data) || (data.deviceModel is string && data.deviceModel.size() <= 256))
+        && (!('userName' in data) || (data.userName is string && data.userName.size() <= 256))
+        && (!('userEmail' in data) || (data.userEmail is string && data.userEmail.size() <= 256))
+        && (!('backupVersion' in data) || data.backupVersion is int);
+    }
+
+    // Validation for backup slot document (e.g. 'latest')
+    function isValidSlotDoc() {
+      let data = request.resource.data;
+      return data.app == 'leftovers'
+        && data.version is int
+        && data.timestamp is int
+        && data.totalItems is int && data.totalItems >= 0
+        && data.isEncrypted is bool
+        && data.isChunked is bool
+        && data.rawBytes is int && data.rawBytes >= 0
+        && data.compressedBytes is int && data.compressedBytes >= 0
+        && (!data.isChunked ? (data.payloadGzipB64 is string && data.payloadGzipB64.size() <= 900000) : true)
+        && (data.isChunked ? (data.chunkCount is int && data.chunkCount > 0 && data.chunkCount <= 100) : true)
+        && (!('deviceModel' in data) || (data.deviceModel is string && data.deviceModel.size() <= 256))
+        && (!('userName' in data) || (data.userName is string && data.userName.size() <= 256))
+        && (!('userEmail' in data) || (data.userEmail is string && data.userEmail.size() <= 256))
+        && (!('cloudEncrypted' in data) || data.cloudEncrypted is bool)
+        && (!('encryptionType' in data) || (data.encryptionType is string && data.encryptionType in ['PASSWORD', 'ACCOUNT_KEY']));
+    }
+
+    // Validation for backup chunk document
+    function isValidChunkDoc() {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['index', 'data'])
+        && data.index is int && data.index >= 0 && data.index < 100
+        && data.data is string && data.data.size() <= 900000;
+    }
+
     // Leftovers Personal Finance Cloud Backups:
-    // Only the authenticated user can read or write their own backups
+    // Only the authenticated user can access their own backups.
     match /user_backups/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      // Direct document access allowed only for the document owner.
+      // Listing across all user_backups is explicitly forbidden.
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create, update: if isOwner(userId) && isValidUserDoc();
+      allow delete: if isOwner(userId);
 
       match /slots/{slotId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidSlotDoc();
+        allow delete: if isOwner(userId);
 
         match /chunks/{chunkId} {
-          allow read, write: if request.auth != null && request.auth.uid == userId;
+          allow get, list: if isOwner(userId);
+          allow create, update: if isOwner(userId) && isValidChunkDoc();
+          allow delete: if isOwner(userId);
         }
       }
 
+      // Safeguard for any nested subcollections under user's document
       match /{allChildren=**} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
+    }
+
+    // Default deny: any other collection or document cannot be accessed
+    match /{document=**} {
+      allow read, write: false;
     }
   }
 }
+

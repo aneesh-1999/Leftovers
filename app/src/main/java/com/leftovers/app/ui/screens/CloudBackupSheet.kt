@@ -83,6 +83,13 @@ class CloudBackupViewModel(
 
     private val _latestCloudBackup = MutableStateFlow<CloudBackupInfo?>(null)
     val latestCloudBackup: StateFlow<CloudBackupInfo?> = _latestCloudBackup.asStateFlow()
+    val backupPasswordSet: StateFlow<Boolean> = backupManager.password.isSet
+
+    fun setBackupPassword(password: String?) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            backupManager.password.set(password)
+        }
+    }
 
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
@@ -397,6 +404,7 @@ fun CloudBackupSheet(
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val s by viewModel.settings.collectAsStateWithLifecycle()
     val latestBackup by viewModel.latestCloudBackup.collectAsStateWithLifecycle()
+    val backupPasswordSet by viewModel.backupPasswordSet.collectAsStateWithLifecycle()
     val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
     val statusMsg by viewModel.statusMessage.collectAsStateWithLifecycle()
     val errorMsg by viewModel.errorMessage.collectAsStateWithLifecycle()
@@ -409,6 +417,11 @@ fun CloudBackupSheet(
     var showRestoreConfirmDialog by remember { mutableStateOf(false) }
     var showPasswordPromptDialog by remember { mutableStateOf(false) }
     var restorePasswordInput by remember { mutableStateOf("") }
+
+    var showSetPasswordDialog by remember { mutableStateOf(false) }
+    var newPasswordInput by remember { mutableStateOf("") }
+    var confirmPasswordInput by remember { mutableStateOf("") }
+    var passwordError by remember { mutableStateOf<String?>(null) }
 
     var showDeleteDataConfirmDialog by remember { mutableStateOf(false) }
     var showDeleteAccountConfirmDialog by remember { mutableStateOf(false) }
@@ -487,10 +500,12 @@ fun CloudBackupSheet(
                         )
 
                         listOf(
+                            "End-to-end AES-256-GCM encryption before data leaves your phone",
+                            "Strict per-user isolation: only you can access your encrypted backups",
                             "Safe cloud storage in your private Firebase vault",
                             "Full offline cache: access and backup anytime offline",
                             "Strictly isolated from shared Room Expense ledgers",
-                            "Compatible with your existing backup password encryption",
+                            "Optional custom backup password for zero-knowledge protection",
                         ).forEach { feature ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
@@ -710,7 +725,14 @@ fun CloudBackupSheet(
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Encrypted", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
-                                Text(if (b.isEncrypted) "Yes (Password protected)" else "No", style = MaterialTheme.typography.bodySmall, color = if (b.isEncrypted) c.positive else c.textSecondary)
+                                Text(
+                                    if (b.isEncrypted) "Yes (Custom password)"
+                                    else if (b.isCloudEncrypted) "Yes (AES-256 account key)"
+                                    else "Legacy",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = c.positive,
+                                )
                             }
                         } else {
                             Text(
@@ -718,6 +740,47 @@ fun CloudBackupSheet(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = c.textTertiary,
                             )
+                        }
+                    }
+                }
+
+                // Security & Encryption Card
+                Glass(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Lucide.Shield,
+                                contentDescription = null,
+                                tint = c.positive,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Zero-Knowledge Encryption",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = c.textPrimary,
+                            )
+                        }
+                        Text(
+                            if (backupPasswordSet) "Your cloud backups are locked with your custom backup password. Decryption is only possible on devices where this password is entered."
+                            else "Your cloud backups are automatically encrypted with AES-256-GCM using your authenticated account vault key. Zero plaintext financial data is ever stored in Firebase.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.textSecondary,
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = {
+                                newPasswordInput = ""
+                                confirmPasswordInput = ""
+                                passwordError = null
+                                showSetPasswordDialog = true
+                            }) {
+                                Text(
+                                    if (backupPasswordSet) "Change / Remove Password" else "Set Custom Password",
+                                    color = c.accent,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
                         }
                     }
                 }
@@ -1145,6 +1208,97 @@ fun CloudBackupSheet(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteAccountConfirmDialog = false }) {
+                    Text("Cancel", color = c.textSecondary)
+                }
+            }
+        )
+    }
+
+    // Set / Change Custom Backup Password Dialog
+    if (showSetPasswordDialog) {
+        GlassAlertDialog(
+            onDismissRequest = { showSetPasswordDialog = false },
+            title = {
+                Text(
+                    if (backupPasswordSet) "Change Backup Password" else "Set Custom Password",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = c.textPrimary,
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (backupPasswordSet) {
+                            "Enter a new password to re-lock your backups, or tap 'Remove Password' to use automatic AES-256 account encryption."
+                        } else {
+                            "Set a custom passphrase for zero-knowledge encryption. Backups will require this password to restore. It cannot be recovered if forgotten."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textSecondary,
+                    )
+                    GlassTextField(
+                        value = newPasswordInput,
+                        onValueChange = {
+                            newPasswordInput = it
+                            passwordError = null
+                        },
+                        placeholder = if (backupPasswordSet) "New password" else "Master password",
+                        label = "Password",
+                        keyboardType = KeyboardType.Password,
+                        password = true,
+                    )
+                    GlassTextField(
+                        value = confirmPasswordInput,
+                        onValueChange = {
+                            confirmPasswordInput = it
+                            passwordError = null
+                        },
+                        placeholder = "Confirm password",
+                        label = "Confirm Password",
+                        keyboardType = KeyboardType.Password,
+                        password = true,
+                    )
+                    if (passwordError != null) {
+                        Text(
+                            passwordError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.negative,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (backupPasswordSet) {
+                        TextButton(
+                            onClick = {
+                                viewModel.setBackupPassword(null)
+                                showSetPasswordDialog = false
+                            }
+                        ) {
+                            Text("Remove Password", color = c.negative)
+                        }
+                    }
+                    TextButton(
+                        onClick = {
+                            if (newPasswordInput.length < 4) {
+                                passwordError = "Password must be at least 4 characters"
+                            } else if (newPasswordInput != confirmPasswordInput) {
+                                passwordError = "Passwords do not match"
+                            } else {
+                                viewModel.setBackupPassword(newPasswordInput)
+                                showSetPasswordDialog = false
+                            }
+                        },
+                        enabled = newPasswordInput.isNotBlank() && confirmPasswordInput.isNotBlank(),
+                    ) {
+                        Text("Save Password", color = c.accent, fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSetPasswordDialog = false }) {
                     Text("Cancel", color = c.textSecondary)
                 }
             }

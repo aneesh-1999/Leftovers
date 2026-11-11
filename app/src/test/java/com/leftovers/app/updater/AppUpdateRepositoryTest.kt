@@ -249,9 +249,11 @@ class AppUpdateRepositoryTest {
     fun checkForUpdates_rapidConcurrentTaps_mutexPreventsDuplicateRequests() = runBlocking {
         settingsRepository.clearAll()
         val mock = MockHttpTransport()
-        val requestCount = AtomicInteger(0)
-        mock.getHandler = { _, _ ->
-            requestCount.incrementAndGet()
+        val releaseRequestCount = AtomicInteger(0)
+        mock.getHandler = { url, _ ->
+            if (url.contains("api.github.com")) {
+                releaseRequestCount.incrementAndGet()
+            }
             Thread.sleep(50) // simulate network latency
             HttpResponse(statusCode = 200, body = sampleReleaseJson)
         }
@@ -266,7 +268,7 @@ class AppUpdateRepositoryTest {
         }
         val results = jobs.awaitAll()
 
-        assertEquals(1, requestCount.get()) // Mutex and cache guarantee single flight
+        assertEquals(1, releaseRequestCount.get()) // Mutex and cache guarantee single flight
         results.forEach { status ->
             assertTrue(status is UpdateCheckStatus.UpdateAvailable)
         }

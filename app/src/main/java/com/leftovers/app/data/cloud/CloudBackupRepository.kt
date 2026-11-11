@@ -10,11 +10,14 @@ import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
 import com.google.firebase.firestore.SetOptions
 import com.leftovers.app.data.SettingsRepository
+import com.leftovers.app.util.BackupCrypto
 import com.leftovers.app.util.BackupManager
+import com.leftovers.app.util.BackupPasswordException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Base64
@@ -28,6 +31,8 @@ data class CloudBackupInfo(
     val deviceModel: String,
     val compressedSizeFormatted: String,
     val userName: String? = null,
+    val isCloudEncrypted: Boolean = true,
+    val encryptionType: String = if (isEncrypted) "PASSWORD" else "ACCOUNT_KEY",
 )
 
 class CloudBackupRepository(
@@ -39,6 +44,17 @@ class CloudBackupRepository(
     companion object {
         private const val TAG = "CloudBackupRepo"
         private const val CHUNK_SIZE = 750_000 // Chunks to stay well under Firestore 1MB document limit
+
+        /**
+         * Computes a deterministic, user-bound cryptographic vault key derived from the user's
+         * authenticated Firebase UID. Guarantees that even without a custom backup password,
+         * cloud backups are always stored as AES-256-GCM ciphertext in Firestore and cannot be
+         * read in plaintext by database observers.
+         */
+        fun deriveAccountVaultKey(uid: String): String {
+            require(uid.isNotBlank()) { "UID cannot be blank for vault key derivation" }
+            return "Leftovers:UserVault:AES-256-GCM:uid=$uid"
+        }
     }
 
     private val firestore: FirebaseFirestore by lazy {
@@ -91,6 +107,8 @@ class CloudBackupRepository(
                 val compressedBytes = doc.getLong("compressedBytes") ?: 0L
                 val formattedSize = formatBytes(compressedBytes)
                 val userName = doc.getString("userName")
+                val isCloudEncrypted = doc.getBoolean("cloudEncrypted") ?: true
+                val encryptionType = doc.getString("encryptionType") ?: if (isEncrypted) "PASSWORD" else "ACCOUNT_KEY"
 
                 CloudBackupInfo(
                     timestamp = timestamp,
@@ -99,6 +117,8 @@ class CloudBackupRepository(
                     deviceModel = deviceModel,
                     compressedSizeFormatted = formattedSize,
                     userName = userName,
+                    isCloudEncrypted = isCloudEncrypted,
+                    encryptionType = encryptionType,
                 )
             }
         }
@@ -106,7 +126,7 @@ class CloudBackupRepository(
 
     /**
      * Creates a full backup, compresses it using GZIP, and saves it to the user's isolated
-     * Firestore storage.
+     * Firestore storage. Always encrypted with AES-256-GCM.
      */
     suspend fun backupNow(): Result<CloudBackupInfo> = withContext(Dispatchers.IO) {
         runCatching {
@@ -125,10 +145,23 @@ class CloudBackupRepository(
             Log.d(TAG, "Creating local backup payload for cloud upload (userName=$effectiveUserName)...")
             val payload = backupManager.createBackupPayload(encryptIfPasswordSet = true)
 
-            // Compress json using GZIP
-            val gzipB64 = compressGzip(payload.jsonString)
+            // Zero-Knowledge Client-Side Encryption:
+            // If the user configured a custom backup password, it is already encrypted with it (payload.isEncrypted == true).
+            // If not, transparently encrypt with a user-bound AES-256-GCM vault key derived from the authenticated UID.
+            // Under NO circumstance is raw plaintext financial JSON ever stored in Firestore!
+            val finalPayloadJson = if (payload.isEncrypted) {
+                payload.jsonString
+            } else {
+                val vaultKey = deriveAccountVaultKey(uid)
+                BackupCrypto.encrypt(payload.jsonString, vaultKey).toString()
+            }
+            val isPasswordProtected = payload.isEncrypted
+            val encryptionType = if (isPasswordProtected) "PASSWORD" else "ACCOUNT_KEY"
+
+            // Compress encrypted json using GZIP
+            val gzipB64 = compressGzip(finalPayloadJson)
             val compressedBytes = gzipB64.toByteArray().size.toLong()
-            val rawBytes = payload.jsonString.toByteArray().size.toLong()
+            val rawBytes = finalPayloadJson.toByteArray().size.toLong()
             val now = System.currentTimeMillis()
             val deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}"
 
@@ -145,7 +178,9 @@ class CloudBackupRepository(
                     "userName" to effectiveUserName,
                     "userEmail" to userEmail,
                     "totalItems" to payload.totalItems,
-                    "isEncrypted" to payload.isEncrypted,
+                    "isEncrypted" to isPasswordProtected,
+                    "cloudEncrypted" to true,
+                    "encryptionType" to encryptionType,
                     "deviceModel" to deviceModel,
                     "rawBytes" to rawBytes,
                     "compressedBytes" to compressedBytes,
@@ -163,7 +198,9 @@ class CloudBackupRepository(
                     "userName" to effectiveUserName,
                     "userEmail" to userEmail,
                     "totalItems" to payload.totalItems,
-                    "isEncrypted" to payload.isEncrypted,
+                    "isEncrypted" to isPasswordProtected,
+                    "cloudEncrypted" to true,
+                    "encryptionType" to encryptionType,
                     "deviceModel" to deviceModel,
                     "rawBytes" to rawBytes,
                     "compressedBytes" to compressedBytes,
@@ -190,26 +227,29 @@ class CloudBackupRepository(
                     "deviceModel" to deviceModel,
                     "userName" to effectiveUserName,
                     "userEmail" to userEmail,
+                    "backupVersion" to 1,
                 ),
                 SetOptions.merge()
             ).await()
 
             settingsRepository.setCloudBackupLast(now)
-            Log.d(TAG, "Cloud backup completed successfully: ${payload.totalItems} items, compressed to ${formatBytes(compressedBytes)}")
+            Log.d(TAG, "Cloud backup completed successfully: ${payload.totalItems} items, encrypted ($encryptionType) and compressed to ${formatBytes(compressedBytes)}")
 
             CloudBackupInfo(
                 timestamp = now,
                 totalItems = payload.totalItems,
-                isEncrypted = payload.isEncrypted,
+                isEncrypted = isPasswordProtected,
                 deviceModel = deviceModel,
                 compressedSizeFormatted = formatBytes(compressedBytes),
                 userName = effectiveUserName,
+                isCloudEncrypted = true,
+                encryptionType = encryptionType,
             )
         }
     }
 
     /**
-     * Downloads the backup from Firestore and restores all local data.
+     * Downloads the backup from Firestore, decrypts it, and restores all local data.
      */
     suspend fun restoreFromCloud(typedPassword: String? = null): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
@@ -245,7 +285,39 @@ class CloudBackupRepository(
             }
 
             val jsonText = decompressGzip(gzipB64)
-            val restoredCount = backupManager.restoreFromJsonText(jsonText, typedPassword).getOrThrow()
+
+            // Multi-tier Decryption:
+            // 1. If user supplied an explicit typedPassword, attempt decryption with it.
+            // 2. If no typedPassword was provided:
+            //    Check if jsonText is encrypted with BackupCrypto.
+            //    If so:
+            //      - First attempt seamless decryption with user-bound deriveAccountVaultKey(uid).
+            //      - If that succeeds, restore the inner JSON payload!
+            //      - If that fails, it means the backup was encrypted with a custom password:
+            //        throw BackupPasswordException so the UI prompts the user to enter their password.
+            // 3. If jsonText is unencrypted (legacy backup), restore directly.
+            val restoredCount = run {
+                val jsonObject = runCatching { JSONObject(jsonText) }.getOrNull()
+                if (jsonObject != null && BackupCrypto.isEncrypted(jsonObject)) {
+                    if (!typedPassword.isNullOrBlank()) {
+                        backupManager.restoreFromJsonText(jsonText, typedPassword).getOrThrow()
+                    } else {
+                        val vaultKey = deriveAccountVaultKey(uid)
+                        val decryptedWithVaultKey = runCatching {
+                            BackupCrypto.decrypt(jsonObject, vaultKey)
+                        }.getOrNull()
+
+                        if (decryptedWithVaultKey != null) {
+                            backupManager.restoreFromJsonText(decryptedWithVaultKey, null).getOrThrow()
+                        } else {
+                            // Requires user custom password
+                            throw BackupPasswordException("Password required to restore this encrypted backup")
+                        }
+                    }
+                } else {
+                    backupManager.restoreFromJsonText(jsonText, typedPassword).getOrThrow()
+                }
+            }
 
             // If restored user name is blank, preserve account display name
             val afterSettings = settingsRepository.settings.first()

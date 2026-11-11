@@ -134,4 +134,53 @@ class CloudBackupTest {
         assertEquals("user_backups", FirebaseConfig.COLLECTION_USER_BACKUPS)
         assertEquals("latest", FirebaseConfig.DOC_LATEST)
     }
+
+    @Test
+    fun testAccountVaultKeyDerivation() {
+        val uid1 = "user_alpha_123"
+        val uid2 = "user_beta_456"
+
+        val key1 = com.leftovers.app.data.cloud.CloudBackupRepository.deriveAccountVaultKey(uid1)
+        val key2 = com.leftovers.app.data.cloud.CloudBackupRepository.deriveAccountVaultKey(uid2)
+
+        assertTrue(key1.contains(uid1))
+        assertTrue(key2.contains(uid2))
+        assertTrue(key1 != key2)
+
+        // Same UID derives exact same key deterministically
+        val key1Repeat = com.leftovers.app.data.cloud.CloudBackupRepository.deriveAccountVaultKey(uid1)
+        assertEquals(key1, key1Repeat)
+    }
+
+    @Test
+    fun testAccountVaultKeyEncryptionRoundTrip() = runBlocking {
+        val uid = "firebase_uid_test_999"
+        val vaultKey = com.leftovers.app.data.cloud.CloudBackupRepository.deriveAccountVaultKey(uid)
+
+        val rawJson = """{"app":"leftovers","version":1,"categories":[{"id":5,"name":"Salary","icon":"💰","color":4278255360,"type":"INCOME","budget":null,"addsToBudget":false}],"transactions":[{"id":500,"amount":300000,"type":"INCOME","categoryId":5,"day":20050,"note":"Monthly Paycheck","createdAt":1000000,"accountId":null,"receipt":null,"foreignAmount":null,"foreignCurrency":null}]}"""
+
+        // Encrypt with account vault key
+        val encryptedJson = BackupCrypto.encrypt(rawJson, vaultKey).toString()
+        assertTrue(BackupCrypto.isEncrypted(org.json.JSONObject(encryptedJson)))
+        assertFalse(encryptedJson.contains("Monthly Paycheck")) // Zero plaintext!
+
+        // Decrypt with correct account vault key
+        val decrypted = BackupCrypto.decrypt(org.json.JSONObject(encryptedJson), vaultKey)
+        assertEquals(rawJson, decrypted)
+
+        // Decrypt with a different user's vault key MUST fail
+        val otherVaultKey = com.leftovers.app.data.cloud.CloudBackupRepository.deriveAccountVaultKey("other_user_uid")
+        try {
+            BackupCrypto.decrypt(org.json.JSONObject(encryptedJson), otherVaultKey)
+            fail("Decryption with another user's vault key should have failed")
+        } catch (e: Exception) {
+            // Expected
+        }
+
+        // Restore using decrypted JSON
+        db.transactionDao().deleteAll()
+        val count = backupManager.restoreFromJsonText(decrypted).getOrThrow()
+        assertTrue(count >= 1)
+        assertEquals("Monthly Paycheck", db.transactionDao().getAll().first().note)
+    }
 }
