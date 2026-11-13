@@ -87,3 +87,4 @@ data class CohabitBridgeSyncResult(
     val personalFinance: CohabitPersonalFinance?,
     val timestamp: Long = System.currentTimeMillis(),
 )
+

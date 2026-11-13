@@ -274,3 +274,4 @@ class CohabitBridgeTest {
         assertTrue(result.exceptionOrNull() is CohabitForbiddenException)
     }
 }
+
