@@ -98,6 +98,13 @@ class AppContainer(val context: Context) {
         sms,
     )
     val roomExpenseDao = database.roomExpenseDao()
+    val cohabitService = com.leftovers.app.data.cohabit.CohabitBridgeService()
+    val cohabit = com.leftovers.app.data.cohabit.CohabitBridgeRepository(
+        context,
+        cohabitService,
+        settings,
+        roomExpenseDao,
+    )
     val backup = BackupManager(context, database, settings, BackupPassword(context))
     val authManager = com.leftovers.app.data.cloud.FirebaseAuthManager(context, settings, scope)
     val cloudBackup = com.leftovers.app.data.cloud.CloudBackupRepository(context, authManager, backup, settings)

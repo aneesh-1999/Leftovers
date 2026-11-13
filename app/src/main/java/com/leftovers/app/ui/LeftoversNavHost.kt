@@ -155,6 +155,7 @@ private object Routes {
     const val INVESTMENT = "investment"
     const val CREDIT_CARDS = "credit_cards"
     const val ROOM_EXPENSES = "room_expenses"
+    const val COHABIT_SYNC = "cohabit_sync"
 
     fun add(day: Long = -1L, amount: Long = -1L, note: String = "", sms: Long = -1L) =
         "add?day=$day&amount=$amount&note=${Uri.encode(note)}&sms=$sms"
@@ -429,7 +430,15 @@ fun LeftoversNavHost(
                     }
                     screen(Routes.INVESTMENT) { InvestmentScreen(onBack = back) }
                     screen(Routes.CREDIT_CARDS) { CreditCardScreen(onBack = back) }
-                    screen(Routes.ROOM_EXPENSES) { RoomExpenseScreen(onBack = back) }
+                    screen(Routes.ROOM_EXPENSES) {
+                        RoomExpenseScreen(
+                            onBack = back,
+                            onOpenCohabitSync = { nav.navigate(Routes.COHABIT_SYNC) },
+                        )
+                    }
+                    screen(Routes.COHABIT_SYNC) {
+                        com.leftovers.app.ui.screens.cohabit.CohabitSyncScreen(onBack = back)
+                    }
                     screen(
                         Routes.ROSTER,
                         listOf(

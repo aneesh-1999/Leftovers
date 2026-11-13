@@ -83,6 +83,7 @@ private val EXPENSE_DATE_FORMATTER = DateTimeFormatter.ofPattern("d MMM yyyy", L
 @Composable
 fun RoomExpenseScreen(
     onBack: () -> Unit,
+    onOpenCohabitSync: () -> Unit = {},
     vm: RoomExpenseViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val c = LocalAppColors.current
@@ -105,6 +106,12 @@ fun RoomExpenseScreen(
         subtitle = "Shared Household Ledger (Firestore)",
         onBack = onBack,
         actions = {
+            RoundButton(
+                icon = Lucide.Utensils,
+                contentDescription = "Cohabit Bridge",
+                onClick = onOpenCohabitSync,
+            )
+            Spacer(Modifier.width(8.dp))
             RoundButton(
                 icon = Lucide.Plus,
                 contentDescription = "Add Expense",
@@ -142,6 +149,11 @@ fun RoomExpenseScreen(
                     onRetry = { vm.syncNow() },
                     onDismissError = { vm.clearError() },
                 )
+            }
+
+            // 1b. Cohabit Encrypted Bridge Quick Action Banner
+            item {
+                CohabitBridgeBanner(onClick = onOpenCohabitSync)
             }
 
             // 2. Net Settlement Hero Card
@@ -1108,4 +1120,52 @@ private fun AddRoomExpenseDialog(
             SecondaryButton("Cancel", onClick = onDismiss)
         },
     )
+}
+
+@Composable
+private fun CohabitBridgeBanner(onClick: () -> Unit) {
+    val c = LocalAppColors.current
+    Glass(
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(c.accent.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Lucide.Utensils, contentDescription = null, tint = c.accent, modifier = Modifier.size(20.dp))
+                }
+                Column {
+                    Text(
+                        "Cohabit Encrypted Bridge",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = c.textPrimary,
+                    )
+                    Text(
+                        "Sync leftover meals, groceries & shifts",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textSecondary,
+                    )
+                }
+            }
+            Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
+        }
+    }
 }

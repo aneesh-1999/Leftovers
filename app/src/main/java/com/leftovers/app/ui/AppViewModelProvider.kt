@@ -88,6 +88,10 @@ object AppViewModelProvider {
             val c = container()
             com.leftovers.app.updater.ui.AppUpdateViewModel(app(), c.updater, c.settings)
         }
+        initializer {
+            val c = container()
+            com.leftovers.app.ui.screens.cohabit.CohabitSyncViewModel(c.cohabit, c.settings)
+        }
     }
 }
 

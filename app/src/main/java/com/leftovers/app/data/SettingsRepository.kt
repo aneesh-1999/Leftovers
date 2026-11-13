@@ -125,6 +125,14 @@ data class AppSettings(
     val roomExpenseLastSync: Long = 0L,
     /** Cutoff timestamp (epoch millis). Room expenses created before this are ignored as old payments. */
     val roomExpenseCutoffTimestamp: Long = 0L,
+    /** Cohabit & Roster Encrypted API Base URL. */
+    val cohabitBaseUrl: String = "https://ais-pre-fakno4cgzgk52rt56zapwg-628972999672.asia-southeast1.run.app",
+    /** Cohabit & Roster Encrypted API Key or signed Bridge Token. */
+    val cohabitApiKey: String = "leaftover-ozric-key-2026",
+    /** Active Cohabit authenticated profile: "Ozric" or "Pawan". */
+    val cohabitRoommate: String = "Ozric",
+    /** Timestamp of last successful Cohabit Bridge sync. */
+    val cohabitLastSync: Long = 0L,
     /** Whether notification-based transaction detection is enabled. */
     val notificationDetection: Boolean = false,
     /** Whether high-confidence detected transactions can be auto-saved directly (review mode if false). */
@@ -268,6 +276,10 @@ class SettingsRepository(context: Context) {
             roomExpenseIncludeInPersonal = p[ROOM_EXPENSE_INCLUDE_IN_PERSONAL] ?: true,
             roomExpenseLastSync = p[ROOM_EXPENSE_LAST_SYNC] ?: 0L,
             roomExpenseCutoffTimestamp = p[ROOM_EXPENSE_CUTOFF_TIMESTAMP] ?: 0L,
+            cohabitBaseUrl = p[COHABIT_BASE_URL] ?: "https://ais-pre-fakno4cgzgk52rt56zapwg-628972999672.asia-southeast1.run.app",
+            cohabitApiKey = p[COHABIT_API_KEY] ?: "leaftover-ozric-key-2026",
+            cohabitRoommate = p[COHABIT_ROOMMATE] ?: "Ozric",
+            cohabitLastSync = p[COHABIT_LAST_SYNC] ?: 0L,
             notificationDetection = p[NOTIFICATION_DETECTION] ?: false,
             notificationAutoSave = p[NOTIFICATION_AUTO_SAVE] ?: false,
             enabledNotificationApps = p[ENABLED_NOTIFICATION_APPS].orEmpty(),
@@ -562,6 +574,22 @@ class SettingsRepository(context: Context) {
         it[ROOM_EXPENSE_CUTOFF_TIMESTAMP] = timestamp
     }
 
+    suspend fun setCohabitBaseUrl(url: String) = store.edit {
+        it[COHABIT_BASE_URL] = url.trim()
+    }
+
+    suspend fun setCohabitApiKey(key: String) = store.edit {
+        it[COHABIT_API_KEY] = key.trim()
+    }
+
+    suspend fun setCohabitRoommate(roommate: String) = store.edit {
+        it[COHABIT_ROOMMATE] = roommate
+    }
+
+    suspend fun setCohabitLastSync(timestamp: Long) = store.edit {
+        it[COHABIT_LAST_SYNC] = timestamp
+    }
+
     suspend fun setNotificationDetection(enabled: Boolean) = store.edit {
         it[NOTIFICATION_DETECTION] = enabled
     }
@@ -750,6 +778,10 @@ class SettingsRepository(context: Context) {
         val ROOM_EXPENSE_INCLUDE_IN_PERSONAL = booleanPreferencesKey("room_expense_include_in_personal")
         val ROOM_EXPENSE_LAST_SYNC = longPreferencesKey("room_expense_last_sync")
         val ROOM_EXPENSE_CUTOFF_TIMESTAMP = longPreferencesKey("room_expense_cutoff_timestamp")
+        val COHABIT_BASE_URL = stringPreferencesKey("cohabit_base_url")
+        val COHABIT_API_KEY = stringPreferencesKey("cohabit_api_key")
+        val COHABIT_ROOMMATE = stringPreferencesKey("cohabit_roommate")
+        val COHABIT_LAST_SYNC = longPreferencesKey("cohabit_last_sync")
         val NOTIFICATION_DETECTION = booleanPreferencesKey("notification_detection")
         val NOTIFICATION_AUTO_SAVE = booleanPreferencesKey("notification_auto_save")
         val ENABLED_NOTIFICATION_APPS = stringSetPreferencesKey("enabled_notification_apps")
