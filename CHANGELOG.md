@@ -13,6 +13,156 @@ All notable changes to Leftovers. Download any version from
 - In-app updater hardened: Variant matching ensures production releases download the release APK with matching SHA-256
   checksum validation.
 
+## Unreleased
+
+- The assistant keeps your chats on the phone to come back to (History, at the top), and switching to another AI keeps the chat: the new one gets a short recap. Keep chats on this phone can be turned off, which deletes them
+- Attach a file in the assistant: a CSV, Excel sheet, PDF or text file, read on the phone with personal numbers hidden, to ask about or add from (each change still waits for Apply)
+- Getting paid (Settings → Getting paid): your UPI ID, or for friends where UPI isn't used, a payment link (PayPal.me, Revolut, Wise...) or bank details. Reminders from Money owed carry them, and the link's page and a friend's Leftovers turn them into "Pay ₹750 with UPI", which opens their UPI app with the amount in. Only what you add is shared, only with the people you remind, and never a PIN
+- Share a group split: the share button on a bill split with people sends one message to the group with each person's share; each taps their own name to see it, pay you, or add it to their Leftovers
+- Reminders for a share of a group bill say so: "your share of Dinner is ₹750 (a ₹3,000 bill split 4 ways)"
+- A clearer link preview when a reminder is shared, with its own picture and title
+- A setting opened from the search no longer stays green after it's lit up
+- The account picker's buttons stay on one line with larger text sizes
+
+## 1.10.0-rc2
+
+**A second pre-release, to try before 1.10.0.** It replaces 1.10.0-rc1 and installs over it, or over 1.9.0, keeping your data. Coming from 1.9.0, it updates the database: once it's installed, going back to 1.9.0 means uninstalling, which erases your data, so make a backup first (in 1.9.0: Settings → Data → Back up). The full 1.10.0 will install over it as usual.
+
+New since 1.10.0-rc1 (everything in rc1, below, is here too):
+
+- The phone's own AI in the regular app: each GitHub release has a second download, ending in -ai.apk, with it built in (the same app, so either installs over the other). F-Droid's version can't include Google's library, so its AI settings show where to get it
+- Add small payments automatically (Settings → Payment detection): spending from bank SMS up to an amount you choose goes straight in, under the category that place had last time. Bigger ones, money coming in, and anything that may be paying someone back still wait on Home
+- Settings is organised like a phone's: a search at the top finds any setting by name or a word for it, and the categories (Appearance, Security, Reminders & alerts, Payment detection, AI assistant, General, Backup & data, Sync, About) each open a page of their own, sliding in and back out
+
+## 1.10.0-rc1
+
+**A pre-release, to try before 1.10.0.** It installs over Leftovers and uses your data, and it updates the database: once it's installed, going back to 1.9.0 means uninstalling, which erases your data. Make a backup first (Settings → Data → Back up). The full 1.10.0 will install over it as usual.
+
+- A friend paying you back is recognised: a detected payment from someone who owes you (or to someone you owe) says "Priya paying you back?", and one tap settles it in Money owed instead of counting it as income. Names match however the bank writes them: "Ravi" saved, "Mr. RAVI KUMAR SHARMA", "Ravi K" or a UPI ID in the message; two different people never match, and when two could, the amount decides
+- The same on the add screen: typing a repayment as income offers to record it in Money owed instead
+- Bank balances from SMS (#59): when a bank message reports the balance ("Avl Bal Rs.12,000"), the account shows it next to its own, and offers to match it when they differ. Only the number is kept, never the message
+- The Accounts list shows balances as they change, not as they were when it opened
+- Help & features is the first thing in Settings, where someone new finds it
+- Tab names in the bar are never shown cut off as the selected one changes
+- Activity no longer flashes "No entries" or a stray ₹ in its total while it opens
+- Help: after Open took you to a tab, the other tabs work as usual (Home couldn't be reached, it showed that tab again)
+- Activity remembers By month or All time, the way you left it (#41)
+- No thin bright outline around the screen when a pop-up or sheet opens: the glass behind no longer draws an edge, and a sheet catches the light only along its rounded top (#58)
+- Envelope budgets by #tag: a switch on the add screen counts an entry in the envelope, so there's no tag to type, and the envelope's tag isn't shown on every row (#57)
+- Add an entry straight from the Budget screen with its + button; with an envelope budget, it already counts in it (#57)
+- A money-owed link from a friend opens straight in Leftovers when you have it; without it, the page shows what was sent and how to get Leftovers
+- Opening an entry, a sheet or a pop-up is smoother: the screen behind is blurred at a sixth of its size and drawn back up, far less work on every frame, and it looks the same
+- Home: what scrolls under the clock is frosted, so the two never run into each other
+- Home: Recent shows each split bill as one row; where its money went is on its card and in Activity
+- Move money straight from Home: the ⇄ button on the Total balance card
+- Settings is a tap away on Insights and Plan too, not only on Home
+- The buttons on the add screen say what they do: Repeat, Split, Lent, Photo
+- Insights shows "% of budget" only when your budget month is the calendar month, so it never disagrees with Plan
+- A detected payment isn't filed under a category you've hidden
+- Budget plan: with a budget month that starts mid-month, it names the dates of the month you're in now (it named one that hadn't started)
+- Removing your budget asks first
+- Send money owed to a friend who also uses Leftovers: Remind now adds a link to the message, and tapping it adds what they owe to their own Money owed, the other way round and never twice. The amounts are in the link itself; nothing goes through a server
+- Tap a transfer in Activity for its card, to change or delete it (with Undo)
+- Insights: a line about something going down has an arrow pointing down
+- Hide a category you no longer use: it's not offered when adding, and keeps its entries and history. A category in use can't be deleted, but can be hidden instead
+- With many categories, All on the add screen shows them in a grid with a search
+- An income category's switch is labelled now (Add to the month's budget), in the category's settings
+- Help: Open on a setting goes to that setting and lights it up
+- "Spending" everywhere for money going out, instead of a mix with "Expense"
+- Transfers between your accounts show in Activity on their day, neutral and left out of Spent and Income; with one account picked, the ones in and out of it, signed
+- A transfer can be dated earlier than today, for catching up; the AI assistant can date one too
+- Deleting a lent or borrowed entry asks first, as it can't be undone
+- Help & features: Open on Home, Activity, Insights or Plan opens it, and going back always returns to Help
+- Automatic backups keep the last ones you chose: each has the time in its name, so a second backup the same day no longer replaces the first
+- With a photo background, choose liquid or frosted glass (Settings → Appearance): frosted is lighter, for smooth scrolling on any phone; switching to liquid says what it costs first
+- With a photo background, buttons and fields inside pop-ups and sheets are frosted like the pop-up, not windows onto the photo
+- Your own icons: make one from any picture (a shop's logo, say) for a category, account or goal, framed with a drag and a pinch. They're kept on your phone to use again, go into backups, and a long press deletes one
+- Festival greetings and the Sunday note come with notifications, without switches of their own
+- The AI assistant's replies are glass like the cards, tinted enough to read over any photo
+- Bank statement PDFs that print the currency against the amount ("+ PKR1,000.00", "- Rs.250") import, from banks in Pakistan, Bangladesh, Sri Lanka and elsewhere
+- Checking for new versions: on opening, at most every three hours (GitHub limits how often), and when it can't check, it says why
+- Your background photo is kept: its swatch shows it, so going to Aurora and back needs no new pick
+- Updates has its own artwork behind the version, like a phone's update page, with a glass card, a bright Highlights button and Check again at the top
+- With a photo background: Activity's cards are glass too, bars are nearly clear, scrolling is smoother (no blur on every card), Pure black and turning glass off are hidden, Blur and dimming have a Reset, and a text colour that fights the photo says so
+- What's new after an update is a glass sheet with the version large on top, each change with its icon, title and line, and Continue
+- The bell opens Updates, laid out like a phone's software update page: the version large, and a glass card saying whether it's up to date, with Highlights and the update notes (or Download when a new version is out)
+- AI assistant settings: how to check whether your phone has the AI built in, step by step
+- Choose the app's background: the glow in Aurora, Ocean, Sunset, Forest or Rose, plain, or a photo of your own, shown in its own colours, with how soft and how dimmed it is up to you. Over a photo, cards are liquid glass that bends the picture at their edges (Android 13 and newer; frosted glass before that), like Apple's clear Liquid Glass, the same in light and dark. The text over a photo is white or black, picked by how bright the photo is or chosen yourself; only the text changes. Settings → Appearance
+- Choose an accent colour for buttons, switches and highlights; on the light theme it's deepened so text in it stays readable. Settings → Appearance
+- Festival greetings: on the main festivals where you live (worked out on the phone from your currency), Home says so ("Happy Diwali 🪔") and a notification comes that morning
+- A note on your week: Sunday evenings, a short note when there's something to say, such as spending down on last week, a category that changed, or no-spend days
+- Help & features, at the bottom of Settings: every feature in a line or two and where to find it, with a search ("transfer", "PDF", "backup") and a way to open each one
+- The AI assistant answers "how do I…" and "where is…" from the same guide, with the path to each feature
+- On this phone: right after the app opens, it waits for Android to start its AI ("Starting the phone's AI…") instead of saying it isn't ready, and starts it as soon as the assistant opens
+- New versions show on the bell, with its red dot, after pulling down on Home, and in Leftovers Dev whenever the app opens or Notices is opened
+- The AI assistant has its own icon, a chat bubble with a robot face, so it reads as AI
+- AI assistant settings: the connected AI with Test beside it, one-tap Switch to, and Disconnect as quiet red text
+- A long amount at the top of Home shrinks to fit instead of running off the screen
+- Accounts can be put in any order: tap Reorder in Accounts and drag them by finger. There are more icons to choose for one, too (#47)
+- Envelope budgets: a Dates budget can count only the entries chosen for it, those with a #tag like #trip and/or from one account, so rent and other spending in the same dates leave it be, in Safe to spend, the bars and the alerts too (#42)
+- The budget's spent figures leave out accounts kept out of the budget, as Safe to spend already did (#33)
+- Budget plan: Weeks, one amount for every week, two weeks, four weeks or any number of days, from a payday you choose, for people paid weekly or every two weeks; each period starts fresh (#45)
+- Backups that failed with "can no longer open that folder" after choosing it again: the app now keeps the folder for good, clears out folders it no longer uses so Android doesn't refuse, says so when Android still won't keep one, and turning Sync off no longer takes away a folder backups use too (#41)
+- Block screenshots, in Settings → Security, for a blank preview in Recents and no screenshots, without turning on App lock (#44)
+- The month heading is a month on its own in every language: "Ноябрь 2026" in Russian, not "ноября 2026" (#44)
+- A settled lent or borrowed entry shows what it was, when it was lent and paid back, the account, whether it came from a split bill, and when it was added
+- Importing statements from payment apps like PhonePe, Paytm and Google Pay: amounts come from the columns that hold amounts, not the card or account used ("Paid by XX1234" was read as an amount), PDFs that print each payment as a block are read, transfers between your own accounts are kept out, and the note is who was paid
+- Two real payments alike in one file, ₹80 at the same shop twice in a day, are both imported; only entries already in the app are skipped as duplicates
+- An import can be undone right after it, and Settings → Import entries lists recent imports, each with a Remove that moves its entries to Deleted entries, so an import that came in wrong can be taken back
+- A subscription already logged by hand or from its SMS isn't logged again, and its SMS isn't suggested once the app has logged it
+- Pulling down on Home waits 4 seconds at most for email, sync and updates; the rest finishes in the background
+- Dragging an account lifts a solid row, without a light outline
+- Activity search: typing fast no longer loses letters, several words find entries with all of them in any order ("rent 18000", "sam lunch"), account names are searched too, and a #tag filter stays on while searching
+- The PDF statement has a Money owed section: what was lent, borrowed and paid back in the month or year, as lending isn't spending and wasn't in it before; names only when notes are included
+- Reading bank SMS and emails: the amount paid, not the balance or card limit printed before it ("Avl Bal Rs.12,000 after debit of Rs.500" is ₹500); "transaction of", "payment of", "charged", "transferred" and "UPI txn" are understood; offers aren't suggested; autopay names who it's for; and receipts take the Total paid, not the Subtotal or Item total
+- bKash messages from Bangladesh are read: Send Money, Cash Out, Payment and money received, in Tk (#51)
+- Dev builds: the AI Android already keeps on 68 phones and tablets (Gemini Nano: Pixel 9, 10 and 11, Galaxy S26 and the latest Folds and Flips, OnePlus 13 and 15, recent Xiaomi, POCO, OPPO, vivo, iQOO, realme, Honor, Motorola, Sony, Sharp and Lenovo models; the full list is in the AI assistant's settings), with no key and nothing leaving the phone. Pick "On this phone" in the AI assistant to ask questions and add or edit entries (each still waits for Apply); it also sums up a month in Insights, picks a category for a payment to somewhere new, and reads bank SMS and emails the rules can't. Release and F-Droid builds don't include it, as it needs Google's closed library
+- On this phone reads photos of bills too (the camera button and photos in the chat), on phones whose built-in AI can see images
+- AI assistant: each AI keeps its own key, so switching to On this phone and back to Gemini or Claude needs no key typed again, with one-tap Switch buttons in its settings
+- AI assistant: it can make a PDF statement of a month or year, export entries to CSV, and create savings goals, from the chat
+- The assistant no longer keeps showing its dots after an instant answer
+
+## 1.9.0
+
+- Home screen widgets come in Glass, Dark or Light (Settings → Appearance), and fit any size they're made: one row high, each keeps what matters
+- Pop-ups are clearer liquid glass: the screen behind shows through
+- The Left this month widget in 50/30/20 shows Needs, Wants and Savings side by side, so they fit its size
+- Money owed: lent or borrowed can be saved without an amount, as a reminder (a laptop a friend is sending, say): it shows as amount pending and counts nowhere until it's filled in (#36)
+- 50/30/20: an option to pick Needs, Wants or Savings first when adding an expense, then one of its categories; off,
+  all categories stay in one row (#39)
+- 50/30/20: the Left this month widget shows Needs, Wants and Savings, each with how much of its part is used (#39)
+- 50/30/20 with no income set or logged splits the budget instead of reading "of ₹0" (#39)
+- Pulling down on Home also looks for a new version, when Tell me about new versions is on
+- Money owed: an entry can be paid back on its own, with Received (money lent) or Paid back (borrowed) in its editor, and the money goes back through its account
+- After an update, what's new pops up once. The bell on Home opens Notices: what's new, and a newer version when there is one
+- The AI assistant adds a split bill as one entry, with people's shares in Money owed and parts in other categories, and a bill photo across several categories becomes one split bill
+- Money owed: Remind is a bell button, so the amount owed keeps to one line
+- Bottom sheets are liquid glass like the tab bar and pop-ups (Android 13 and newer), and open on the app's own screen: they slide up over a lightly blurred screen, close with a tap outside, Back or a drag down, and move up above the keyboard
+- Split: the keyboard's done key adds the part, then the keyboard closes and the list shows it
+- Budget plan: Dates, one amount for days you choose, like two weeks or a trip, as well as monthly and yearly (#34)
+- 50/30/20, an optional budget mode: needs, wants and savings as shares of your income, with each spending
+  category in one (tap to move it in Categories) and three bars in Budget (#39)
+- A split bill shows as one entry with its parts under it, and its total (#36). With splits shown separately, each entry still says it's split, and the bill's whole amount
+- A split bill shows where its money went: a thin bar of the whole amount, white for your share, a clear colour for each part and a green for each person who owes you (an outline and a ✓ once they've paid back), with a pill for each piece to tap
+- When the budget is used up, Home counts the bills still due apart from what's spent
+- Check for a new version in Leftovers Dev looks for a newer Dev build, not a release
+- Every Dev build has its own number (1.8.2-dev.57) and is kept as its own download for a while, so you can go
+  back to an earlier one: any Dev build installs over any other, keeping your Dev data
+- Automatic backups no longer stop without a word: one that's due is also made when the app opens (some phones,
+  like HyperOS and MIUI, never run an app's background work), Settings says why the last one failed, there's Back
+  up now, and "keep 1 file" removes older ones even when a cloud folder renamed a copy (#35)
+- Editing an entry can split it, or turn it into money lent or borrowed, like adding one (#36)
+- An account can be left out of Safe to spend and the budget, or out of the All accounts balance (#33)
+- The budget month can start on any day from the 1st to the 28th, payday to payday (#34)
+- Recurring income can be interest: a yearly rate on an account's balance, worked out on the balance each time
+  it's logged (#32)
+- An account in its own currency needs its rate before it's saved. Get today's rate fills it in, and Keep rates
+  up to date fetches it daily (off unless you turn it on) (#30)
+- Payment apps: the apps being read are on top, and others can be hidden from the list, with Show hidden apps to
+  bring them back (#17)
+- Savings goals can link up to four shops, Amazon and Flipkart for example; Check prices looks at each and marks
+  the cheapest
+
 ## 1.8.2
 
 - Pop-ups open on the app's own screen instead of in a window of their own. On some phones the app under such a

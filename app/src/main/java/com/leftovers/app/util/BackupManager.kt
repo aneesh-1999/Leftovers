@@ -129,6 +129,7 @@ class BackupManager(
                 put("version", 1)
                 put("exportedAt", System.currentTimeMillis())
                 put("settings", JSONObject().apply {
+                    put("currencyCode", s.currencyCode)
                     val effectiveName = s.userName.ifBlank { s.cloudUserDisplayName.orEmpty() }
                     put("userName", effectiveName)
                     put("userPhoto", photoRef(s.userPhotoPath, forceInclude = true))
@@ -141,6 +142,18 @@ class BackupManager(
                     put("custom", BudgetPlan.encodeCustom(s.plan.custom))
                     put("carryMode", s.plan.carry.name)
                     put("extraIncome", s.plan.extraIncome)
+                    put("startDay", s.plan.startDay)
+                    put("rangeBudget", s.plan.rangeMinor)
+                    put("buckets", s.plan.buckets)
+                    put("bucketIncome", s.plan.bucketIncome)
+                    put("bucketPicker", s.plan.bucketPicker)
+                    put("periodBudget", s.plan.periodMinor)
+                    put("periodDays", s.plan.periodDays)
+                    s.plan.periodFrom?.let { put("periodFrom", it.toString()) }
+                    s.plan.rangeTag?.let { put("rangeTag", it) }
+                    s.plan.rangeAccount?.let { put("rangeAccount", it) }
+                    s.plan.rangeFrom?.let { put("rangeFrom", it.toString()) }
+                    s.plan.rangeTo?.let { put("rangeTo", it.toString()) }
                     put("carryChoices", BudgetPlan.encodeChoices(s.plan.carryChoices))
                     s.plan.carryFrom?.let { put("carryFrom", it.toString()) }
                     put("budgetAlerts", s.budgetAlerts)
@@ -160,11 +173,17 @@ class BackupManager(
                     JSONObject().put("id", c.id).put("name", c.name).put("icon", c.emoji).put("color", c.color)
                         .put("type", c.type.name).put("budget", c.budgetMinor ?: JSONObject.NULL)
                         .put("addsToBudget", c.addsToBudget)
+                        .put("bucket", c.bucket ?: JSONObject.NULL)
+                        .put("hidden", c.hidden)
                 }))
+                // Icons made from the user's own pictures: small, so always included.
+                CustomIcons.export(context, categoryList.map { it.emoji } + accountList.map { it.icon } + dao.goals().map { it.emoji })
+                    .takeIf { it.length() > 0 }?.let { put("icons", it) }
                 put("accounts", JSONArray(accountList.map { a ->
                     JSONObject().put("id", a.id).put("name", a.name).put("icon", a.icon).put("color", a.color)
                         .put("opening", a.openingMinor).put("createdAt", a.createdAt).put("smsDigits", a.smsDigits ?: JSONObject.NULL)
-.put("currency", a.currency ?: JSONObject.NULL).put("openingNative", a.openingNative ?: JSONObject.NULL)
+                        .put("currency", a.currency ?: JSONObject.NULL).put("openingNative", a.openingNative ?: JSONObject.NULL)
+                        .put("outOfBudget", a.outOfBudget).put("outOfTotal", a.outOfTotal).put("position", a.position)
                 }))
                 put("transactions", JSONArray(transactions.map { t ->
                     JSONObject().put("id", t.id).put("amount", t.amountMinor).put("type", t.type.name)
@@ -172,6 +191,7 @@ class BackupManager(
                         .put("createdAt", t.createdAt).put("accountId", t.accountId ?: JSONObject.NULL)
                         .put("receipt", photoRef(t.receiptPath))
                         .put("foreignAmount", t.foreignMinor ?: JSONObject.NULL).put("foreignCurrency", t.foreignCurrency ?: JSONObject.NULL)
+                        .put("splitOf", t.splitOf ?: JSONObject.NULL)
                 }))
                 put("transfers", JSONArray(transferList.map { t ->
                     JSONObject().put("id", t.id).put("from", t.fromAccountId).put("to", t.toAccountId).put("amount", t.amountMinor)
@@ -182,12 +202,14 @@ class BackupManager(
                         .put("categoryId", r.categoryId).put("day", r.dayOfMonth).put("start", r.startMonth)
                         .put("lastPosted", r.lastPostedMonth ?: JSONObject.NULL).put("active", r.active)
                         .put("every", r.everyMonths).put("account", r.accountId ?: JSONObject.NULL)
+                        .put("rate", r.ratePercent ?: JSONObject.NULL)
                 }))
                 put("goals", JSONArray(goalList.map { g ->
                     JSONObject().put("id", g.id).put("name", g.name).put("icon", g.emoji).put("color", g.color)
                         .put("target", g.targetMinor).put("targetMonth", g.targetMonth).put("createdAt", g.createdAt)
                         .put("link", g.link ?: JSONObject.NULL).put("linkPrice", g.linkPriceMinor ?: JSONObject.NULL)
                         .put("linkCheckedAt", g.linkCheckedAt ?: JSONObject.NULL)
+                        .put("moreLinks", g.moreLinks ?: JSONObject.NULL)
                 }))
                 put("deposits", JSONArray(depositList.map { d ->
                     JSONObject().put("id", d.id).put("goalId", d.goalId).put("amount", d.amountMinor)
@@ -196,13 +218,17 @@ class BackupManager(
                 put("debts", JSONArray(debtList.map { d ->
                     JSONObject().put("id", d.id).put("person", d.person).put("amount", d.amountMinor).put("note", d.note)
                         .put("day", d.epochDay).put("settled", d.settled).put("createdAt", d.createdAt)
-.put("dueDate", d.dueDateEpochDay ?: JSONObject.NULL)
+                        .put("dueDate", d.dueDateEpochDay ?: JSONObject.NULL)
                         .put("reminderEnabled", d.reminderEnabled)
                         .put("accountId", d.accountId ?: JSONObject.NULL)
                         .put("account", d.accountId ?: JSONObject.NULL)
                         .put("repayment", d.repayment)
                         .put("currency", d.currency ?: JSONObject.NULL)
                         .put("nativeMinor", d.nativeMinor ?: JSONObject.NULL)
+                        .put("splitOf", d.splitOf ?: JSONObject.NULL)
+                        .put("pending", d.pending)
+                        .put("settledOn", d.settledOn ?: JSONObject.NULL)
+                        .put("sharedId", d.sharedId ?: JSONObject.NULL)
                         .put("receipts", JSONArray(d.photos.map { photoRef(it) }.filter { it != JSONObject.NULL }))
                 }))
                 put("workplaces", JSONArray(workplaceList.map { w ->
@@ -293,7 +319,7 @@ class BackupManager(
      * With [sync] (another phone's sync file, always kept), entries that phone deleted or changed are removed here
      * too (into Deleted entries, so they can be brought back), and entries deleted here, listed in [mine], aren't added back.
      */
-    suspend fun import(
+    suspend fun `import`(
         source: Uri,
         typedPassword: String? = null,
         keep: Boolean = false,
@@ -304,7 +330,7 @@ class BackupManager(
             .fold({ importBytes(it, typedPassword, keep, sync, mine) }, { Result.failure(it) })
     }
 
-    /** [import], from a backup file's contents. */
+    /** [`import`], from a backup file's contents. */
     suspend fun restoreFromJsonText(text: String, typedPassword: String? = null): Result<Int> =
         importBytes(text.toByteArray(), typedPassword).map { it.entries }
 
@@ -339,6 +365,7 @@ class BackupManager(
 
             fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
 
+            CustomIcons.restore(context, json.optJSONObject("icons"))
             // Photos saved in the backup, written back to private storage on demand.
             val savedPhotos = json.optJSONObject("photos")
             val restoredPhotos = mutableMapOf<String, String>()
@@ -354,13 +381,14 @@ class BackupManager(
                 val name = it.optString("name", "Category")
                 // Older backups predate the flag: use the same default as the database migration.
                 val adds = it.optBoolean("addsToBudget", type == TxType.INCOME && name != "Salary")
-                Category(it.optLong("id", 0L), name, it.optString("icon", "📦"), it.optLong("color", 0xFF00897BL), type, it.longOrNull("budget"), adds)
+                Category(it.optLong("id", 0L), name, it.optString("icon", "📦"), it.optLong("color", 0xFF00897BL), type, it.longOrNull("budget"), adds, it.stringOrNull("bucket"), it.optBoolean("hidden", false))
             }
             val accounts = json.optJSONArray("accounts")?.objects().orEmpty().map {
                 Account(
                     it.optLong("id", 0L), it.optString("name", "Account"), it.optString("icon", "💳"), it.optLong("color", 0xFF00897BL),
                     it.optLong("opening", 0L), it.optLong("createdAt", System.currentTimeMillis()), it.stringOrNull("smsDigits"),
                     currency = it.stringOrNull("currency"), openingNative = it.longOrNull("openingNative"),
+                    outOfBudget = it.optBoolean("outOfBudget"), outOfTotal = it.optBoolean("outOfTotal"), position = it.optInt("position"),
                 )
             }
             val transactions = json.optJSONArray("transactions")?.objects().orEmpty().map {
@@ -376,6 +404,7 @@ class BackupManager(
                     receiptPath = restorePhoto(it.optString("receipt")),
                     foreignMinor = it.longOrNull("foreignAmount"),
                     foreignCurrency = it.stringOrNull("foreignCurrency"),
+                    splitOf = it.longOrNull("splitOf"),
                 )
             }
             val transfers = json.optJSONArray("transfers")?.objects().orEmpty().map {
@@ -394,6 +423,7 @@ class BackupManager(
                     active = it.optBoolean("active", true),
                     everyMonths = it.optInt("every", 1),
                     accountId = it.longOrNull("account"),
+                    ratePercent = it.stringOrNull("rate"),
                 )
             }
             val goals = json.optJSONArray("goals")?.objects().orEmpty().map {
@@ -401,6 +431,7 @@ class BackupManager(
                     it.optLong("id", 0L), it.optString("name", ""), it.optString("icon", "🎯"), it.optLong("color", 0xFF00897BL),
                     it.optLong("target", 0L), it.optString("targetMonth", ""), it.optLong("createdAt", System.currentTimeMillis()),
                     link = it.stringOrNull("link"), linkPriceMinor = it.longOrNull("linkPrice"), linkCheckedAt = it.longOrNull("linkCheckedAt"),
+                    moreLinks = it.stringOrNull("moreLinks"),
                 )
             }
             val deposits = json.optJSONArray("deposits")?.objects().orEmpty().map {
@@ -424,6 +455,10 @@ class BackupManager(
                     repayment = it.optBoolean("repayment", false),
                     currency = it.optString("currency").takeIf { s -> s.isNotBlank() && s != "null" },
                     nativeMinor = it.longOrNull("nativeMinor"),
+                    splitOf = it.longOrNull("splitOf"),
+                    pending = it.optInt("pending", 0),
+                    settledOn = it.longOrNull("settledOn"),
+                    sharedId = it.stringOrNull("sharedId"),
                 )
             }
             val workplaces = json.optJSONArray("workplaces")?.objects().orEmpty().map {
@@ -633,12 +668,9 @@ class BackupManager(
             ReceiptStore.deleteAllExcept(context, (transactions.mapNotNull { it.receiptPath } + debts.flatMap { it.photos } + remittances.mapNotNull { it.receiptPath } + listOfNotNull(userPhoto)).toSet())
 
             json.optJSONObject("settings")?.let { s ->
-                val currentSettings = settings.settings.first()
-                val currency = s.optString("currency", "EUR")
-                val userName = s.optString("userName", "").ifBlank {
-                    currentSettings.userName.ifBlank { currentSettings.cloudUserDisplayName.orEmpty() }
-                }
-                val theme = com.leftovers.app.data.ThemeMode.entries.firstOrNull { it.name == s.optString("themeMode") } ?: com.leftovers.app.data.ThemeMode.SYSTEM
+                val currency = s.optString("currencyCode").ifBlank { s.optString("currency", "EUR") }
+                val userName = s.optString("userName", "")
+                val theme = com.leftovers.app.data.ThemeMode.entries.firstOrNull { it.name == s.optString("themeMode") || it.name == s.optString("theme") } ?: com.leftovers.app.data.ThemeMode.SYSTEM
                 val dynamicColor = s.optBoolean("dynamicColor", false)
                 val plan = BudgetPlan(
                     mode = com.leftovers.app.data.BudgetMode.entries.firstOrNull { it.name == s.optString("budgetMode") } ?: com.leftovers.app.data.BudgetMode.MONTHLY,
@@ -648,6 +680,18 @@ class BackupManager(
                     custom = BudgetPlan.decodeCustom(s.optString("custom")),
                     carry = CarryMode.entries.firstOrNull { it.name == s.optString("carryMode") } ?: CarryMode.ASK,
                     extraIncome = s.optBoolean("extraIncome", false),
+                    startDay = s.optInt("startDay", 1),
+                    rangeMinor = s.optLong("rangeBudget", 0),
+                    buckets = s.optBoolean("buckets", false),
+                    bucketIncome = s.optLong("bucketIncome", 0),
+                    bucketPicker = s.optBoolean("bucketPicker", false),
+                    periodMinor = s.optLong("periodBudget", 0),
+                    periodDays = s.optInt("periodDays", 14),
+                    periodFrom = s.optString("periodFrom").takeIf { it.isNotEmpty() }?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() },
+                    rangeTag = s.optString("rangeTag").takeIf { it.isNotEmpty() },
+                    rangeAccount = if (s.has("rangeAccount")) s.optLong("rangeAccount") else null,
+                    rangeFrom = s.optString("rangeFrom").takeIf { it.isNotEmpty() }?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() },
+                    rangeTo = s.optString("rangeTo").takeIf { it.isNotEmpty() }?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() },
                     carryChoices = BudgetPlan.decodeChoices(s.optString("carryChoices")),
                     carryFrom = s.optString("carryFrom").takeIf { it.isNotEmpty() }?.let { runCatching { YearMonth.parse(it) }.getOrNull() },
                 )

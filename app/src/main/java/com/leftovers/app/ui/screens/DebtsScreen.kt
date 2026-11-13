@@ -8,6 +8,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -67,6 +72,8 @@ import com.leftovers.app.ui.AppViewModelProvider
 import com.leftovers.app.ui.icons.CategoryIcons
 import com.leftovers.app.ui.components.sharedContainer
 import com.leftovers.app.ui.components.Chip
+import com.leftovers.app.ui.components.RoundButton
+import com.leftovers.app.ui.components.SecondaryButton
 import com.leftovers.app.ui.components.EmptyState
 import com.leftovers.app.ui.components.Glass
 import com.leftovers.app.ui.components.GlassScreen
@@ -103,6 +110,11 @@ class DebtsViewModel(
     accountRepository: com.leftovers.app.data.AccountRepository,
     private val settings: com.leftovers.app.data.SettingsRepository,
 ) : ViewModel() {
+    /** How friends can pay you back, put in your reminders. */
+    val pay: StateFlow<com.leftovers.app.util.SharedOwed.Pay?> =
+        settings.payDetailsFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    fun setPay(pay: com.leftovers.app.util.SharedOwed.Pay) = viewModelScope.launch { settings.setPayDetails(com.leftovers.app.util.SharedOwed.clean(pay)) }
+
     val accounts: StateFlow<List<com.leftovers.app.data.AccountWithBalance>> =
         accountRepository.accounts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val defaultAccountId: StateFlow<Long?> =
@@ -123,6 +135,7 @@ class DebtsViewModel(
 
     fun save(debt: Debt) = viewModelScope.launch { planning.saveDebt(debt) }
     fun delete(debt: Debt) = viewModelScope.launch { planning.deleteDebt(debt) }
+    fun settleEntry(debt: Debt) = viewModelScope.launch { planning.settleEntry(debt) }
     fun settle(person: String) = viewModelScope.launch { planning.settle(person) }
     fun setForeignRate(code: String, rate: String) = viewModelScope.launch { settings.setForeignRate(code, rate) }
     fun settleUp(person: String, amountMinor: Long, accountId: Long?, currency: String? = null, nativeMinor: Long? = null) =
@@ -146,6 +159,8 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
     val money = LocalMoney.current
     var editing by remember { mutableStateOf<Debt?>(null) }
     var settling by remember { mutableStateOf<String?>(null) }
+    val pay by viewModel.pay.collectAsStateWithLifecycle()
+    var editingPay by remember { mutableStateOf(false) }
     val view = androidx.compose.ui.platform.LocalView.current
     val owedToYou = balances.filter { it.netMinor > 0 }.sumOf { it.netMinor }
     val youOwe = balances.filter { it.netMinor < 0 }.sumOf { -it.netMinor }
@@ -193,6 +208,21 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                     }
                 }
             }
+            // Someone owes you: your UPI ID or payment link can go in the reminder, so paying you back is one tap for them.
+            if (owedToYou > 0 && pay != null) {
+                item(key = "pay") {
+                    val p = pay!!
+                    Glass(Modifier.fillMaxWidth().appear(1), shape = RoundedCornerShape(26.dp)) {
+                        com.leftovers.app.ui.components.ListRow(
+                            if (p.isEmpty) "Get paid back in one tap" else "Reminders say how to pay you",
+                            subtitle = if (p.isEmpty) "Add your UPI ID or a payment link" else listOf(p.upi, p.linkHost).filter { it.isNotBlank() }.joinToString(" · "),
+                            leading = { com.leftovers.app.ui.components.IconTile(Lucide.Wallet, c.positive, size = 38.dp) },
+                            trailing = { androidx.compose.material3.Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp)) },
+                            onClick = { editingPay = true },
+                        )
+                    }
+                }
+            }
             items(balances, key = { it.person.lowercase() }) { b ->
                 val singleForeign = b.entries.mapNotNull { it.currency?.takeIf { cur -> cur != money.currency.currencyCode } }.distinct().singleOrNull()
                     ?.takeIf { sf -> b.entries.all { e -> e.currency == sf } }
@@ -202,12 +232,14 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                     when {
                         fNet > 0 -> "Owes you ${fMoney.format(fNet)} (≈ ${money.format(b.netMinor)})"
                         fNet < 0 -> "You owe ${fMoney.format(-fNet)} (≈ ${money.format(-b.netMinor)})"
+                        b.pendingOnly -> "Amount pending"
                         else -> "Even"
                     }
                 } else {
                     when {
                         b.netMinor > 0 -> "Owes you ${money.format(b.netMinor)}"
                         b.netMinor < 0 -> "You owe ${money.format(-b.netMinor)}"
+                        b.pendingOnly -> "Amount pending"
                         else -> "Even"
                     }
                 }
@@ -215,7 +247,7 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                     Column(Modifier.padding(vertical = 8.dp)) {
                         Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(b.person, style = MaterialTheme.typography.titleMedium, color = c.textPrimary)
+                                Text(b.person, style = MaterialTheme.typography.titleMedium, color = c.textPrimary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                                 Text(
                                     balanceSubtitle,
                                     style = MaterialTheme.typography.bodyMedium,
@@ -225,6 +257,8 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                             // Someone who owes you can be reminded, in a message you send from WhatsApp, SMS or any app.
                             if (b.netMinor > 0) {
                                 val context = androidx.compose.ui.platform.LocalContext.current
+                                Spacer(Modifier.padding(start = 12.dp))
+                                val remindScope = rememberCoroutineScope()
                                 val remFormat: (Long) -> String = if (singleForeign != null) {
                                     val fMoney = com.leftovers.app.util.Money(singleForeign)
                                     val fTotal = b.entries.sumOf { it.nativeAmount }
@@ -233,10 +267,13 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                                 } else {
                                     { amt: Long -> money.format(amt) }
                                 }
-                                Chip("Remind", { com.leftovers.app.util.DebtReminder.share(context, com.leftovers.app.util.DebtReminder.message(b, remFormat), b.person) }, icon = Lucide.Bell)
+                                RoundButton(Lucide.Bell, "Remind ${b.person}", {
+                                    remindScope.launch { com.leftovers.app.util.DebtReminder.share(context, com.leftovers.app.util.DebtReminder.withLink(context, b, money.currency.currencyCode, remFormat), b.person) }
+                                })
                                 Spacer(Modifier.padding(start = 8.dp))
                             }
-                            Chip("Pay back", { settling = b.person }, icon = Lucide.Check)
+                            // Nothing to pay back until an amount is in.
+                            if (!b.pendingOnly) Chip(if (b.netMinor > 0) "Received" else "Paid back", { settling = b.person }, icon = Lucide.Check)
                         }
                         b.entries.forEach { d ->
                             RowDivider(inset = 16.dp)
@@ -248,6 +285,7 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                                 Column(Modifier.weight(1f)) {
                                     val account = accounts.firstOrNull { it.id == d.accountId }
                                     val details = listOfNotNull(
+                                        "Split".takeIf { d.splitOf != null },
                                         d.note.ifBlank { null },
                                         account?.let { if (d.amountMinor > 0) "From ${it.name}" else "To ${it.name}" },
                                         LocalDate.ofEpochDay(d.epochDay).friendlyLabel(),
@@ -297,7 +335,8 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
                                 val entryMoney = d.currency?.let { com.leftovers.app.util.Money(it) } ?: money
                                 val displayAmount = abs(d.nativeAmount)
                                 Text(
-                                    (if (d.repayment) "Paid back " else if (d.amountMinor > 0) "Lent " else "Borrowed ") + entryMoney.format(displayAmount),
+                                    if (d.isPending) (if (d.theyOwe) "Lent · amount pending" else "Borrowed · amount pending")
+                                    else (if (d.repayment) (if (d.amountMinor < 0) "Received " else "Paid back ") else if (d.amountMinor > 0) "Lent " else "Borrowed ") + entryMoney.format(displayAmount),
                                     style = MaterialTheme.typography.labelLarge,
                                     color = c.textPrimary,
                                 )
@@ -319,6 +358,7 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
         }
     }
 
+    if (editingPay) PayDetailsSheet(pay ?: com.leftovers.app.util.SharedOwed.Pay(), onSave = { viewModel.setPay(it); editingPay = false }, onDismiss = { editingPay = false })
     editing?.let { debt ->
         DebtEditor(
             initial = debt,
@@ -340,7 +380,44 @@ fun DebtsScreen(onBack: () -> Unit, viewModel: DebtsViewModel = viewModel(factor
             } else {
                 null
             },
+            onSettle = {
+                viewModel.settleEntry(it)
+                editing = null
+            },
         )
+    }
+}
+
+/** A settled entry's story: what it was, when it was lent or borrowed and paid back, the account, and where it came from. */
+@Composable
+private fun SettledDetails(d: Debt, accounts: List<com.leftovers.app.data.AccountWithBalance>) {
+    val c = LocalAppColors.current
+    val money = com.leftovers.app.util.LocalMoney.current
+    val lent = d.theyOwe
+    val rows = listOfNotNull(
+        (if (lent) "Lent" else "Borrowed") to money.format(abs(d.amountMinor)),
+        "On" to LocalDate.ofEpochDay(d.epochDay).friendlyLabel(),
+        "Settled" to (d.settledOn?.let { LocalDate.ofEpochDay(it).friendlyLabel() } ?: "Paid back"),
+        (if (lent) "Paid from" else "Received into") to (accounts.firstOrNull { it.id == d.accountId }?.name ?: "No account"),
+        ("From" to "A split bill").takeIf { d.splitOf != null },
+        "Added" to java.time.Instant.ofEpochMilli(d.createdAt).atZone(java.time.ZoneId.systemDefault()).let {
+            it.toLocalDate().friendlyLabel() + " · " + it.toLocalTime().format(java.time.format.DateTimeFormatter.ofLocalizedTime(java.time.format.FormatStyle.SHORT))
+        },
+    )
+    com.leftovers.app.ui.components.Glass(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Lucide.Check, contentDescription = null, tint = c.positive, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (lent) "Received · settled" else "Paid back · settled", style = MaterialTheme.typography.titleSmall, color = c.positive)
+            }
+            rows.forEach { (label, value) ->
+                Row {
+                    Text(label, style = MaterialTheme.typography.bodyMedium, color = c.textSecondary, modifier = Modifier.weight(1f))
+                    Text(value, style = MaterialTheme.typography.bodyMedium, color = c.textPrimary)
+                }
+            }
+        }
     }
 }
 
@@ -352,6 +429,8 @@ fun DebtEditor(
     onDismiss: () -> Unit,
     onSave: (Debt) -> Unit,
     onDelete: (() -> Unit)?,
+    /** This entry paid back in full, with any changes made here: Received for money lent, Paid back for borrowed. */
+    onSettle: ((Debt) -> Unit)? = null,
     accounts: List<com.leftovers.app.data.AccountWithBalance> = emptyList(),
     defaultAccountId: Long? = null,
     rates: Map<String, String> = emptyMap(),
@@ -368,7 +447,7 @@ fun DebtEditor(
             else initial.accountId,
         )
     }
-    var lent by rememberSaveable { mutableStateOf(initial.amountMinor >= 0) }
+    var lent by rememberSaveable { mutableStateOf(initial.id == 0L && initial.amountMinor == 0L || initial.theyOwe) }
     var person by rememberSaveable { mutableStateOf(initial.person) }
 
     // Multi-currency support
@@ -451,6 +530,8 @@ fun DebtEditor(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(if (initial.id == 0L) "Lent or borrowed" else initial.person, style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+            // Paid back already: what it was, when, and through which account, before anything to change.
+            if (initial.settled && !initial.repayment) SettledDetails(initial, accounts)
             SegmentedToggle(listOf(true, false), lent, { if (it) "I lent" else "I borrowed" }, { lent = it }, Modifier.fillMaxWidth())
             GlassTextField(person, { person = it.take(30) }, placeholder = "e.g. Nick", label = if (lent) "To" else "From")
             val matches = people.filter { it.contains(person.trim(), ignoreCase = true) && !it.equals(person.trim(), ignoreCase = true) }.take(6)
@@ -459,9 +540,9 @@ fun DebtEditor(
                     matches.forEach { Chip(it, { person = it }) }
                 }
             }
-
             val curSymbol = currency?.let { com.leftovers.app.util.Money(it).symbol } ?: homeMoney.symbol
-            MoneyField(amountText, { amountText = it }, label = "Amount", symbol = curSymbol)
+            val rawMinorInput = AmountInput.toMinor(amountText) ?: 0L
+            MoneyField(amountText, { amountText = it }, label = if (rawMinorInput > 0) "Amount" else "Amount (leave empty if you don't know it yet)", symbol = curSymbol)
 
             ListRow(
                 "Currency",
@@ -655,38 +736,43 @@ fun DebtEditor(
             }
             Spacer(Modifier.height(2.dp))
             val rawAmount = AmountInput.toMinor(amountText) ?: 0L
-            PrimaryButton(
-                "Save",
-                {
-                    // Photos removed while editing are deleted once the change is saved.
-                    original.filter { it !in photos }.forEach { ReceiptStore.delete(it) }
-                    val isForeign = currency != null && currency != appCurrency
-                    val convertedMinor = if (isForeign && rate.isNotBlank()) {
-                        val conv = toAppCurrency(rawAmount, rate)
-                        if (conv > 0) conv else rawAmount
-                    } else rawAmount
+            fun edited(): Debt {
+                original.filter { it !in photos }.forEach { ReceiptStore.delete(it) }
+                val isForeign = currency != null && currency != appCurrency
+                val convertedMinor = if (isForeign && rate.isNotBlank()) {
+                    val conv = toAppCurrency(rawAmount, rate)
+                    if (conv > 0) conv else rawAmount
+                } else rawAmount
 
-                    if (isForeign && rate.isNotBlank()) {
-                        onSaveRate?.invoke(currency!!, rate.trim())
-                    }
+                if (isForeign && rate.isNotBlank()) {
+                    onSaveRate?.invoke(currency!!, rate.trim())
+                }
 
-                    onSave(
-                        initial.copy(
-                            person = person.trim(),
-                            amountMinor = if (lent) convertedMinor else -convertedMinor,
-                            currency = if (isForeign) currency else null,
-                            nativeMinor = if (isForeign) (if (lent) rawAmount else -rawAmount) else null,
-                            note = note.trim(),
-                            receiptPath = photosToPath(photos),
-                            dueDateEpochDay = dueDateEpochDay,
-                            reminderEnabled = reminderEnabled && dueDateEpochDay != null,
-                            accountId = accountId,
-                        ),
+                return initial.copy(
+                    person = person.trim(),
+                    amountMinor = if (lent) convertedMinor else -convertedMinor,
+                    currency = if (isForeign) currency else null,
+                    nativeMinor = if (isForeign) (if (lent) rawAmount else -rawAmount) else null,
+                    note = note.trim(),
+                    receiptPath = photosToPath(photos),
+                    dueDateEpochDay = dueDateEpochDay,
+                    reminderEnabled = reminderEnabled && dueDateEpochDay != null,
+                    accountId = accountId,
+                    pending = if (rawAmount > 0) 0 else if (lent) 1 else -1,
+                )
+            }
+            val ready = person.isNotBlank()
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (onSettle != null && initial.id != 0L && !initial.settled && !initial.repayment && rawAmount > 0) {
+                    SecondaryButton(
+                        if (lent) "Received" else "Paid back",
+                        { if (ready) onSettle(edited()) },
+                        Modifier.weight(1f),
+                        icon = Lucide.Check,
                     )
-                },
-                Modifier.fillMaxWidth(),
-                enabled = person.isNotBlank() && rawAmount > 0,
-            )
+                }
+                PrimaryButton("Save", { onSave(edited()) }, Modifier.weight(1f), enabled = ready)
+            }
             viewing?.let { p ->
                 ReceiptViewer(p, onDismiss = { viewing = null }, onRemove = {
                     if (p !in original) ReceiptStore.delete(p)
@@ -694,12 +780,27 @@ fun DebtEditor(
                 })
             }
             if (onDelete != null) {
+                // Asked first: it can't be undone (its photos go with it).
+                var askDelete by remember { mutableStateOf(false) }
                 Text(
                     "Delete",
                     style = MaterialTheme.typography.labelLarge,
                     color = c.negative,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).pressable(onDelete),
+                    modifier = Modifier.align(Alignment.CenterHorizontally).pressable({ askDelete = true }),
                 )
+                if (askDelete) {
+                    GlassAlertDialog(
+                        onDismissRequest = { askDelete = false },
+                        title = { Text("Delete this entry?") },
+                        text = { Text("It can't be brought back${if (photos.isNotEmpty()) ", and its photos go with it" else ""}.", color = c.textSecondary) },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(onClick = { askDelete = false; onDelete() }) { Text("Delete", color = c.negative) }
+                        },
+                        dismissButton = {
+                            androidx.compose.material3.TextButton(onClick = { askDelete = false }) { Text("Cancel", color = c.textSecondary) }
+                        },
+                    )
+                }
             }
         }
     }
@@ -782,7 +883,7 @@ fun SettleSheet(
             }
             Spacer(Modifier.height(2.dp))
             PrimaryButton(
-                if (all) "Settle up" else "Save ${entryMoney.format(typedAmount)} paid back",
+                if (all) "Settle up" else "Save ${entryMoney.format(typedAmount)} ${if (theyPay) "received" else "paid back"}",
                 {
                     val paidNative = minOf(typedAmount, totalOwedNative)
                     val paidBase = if (totalOwedNative > 0) {

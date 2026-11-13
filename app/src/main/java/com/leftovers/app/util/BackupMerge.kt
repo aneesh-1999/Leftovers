@@ -61,7 +61,7 @@ object BackupMerge {
                 skipped++
                 return@mapNotNull null
             }
-            t.copy(id = transactionIds.next(), categoryId = category, accountId = account(t.accountId))
+            t.copy(id = transactionIds.next(), categoryId = category, accountId = account(t.accountId), splitOf = null)
         }
 
         val haveTransfers = existing.transfers.map { listOf(it.epochDay, it.amountMinor, it.fromAccountId, it.toAccountId) }.toMutableSet()
@@ -100,7 +100,7 @@ object BackupMerge {
         val debtIds = nextIds(existing.debts.map { it.id })
         val newDebts = backup.debts.mapNotNull { d ->
             if (!haveDebts.add(listOf(key(d.person), d.epochDay, d.amountMinor, key(d.note)))) return@mapNotNull null
-            d.copy(id = debtIds.next(), accountId = account(d.accountId))
+            d.copy(id = debtIds.next(), accountId = account(d.accountId), splitOf = null)
         }
 
         return Plan(Data(newCategories, newAccounts, newTransactions, newTransfers, newRecurring, newGoals, newDeposits, newDebts), skipped)

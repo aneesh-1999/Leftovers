@@ -35,8 +35,21 @@ data class Recurring(
     @ColumnInfo(defaultValue = "1") val everyMonths: Int = 1,
     /** The account it's paid from or into; null uses the default account. */
     val accountId: Long? = null,
+    /**
+     * Interest (#32): the yearly rate in percent ("3.5"). Each time it's logged, the amount is that rate on the
+     * account's balance for the months it covers; [amountMinor] then holds an estimate at the latest balance.
+     */
+    val ratePercent: String? = null,
 ) {
     val yearly: Boolean get() = everyMonths == 12
+
+    /** What [balanceMinor] earns for one payment at [ratePercent], or null when this isn't interest. */
+    fun interestOn(balanceMinor: Long): Long? {
+        val rate = ratePercent?.toBigDecimalOrNull()?.takeIf { it.signum() > 0 } ?: return null
+        if (balanceMinor <= 0) return 0
+        return java.math.BigDecimal.valueOf(balanceMinor).multiply(rate).multiply(java.math.BigDecimal.valueOf(everyMonths.toLong()))
+            .divide(java.math.BigDecimal.valueOf(1200), 0, java.math.RoundingMode.HALF_UP).toLong()
+    }
 
     fun chargeDate(month: YearMonth): LocalDate = month.atDay(dayOfMonth.coerceAtMost(month.lengthOfMonth()))
 
@@ -83,8 +96,9 @@ data class RecurringItem(
     val categoryEmoji: String,
     val categoryColor: Long,
     val accountCurrency: String? = null,
+    val ratePercent: String? = null,
 ) {
-    fun toRecurring() = Recurring(id, name, amountMinor, type, categoryId, dayOfMonth, startMonth, lastPostedMonth, active, everyMonths, accountId)
+    fun toRecurring() = Recurring(id, name, amountMinor, type, categoryId, dayOfMonth, startMonth, lastPostedMonth, active, everyMonths, accountId, ratePercent)
 
     /**
      * True when an entry looks like one this subscription logged: same type and category, and the same name.
@@ -108,7 +122,28 @@ data class Goal(
     val link: String? = null,
     val linkPriceMinor: Long? = null,
     val linkCheckedAt: Long? = null,
+    /** More shops selling the same thing (Flipkart as well as Amazon), as [ShopLink.encode]d JSON. */
+    val moreLinks: String? = null,
 )
+
+/** One shop's page for a goal, and the price last found there and when. */
+data class ShopLink(val url: String, val priceMinor: Long? = null, val checkedAt: Long? = null) {
+    val shop: String get() = runCatching { java.net.URI(url).host.orEmpty().removePrefix("www.").removePrefix("m.") }.getOrDefault("").ifBlank { "Product page" }
+
+    companion object {
+        fun encode(links: List<ShopLink>): String? = links.takeIf { it.isNotEmpty() }?.let { list ->
+            org.json.JSONArray(list.map { org.json.JSONObject().put("url", it.url).put("price", it.priceMinor ?: org.json.JSONObject.NULL).put("at", it.checkedAt ?: org.json.JSONObject.NULL) }).toString()
+        }
+
+        fun decode(json: String?): List<ShopLink> = runCatching {
+            val a = org.json.JSONArray(json ?: return emptyList())
+            (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                ShopLink(o.getString("url"), if (o.isNull("price")) null else o.getLong("price"), if (o.isNull("at")) null else o.getLong("at"))
+            }
+        }.getOrDefault(emptyList())
+    }
+}
 
 /** Money put into (positive) or taken out of (negative) a goal. */
 @Entity(
@@ -138,8 +173,12 @@ data class GoalWithSaved(
     val link: String? = null,
     val linkPriceMinor: Long? = null,
     val linkCheckedAt: Long? = null,
+    val moreLinks: String? = null,
 ) {
-    fun toGoal() = Goal(id, name, emoji, color, targetMinor, targetMonth, createdAt, link, linkPriceMinor, linkCheckedAt)
+    fun toGoal() = Goal(id, name, emoji, color, targetMinor, targetMonth, createdAt, link, linkPriceMinor, linkCheckedAt, moreLinks)
+
+    /** Every shop's page for this goal: the first link, then the others. */
+    val links: List<ShopLink> get() = listOfNotNull(link?.let { ShopLink(it, linkPriceMinor, linkCheckedAt) }) + ShopLink.decode(moreLinks)
 
     val remainingMinor: Long get() = (targetMinor - savedMinor).coerceAtLeast(0)
     val fraction: Float get() = if (targetMinor > 0) (savedMinor.toFloat() / targetMinor).coerceIn(0f, 1f) else 0f

@@ -3,13 +3,25 @@ package com.leftovers.app.ui.screens
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.net.Uri
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.clip
 import kotlinx.coroutines.flow.first
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
+import com.leftovers.app.ui.components.pressable
 import androidx.compose.animation.core.spring
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.widthIn
@@ -119,13 +131,22 @@ fun TransactionItem.timeLabel(): String =
     Instant.ofEpochMilli(createdAt).atZone(ZoneId.systemDefault()).toLocalTime().format(com.leftovers.app.util.timeFormatter(com.leftovers.app.util.LocalUse24Hour.current))
 
 @Composable
-fun TransactionRow(item: TransactionItem, onClick: () -> Unit, subtitle: String = item.timeLabel(), modifier: Modifier = Modifier) {
+fun TransactionRow(
+    item: TransactionItem,
+    onClick: () -> Unit,
+    subtitle: String = item.timeLabel(),
+    modifier: Modifier = Modifier,
+    /** A split bill's whole amount, shown small under this entry's share of it. */
+    wholeMinor: Long? = null,
+) {
     val baseMoney = LocalMoney.current
     val money = item.accountCurrency?.let { com.leftovers.app.util.Money(it) } ?: baseMoney
     val c = LocalAppColors.current
     // The note's words as the title; its tags after the category, on their own.
     val text = com.leftovers.app.data.noteText(item.note)
-    val tags = com.leftovers.app.data.hashtags(item.note)
+    // The envelope budget's own tag is shown by the budget, not on every row (#57).
+    val envelopeTag = LocalEnvelopeTag.current
+    val tags = com.leftovers.app.data.hashtags(item.note).filter { it != envelopeTag }
     val hasNote = text.isNotBlank()
     ListRow(
         title = if (hasNote) text else item.categoryName,
@@ -144,12 +165,15 @@ fun TransactionRow(item: TransactionItem, onClick: () -> Unit, subtitle: String 
                 val foreign = item.foreignMinor
                 val code = item.foreignCurrency
                 val photo = item.receiptPath != null
-                if ((foreign != null && code != null) || photo) {
+                if ((foreign != null && code != null) || photo || wholeMinor != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (photo) Icon(com.leftovers.app.ui.icons.Lucide.Camera, contentDescription = "Has a photo", tint = c.textTertiary, modifier = Modifier.size(13.dp))
                         if (foreign != null && code != null) {
                             if (photo) Spacer(Modifier.width(5.dp))
                             Text(com.leftovers.app.util.Money(code).format(foreign), style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                        } else if (wholeMinor != null) {
+                            if (photo) Spacer(Modifier.width(5.dp))
+                            Text("of ${money.format(wholeMinor)}", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
                         }
                     }
                 }
@@ -174,7 +198,11 @@ fun GlassTextField(
     /** Masks the text and keeps it out of keyboard suggestions, for secrets like API keys. */
     password: Boolean = false,
     singleLine: Boolean = true,
+    /** The keyboard's ✓ key does this, when given. */
+    onDone: (() -> Unit)? = null,
 ) {
+    // The text field keeps the actions it was first given; this always runs the latest one.
+    val latestOnDone by androidx.compose.runtime.rememberUpdatedState(onDone)
     val c = LocalAppColors.current
     Column(modifier) {
         if (label != null) {
@@ -200,7 +228,9 @@ fun GlassTextField(
                             keyboardType = if (password && keyboardType == KeyboardType.Text) KeyboardType.Password else keyboardType,
                             capitalization = if (keyboardType == KeyboardType.Text && !password) KeyboardCapitalization.Sentences else KeyboardCapitalization.None,
                             autoCorrectEnabled = !password,
+                            imeAction = if (onDone != null) androidx.compose.ui.text.input.ImeAction.Done else androidx.compose.ui.text.input.ImeAction.Default,
                         ),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { latestOnDone?.invoke() }),
                         modifier = Modifier
                             .fillMaxWidth()
                             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
@@ -241,7 +271,7 @@ fun GlassTextField(
 }
 
 @Composable
-fun MoneyField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, label: String? = null, large: Boolean = false, focusRequester: FocusRequester? = null, symbol: String? = null) {
+fun MoneyField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, label: String? = null, large: Boolean = false, focusRequester: FocusRequester? = null, symbol: String? = null, onDone: (() -> Unit)? = null) {
     GlassTextField(
         value = value,
         onValueChange = { raw -> AmountInput.sanitize(raw)?.let(onValueChange) },
@@ -252,6 +282,7 @@ fun MoneyField(value: String, onValueChange: (String) -> Unit, modifier: Modifie
         textStyle = if (large) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
         modifier = modifier,
         focusRequester = focusRequester,
+        onDone = onDone,
     )
 }
 
@@ -315,7 +346,7 @@ fun GlassAlertDialog(
         onDismissRequest = onDismissRequest,
         confirmButton = {
             BlurBehindDialog(blurs, appear)
-            confirmButton()
+            androidx.compose.runtime.CompositionLocalProvider(com.leftovers.app.ui.components.LocalInOverlay provides true) { confirmButton() }
         },
         dismissButton = dismissButton,
         title = title,
@@ -413,6 +444,15 @@ private fun BlurBehindDialog(enabled: Boolean, appear: Animatable<Float, Animati
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlassSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    // Liquid glass, like the tab bar and pop-ups: drawn on the app's own screen so it can bend it. Not from
+    // inside a dialog, which is a window of its own and would be drawn over the sheet.
+    val layer = com.leftovers.app.ui.components.LocalPopupLayer.current
+    val liquid = com.leftovers.app.ui.components.LocalScreenBackdrop.current
+    val inDialog = LocalView.current.parent is DialogWindowProvider
+    if (layer != null && liquid != null && !inDialog) {
+        LiquidSheet(layer, liquid, onDismiss, content)
+        return
+    }
     val c = LocalAppColors.current
     // Sheets hold forms, so they stay more solid than dialogs even with the screen blurred behind.
     val blurs = rememberWindowBlur()
@@ -439,7 +479,9 @@ fun GlassSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
         },
     ) {
         BlurBehindDialog(blurs)
-        Box(Modifier.navigationBarsPadding()) { content() }
+        Box(Modifier.navigationBarsPadding()) {
+            androidx.compose.runtime.CompositionLocalProvider(com.leftovers.app.ui.components.LocalInOverlay provides true) { content() }
+        }
     }
 }
 
@@ -824,11 +866,11 @@ fun MorphCard(
                                 shape = { com.kyant.shapes.RoundedRectangle(30.dp) },
                                 effects = {
                                     vibrancy()
-                                    // Frosted inside, so icons and switches behind never show through the text.
-                                    blur(28.dp.toPx())
+                                    // Clear glass: what's behind shows through, softened just enough for the text on it.
+                                    blur(10.dp.toPx())
                                     lens(22.dp.toPx(), 44.dp.toPx(), chromaticAberration = true)
                                 },
-                                onDrawSurface = { drawRect(if (c.isDark) androidx.compose.ui.graphics.Color(0xFF14141B).copy(alpha = 0.62f) else androidx.compose.ui.graphics.Color.White.copy(alpha = 0.62f)) },
+                                onDrawSurface = { drawRect(if (c.isDark) androidx.compose.ui.graphics.Color(0xFF14141B).copy(alpha = 0.42f) else androidx.compose.ui.graphics.Color.White.copy(alpha = 0.42f)) },
                             )
                         } else {
                             // The same glass as the cards on screen, over the blurred screen behind.
@@ -843,7 +885,9 @@ fun MorphCard(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 androidx.activity.compose.BackHandler { close() }
-                content { then -> close(then) }
+                androidx.compose.runtime.CompositionLocalProvider(com.leftovers.app.ui.components.LocalInOverlay provides true) {
+                    content { then -> close(then) }
+                }
             }
         }
     }
@@ -862,23 +906,11 @@ fun MorphCard(
             androidx.compose.runtime.CompositionLocalProvider(locals) {
                 Box(Modifier.fillMaxSize()) {
                     // What's behind: blurred lightly (liquid glass phones) and dimmed, fading in with the card.
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .graphicsLayer { alpha = progress.value.coerceIn(0f, 1f) }
-                            .then(
-                                if (liquid != null) {
-                                    Modifier.drawBackdrop(
-                                        backdrop = liquid,
-                                        shape = { androidx.compose.ui.graphics.RectangleShape },
-                                        effects = { blur(10.dp.toPx()) },
-                                        onDrawSurface = { drawRect(c.background.copy(alpha = 0.32f)) },
-                                    )
-                                } else {
-                                    Modifier.background(c.background.copy(alpha = 0.6f))
-                                },
-                            ),
-                    )
+                    if (liquid != null) {
+                        FrozenBlur(liquid, dim = 0.32f) { progress.value.coerceIn(0f, 1f) }
+                    } else {
+                        Box(Modifier.fillMaxSize().graphicsLayer { alpha = progress.value.coerceIn(0f, 1f) }.background(c.background.copy(alpha = 0.6f)))
+                    }
                     MorphBody(dim = false)
                 }
             }
@@ -919,3 +951,348 @@ fun MorphCard(
     }
 }
 
+
+
+/**
+ * A bottom sheet on the app's own screen, in liquid glass: it slides up, the screen behind dims and blurs a
+ * little, and a tap outside, Back or dragging the handle down closes it. It moves up above the keyboard.
+ */
+@Composable
+private fun LiquidSheet(
+    layer: com.leftovers.app.ui.components.PopupLayer,
+    backdrop: com.kyant.backdrop.backdrops.LayerBackdrop,
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val locals = androidx.compose.runtime.currentCompositionLocalContext
+    val key = remember { Any() }
+    // 0 = off screen below, 1 = in place; the drag moves it between.
+    val shown = remember { Animatable(0f) }
+    val drag = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    var height by remember { mutableStateOf(1f) }
+    val latestDismiss by androidx.compose.runtime.rememberUpdatedState(onDismiss)
+    var closing by remember { mutableStateOf(false) }
+    fun close() {
+        if (closing) return
+        closing = true
+        scope.launch {
+            shown.animateTo(0f, tween(220, easing = FastOutSlowInEasing))
+            latestDismiss()
+        }
+    }
+    LaunchedEffect(Unit) { shown.animateTo(1f, spring(dampingRatio = 0.9f, stiffness = 500f)) }
+    val sheet: @Composable () -> Unit = {
+        androidx.compose.runtime.CompositionLocalProvider(locals) {
+            val c = LocalAppColors.current
+            val top = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+            Box(Modifier.fillMaxSize()) {
+                // The screen behind: dimmed and lightly blurred, fading with the sheet. A tap closes it. Over another
+                // sheet or pop-up it only dims, so that one stays in sight (the blur would show the screen instead).
+                val over = layer.cards.indexOfFirst { it.first == key } > 0
+                if (!over) FrozenBlur(backdrop, dim = 0.35f) { shown.value.coerceIn(0f, 1f) }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = shown.value.coerceIn(0f, 1f) }
+                        .then(if (over) Modifier.background(c.background.copy(alpha = 0.35f)) else Modifier)
+                        .pointerInput(Unit) { detectTapGestures { close() } },
+                )
+                // Room for the sheet: below the status bar, above the keyboard; a tall form scrolls inside it.
+                Box(Modifier.fillMaxSize().statusBarsPadding().padding(top = 24.dp).imePadding()) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .onGloballyPositioned { height = it.size.height.toFloat().coerceAtLeast(1f) }
+                        .graphicsLayer { translationY = (1f - shown.value) * height + drag.value }
+                        .drawBackdrop(
+                            backdrop = backdrop,
+                            shape = { top },
+                            effects = {
+                                vibrancy()
+                                // Frosted well inside: a sheet is a form, and its text must read over anything.
+                                blur(30.dp.toPx())
+                                lens(20.dp.toPx(), 40.dp.toPx(), chromaticAberration = true)
+                            },
+                            // No rim all round: the sheet is as wide as the screen, so one ran down both edges of the
+                            // phone like an outline (#58). The light catches only its rounded top, drawn below.
+                            highlight = null,
+                            onDrawSurface = {
+                                drawRect(if (c.isDark) androidx.compose.ui.graphics.Color(0xFF14141B).copy(alpha = 0.74f) else androidx.compose.ui.graphics.Color.White.copy(alpha = 0.72f))
+                            },
+                        )
+                        .drawWithContent {
+                            drawContent()
+                            val r = 32.dp.toPx()
+                            val w = 1.dp.toPx()
+                            val edge = Path().apply {
+                                moveTo(w / 2, r)
+                                arcTo(Rect(w / 2, w / 2, 2 * r, 2 * r), 180f, 90f, false)
+                                lineTo(size.width - r, w / 2)
+                                arcTo(Rect(size.width - 2 * r, w / 2, size.width - w / 2, 2 * r), 270f, 90f, false)
+                            }
+                            drawPath(edge, c.borderTop, style = Stroke(w))
+                        }
+                        // Taps inside stay inside.
+                        .pointerInput(Unit) { detectTapGestures { } },
+                ) {
+                    Column {
+                        // The handle: drag down to close.
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .pointerInput(Unit) {
+                                    detectVerticalDragGestures(
+                                        onVerticalDrag = { _, dy -> scope.launch { drag.snapTo((drag.value + dy).coerceAtLeast(0f)) } },
+                                        onDragEnd = {
+                                            if (drag.value > height * 0.25f) close()
+                                            else scope.launch { drag.animateTo(0f, spring(dampingRatio = 0.8f)) }
+                                        },
+                                    )
+                                }
+                                .padding(top = 12.dp, bottom = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(c.textTertiary))
+                        }
+                        // Dragging down anywhere on the sheet closes it too, once what's inside is scrolled to the top.
+                        fun settle() {
+                            if (drag.value > height * 0.25f) close()
+                            else scope.launch { drag.animateTo(0f, spring(dampingRatio = 0.8f)) }
+                        }
+                        val pull = remember {
+                            object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+                                override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                                    // Pulled down a little, then back up: the sheet goes back up before the form scrolls.
+                                    if (available.y < 0 && drag.value > 0f) {
+                                        val take = maxOf(available.y, -drag.value)
+                                        scope.launch { drag.snapTo(drag.value + take) }
+                                        return androidx.compose.ui.geometry.Offset(0f, take)
+                                    }
+                                    return androidx.compose.ui.geometry.Offset.Zero
+                                }
+
+                                override fun onPostScroll(consumed: androidx.compose.ui.geometry.Offset, available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                                    if (available.y > 0 && source == androidx.compose.ui.input.nestedscroll.NestedScrollSource.UserInput) {
+                                        scope.launch { drag.snapTo(drag.value + available.y) }
+                                        return androidx.compose.ui.geometry.Offset(0f, available.y)
+                                    }
+                                    return androidx.compose.ui.geometry.Offset.Zero
+                                }
+
+                                override suspend fun onPreFling(available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
+                                    if (drag.value <= 0f) return androidx.compose.ui.unit.Velocity.Zero
+                                    settle()
+                                    return available
+                                }
+                            }
+                        }
+                        Box(
+                            Modifier
+                                .navigationBarsPadding()
+                                .nestedScroll(pull)
+                                // A form that doesn't scroll: the drag reaches here directly.
+                                .pointerInput(Unit) {
+                                    detectVerticalDragGestures(
+                                        onVerticalDrag = { _, dy -> scope.launch { drag.snapTo((drag.value + dy).coerceAtLeast(0f)) } },
+                                        onDragEnd = { settle() },
+                                    )
+                                },
+                        ) { content() }
+                    }
+                }
+                }
+            }
+            androidx.activity.compose.BackHandler { close() }
+        }
+    }
+    androidx.compose.runtime.SideEffect { layer.show(key, sheet) }
+    androidx.compose.runtime.DisposableEffect(key) { onDispose { layer.hide(key) } }
+}
+
+
+/** One line in a list of entries: an entry, or a person's share of a bill split with people (#36). */
+sealed interface BillLine {
+    /** [ofBill]: a part of a split bill, shown on its own line with splits shown separately. */
+    data class Entry(
+        val item: TransactionItem,
+        val part: Boolean,
+        val parts: List<TransactionItem>,
+        val shares: List<com.leftovers.app.data.Debt>,
+        val ofBill: Boolean = false,
+    ) : BillLine
+    data class Share(val debt: com.leftovers.app.data.Debt, val main: TransactionItem) : BillLine
+}
+
+/**
+ * [items] as cards: entries on their own share a card, and each split bill gets one of its own, the entry
+ * first, then its parts and the people who owe for it. With [oneBill] off, every entry is on its own line.
+ */
+internal fun billCards(items: List<TransactionItem>, shares: Map<Long, List<com.leftovers.app.data.Debt>>, oneBill: Boolean): List<List<BillLine>> {
+    // Separately, each entry has a line of its own, still marked as split, with the bill's whole amount (#36).
+    if (!oneBill) return listOf(items.map { BillLine.Entry(it, false, items.filter { p -> p.splitOf == it.id }, shares[it.id].orEmpty(), ofBill = it.splitOf != null) })
+        .filter { it.isNotEmpty() }
+    val ordered = splitOrder(items)
+    val ids = ordered.map { it.id }.toSet()
+    val cards = mutableListOf<List<BillLine>>()
+    var plain = mutableListOf<BillLine>()
+    ordered.forEach { item ->
+        if (item.splitOf != null && item.splitOf in ids) return@forEach
+        // In the order they were added, as in the split sheet.
+        val parts = ordered.filter { it.splitOf == item.id }.sortedBy { it.id }
+        val owed = shares[item.id].orEmpty()
+        if (parts.isEmpty() && owed.isEmpty()) {
+            plain += BillLine.Entry(item, false, emptyList(), emptyList())
+        } else {
+            if (plain.isNotEmpty()) { cards += plain; plain = mutableListOf() }
+            cards += listOf<BillLine>(BillLine.Entry(item, false, parts, owed)) +
+                parts.map { BillLine.Entry(it, true, emptyList(), emptyList()) } +
+                owed.map { BillLine.Share(it, item) }
+        }
+    }
+    if (plain.isNotEmpty()) cards += plain
+    return cards
+}
+
+/** What a split bill's entry says under its title: how it was split, and the whole amount. */
+internal fun billSubtitle(whenText: String, line: BillLine.Entry): String = when {
+    line.part -> "part of the split"
+    line.ofBill -> "$whenText · part of a split"
+    // The whole amount is on the right, under this entry's share, so the line stays short enough to read.
+    line.shares.isNotEmpty() -> "$whenText · split with ${line.shares.size}"
+    line.parts.isNotEmpty() -> "$whenText · split"
+    else -> whenText
+}
+
+/** Whether [line] sits under a split bill: one of its parts, or a person's share. */
+internal fun BillLine.under(): Boolean = this is BillLine.Share || (this is BillLine.Entry && part)
+
+/** Split parts' colours: apart from each other, from green (owed) and from the accent. */
+private val BillPartColors = listOf(
+    androidx.compose.ui.graphics.Color(0xFF7FB2FF), // sky
+    androidx.compose.ui.graphics.Color(0xFFFFA26B), // apricot
+    androidx.compose.ui.graphics.Color(0xFFC49BFF), // lavender
+    androidx.compose.ui.graphics.Color(0xFFFFD166), // amber
+    androidx.compose.ui.graphics.Color(0xFFFF8FB8), // pink
+)
+
+/** People's shares: greens that stay apart from each other. */
+private val BillOwedColors = listOf(
+    androidx.compose.ui.graphics.Color(0xFF5FD9A0), // mint
+    androidx.compose.ui.graphics.Color(0xFF2FA872), // deep green
+    androidx.compose.ui.graphics.Color(0xFFA8EFC9), // pale green
+)
+
+/**
+ * Where a split bill's money went, under its row (#36): a thin bar of the whole amount in one piece per share (yours,
+ * each category's, each person's), and a pill for each piece. Pills wrap, so a bill split many ways stays two short
+ * lines; tapping one opens that part, or that person's share. [main] is the bill's own line.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+internal fun BillBreakdown(
+    main: BillLine.Entry,
+    onPart: (TransactionItem) -> Unit,
+    onShare: (com.leftovers.app.data.Debt) -> Unit,
+    modifier: Modifier = Modifier,
+    partModifier: (TransactionItem) -> Modifier = { Modifier },
+) {
+    val c = LocalAppColors.current
+    val money = LocalMoney.current
+    // Your share is solid white. Parts take clear colours from a set chosen to sit well together, none of them green
+    // or the accent; people take distinct greens, as what's owed to you. Each pill's dot is its piece of the bar.
+    data class Piece(val label: String, val amount: Long, val color: androidx.compose.ui.graphics.Color, val open: (() -> Unit)?, val tag: Modifier = Modifier, val settled: Boolean = false)
+    val pieces = buildList {
+        // Your share is the bill's own entry: it opens the bill, like its row.
+        add(Piece("You", main.item.amountMinor, c.textPrimary, { onPart(main.item) }))
+        main.parts.forEachIndexed { i, p ->
+            val name = com.leftovers.app.data.noteText(p.note).takeIf { it.isNotBlank() && it != com.leftovers.app.data.noteText(main.item.note) } ?: p.categoryName
+            add(Piece(name, p.amountMinor, BillPartColors[i % BillPartColors.size], { onPart(p) }, partModifier(p)))
+        }
+        main.shares.forEachIndexed { i, d ->
+            add(Piece(d.person, d.amountMinor, if (d.settled) c.textTertiary else BillOwedColors[i % BillOwedColors.size], { onShare(d) }, settled = d.settled))
+        }
+    }
+    val total = pieces.sumOf { it.amount }.coerceAtLeast(1)
+    Column(
+        modifier.fillMaxWidth().padding(start = 72.dp, end = 16.dp, bottom = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().height(5.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            pieces.forEach { piece ->
+                // Paid back: an empty outline, so what's still owed stands out.
+                // Each piece at least a sliver wide, so a small share still shows next to a big one.
+                val bar = Modifier.weight(maxOf(piece.amount.toFloat() / total, 0.04f)).fillMaxSize()
+                Box(if (piece.settled) bar.border(1.dp, piece.color, RoundedCornerShape(2.5.dp)) else bar.background(piece.color, RoundedCornerShape(2.5.dp)))
+            }
+        }
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            pieces.forEach { piece ->
+                Row(
+                    piece.tag
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(c.textPrimary.copy(alpha = 0.05f))
+                        .then(piece.open?.let { Modifier.pressable(it, pressedScale = 0.95f) } ?: Modifier)
+                        .padding(start = 8.dp, end = 10.dp, top = 5.dp, bottom = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (piece.settled) {
+                        Icon(com.leftovers.app.ui.icons.Lucide.Check, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(12.dp))
+                    } else {
+                        Box(Modifier.size(7.dp).background(piece.color, androidx.compose.foundation.shape.CircleShape))
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    // A long name gives way, so the amount always shows and the pill never runs past the card.
+                    Text(
+                        if (piece.settled) "${piece.label} · settled" else piece.label,
+                        style = MaterialTheme.typography.labelMedium, color = if (piece.settled) c.textTertiary else c.textSecondary,
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(money.format(piece.amount), style = MaterialTheme.typography.labelMedium, color = if (piece.settled) c.textTertiary else c.textPrimary, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+/** A split bill's whole amount, for the entry it's split from; null for anything else. */
+internal fun BillLine.Entry.whole(): Long? =
+    if (part || (parts.isEmpty() && shares.isEmpty())) null
+    else item.amountMinor + parts.sumOf { it.amountMinor } + shares.sumOf { it.amountMinor }
+
+/**
+ * The screen behind a pop-up or sheet, blurred and dimmed. Blurred at a sixth of its size, then drawn back up: a
+ * full-size blur was redone on every frame of the opening and made it stutter (about 95% of frames late), while at
+ * this size it's 36 times less work, and scaled up it looks the same, just as soft. It follows the screen as it
+ * is, so the tapped row stepping aside shows here too. [alpha] fades it with the pop-up.
+ */
+@Composable
+private fun FrozenBlur(backdrop: com.kyant.backdrop.backdrops.LayerBackdrop, dim: Float, alpha: () -> Float) {
+    val c = LocalAppColors.current
+    val small = androidx.compose.ui.graphics.rememberGraphicsLayer()
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer { this.alpha = alpha() }
+            .drawBehind {
+                val scaleDown = 6f
+                val size = androidx.compose.ui.unit.IntSize((this.size.width / scaleDown).toInt().coerceAtLeast(1), (this.size.height / scaleDown).toInt().coerceAtLeast(1))
+                // The same softness as the full-size 10 dp blur, in the small picture's pixels.
+                val radius = 10.dp.toPx() / scaleDown
+                small.renderEffect = androidx.compose.ui.graphics.BlurEffect(radius, radius, androidx.compose.ui.graphics.TileMode.Clamp)
+                small.record(this, layoutDirection, size) {
+                    scale(1f / scaleDown, pivot = androidx.compose.ui.geometry.Offset.Zero) { drawLayer(backdrop.graphicsLayer) }
+                }
+                scale(scaleDown, pivot = androidx.compose.ui.geometry.Offset.Zero) { drawLayer(small) }
+                drawRect(c.background.copy(alpha = dim))
+            },
+    )
+}
+
+/** The tag an envelope budget counts, when there is one: entries carry it, but rows don't show it (#57). */
+val LocalEnvelopeTag = androidx.compose.runtime.compositionLocalOf<String?> { null }

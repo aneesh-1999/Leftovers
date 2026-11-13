@@ -41,7 +41,8 @@ import java.io.File
 import java.time.LocalDate
 
 /** Simple manual dependency container shared by the whole app. */
-class AppContainer(private val context: Context) {
+class AppContainer(val context: Context) {
+    val appContext: Context get() = context
     private val database = AppDatabase.build(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -238,6 +239,17 @@ class AppContainer(private val context: Context) {
                 com.leftovers.app.util.AlarmScheduler.scheduleCreditCardReminder(context, enabled)
             }
         }
+        // Festival greetings and the Sunday note come with notifications; no switches of their own.
+        scope.launch {
+            delay(2_000L)
+            com.leftovers.app.util.Greetings.schedule(context, festivals = true, weekly = true)
+        }
+        scope.launch {
+            delay(2_000L)
+            settings.settings.map { it.autoRates }
+                .distinctUntilChanged()
+                .collect { com.leftovers.app.util.ExchangeRates.schedule(context, it) }
+        }
         // Reschedule automatic update checks whenever settings change
         scope.launch {
             settings.settings.map { it.autoUpdateChecks to it.updateCheckWifiOnly }
@@ -248,6 +260,11 @@ class AppContainer(private val context: Context) {
         }
     }
 
+    /** Looks for a newer version on GitHub; one found goes to the bell and Notices. Returns it, or null. */
+    private suspend fun lookForUpdate(): com.leftovers.app.util.UpdateCheck.Release? =
+        com.leftovers.app.util.UpdateCheck.latest(com.leftovers.app.util.UpdateCheck.isDevBuild(context)).getOrNull()
+            ?.takeIf { com.leftovers.app.util.UpdateCheck.isNewerThanInstalled(context, it) }
+
     /**
      * Home's pull to refresh: every check that can run on demand (subscriptions that have come due, the email
      * account if one is connected, Sync between devices if it's on), and a few words on what it found.
@@ -257,6 +274,7 @@ class AppContainer(private val context: Context) {
             if (emailAccount.connection.value == null) null else com.leftovers.app.util.EmailChecker.check(context)
         }
         val sync = async { com.leftovers.app.util.DeviceSync.runIfOn(context) }
+        val update = async { lookForUpdate() }
         syncRecurring()
         val parts = buildList {
             email.await()?.fold(
@@ -270,6 +288,7 @@ class AppContainer(private val context: Context) {
                 },
                 { add("Couldn't sync") },
             )
+            update.await()?.let { add(if (com.leftovers.app.util.UpdateCheck.isDevBuild(context)) "A new Dev build is out" else "Leftovers ${it.version} is out") }
         }
         parts.joinToString(" · ").ifEmpty { "Up to date" }
     }

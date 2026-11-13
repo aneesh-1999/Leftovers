@@ -94,6 +94,7 @@ import com.leftovers.app.ui.screens.BudgetsScreen
 import com.leftovers.app.ui.screens.CategoriesScreen
 import com.leftovers.app.ui.screens.ActivityRequest
 import com.leftovers.app.ui.screens.DebtsScreen
+import com.leftovers.app.ui.screens.NoticesScreen
 import com.leftovers.app.ui.screens.TypeFilter
 import com.leftovers.app.data.TxType
 import com.leftovers.app.ui.screens.DeletedScreen
@@ -140,7 +141,9 @@ private object Routes {
     const val ROSTER = "roster?date={date}&shiftId={shiftId}"
     fun roster(date: Long = -1L, shiftId: Long = -1L) = "roster?date=$date&shiftId=$shiftId"
     const val SETTINGS = "settings"
+    const val NOTICES = "notices"
     const val CATEGORIES = "categories"
+    const val HELP = "help"
     const val ASSISTANT = "assistant?ask={ask}"
     /** Opens the assistant; a non-empty [ask] is sent as the first question. */
     fun assistant(ask: String = "") = "assistant?ask=" + android.net.Uri.encode(ask)
@@ -186,9 +189,9 @@ private fun NavBackStackEntry.isTab() = route() in Routes.tabs
 private fun NavBackStackEntry.isAdd() = route().startsWith("add") || route().startsWith("edit")
 private fun NavBackStackEntry.isSheet() = route().startsWith("recap")
 
-/** Which way to slide between two tabs: forward when moving right along the dock. */
-private fun tabDirection(from: NavBackStackEntry, to: NavBackStackEntry) =
-    if (Routes.tabOrder.indexOf(to.route()) > Routes.tabOrder.indexOf(from.route())) SlideDirection.Start else SlideDirection.End
+/** Moving right along the dock, which slides like going forward; left slides like going back. */
+private fun forward(from: NavBackStackEntry, to: NavBackStackEntry) =
+    Routes.tabOrder.indexOf(to.route()) > Routes.tabOrder.indexOf(from.route())
 
 /** Registers a screen and hands its animation scope to shared-element modifiers. */
 private fun NavGraphBuilder.screen(
@@ -212,6 +215,8 @@ fun LeftoversNavHost(
     onOpenRosterHandled: () -> Unit = {},
     onOpenDebtsHandled: () -> Unit = {},
     onOpenCreditCardsHandled: () -> Unit = {},
+    sharedOwed: com.leftovers.app.util.SharedOwed.Shared? = null,
+    onSharedHandled: () -> Unit = {},
 ) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
@@ -315,10 +320,14 @@ fun LeftoversNavHost(
                             // Add and edit slide up like a sheet: moving a finished layout is cheap and never stretches text.
                             targetState.isAdd() -> slideInVertically(tween(320, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(220))
                             targetState.isSheet() -> slideInVertically(tween(420, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(200))
-                            // Both tabs slide together and the new one fades in straight away, so there's never a blank
-                            // moment. The old one fades out quicker, so the two barely show at once.
-                            targetState.isTab() && initialState.isTab() ->
-                                slideIntoContainer(tabDirection(initialState, targetState), tween(300, easing = FastOutSlowInEasing)) { it / 6 } + fadeIn(tween(240))
+                            // Tabs move like going forward and back (Activity back to Home was the one that felt right):
+                            // the page that leaves slides all the way off, the one that arrives glides in from a quarter
+                            // of the way, in the direction of the dock.
+                            targetState.isTab() && initialState.isTab() -> if (forward(initialState, targetState)) {
+                                slideIntoContainer(SlideDirection.Start, navTween) + fadeIn(tween(220))
+                            } else {
+                                slideIntoContainer(SlideDirection.End, navTween) { it / 4 } + fadeIn(tween(220))
+                            }
                             else -> slideIntoContainer(SlideDirection.Start, navTween) + fadeIn(tween(220))
                         }
                     },
@@ -327,8 +336,11 @@ fun LeftoversNavHost(
                             // Scaling the screen behind would re-render its frosted blur every frame.
                             targetState.isAdd() -> fadeOut(tween(220))
                             targetState.isSheet() -> fadeOut(tween(300))
-                            targetState.isTab() && initialState.isTab() ->
-                                slideOutOfContainer(tabDirection(initialState, targetState), tween(300, easing = FastOutSlowInEasing)) { it / 6 } + fadeOut(tween(120))
+                            targetState.isTab() && initialState.isTab() -> if (forward(initialState, targetState)) {
+                                slideOutOfContainer(SlideDirection.Start, navTween) { it / 4 } + fadeOut(tween(220))
+                            } else {
+                                slideOutOfContainer(SlideDirection.End, navTween) + fadeOut(tween(220))
+                            }
                             else -> slideOutOfContainer(SlideDirection.Start, navTween) { it / 4 } + fadeOut(tween(220))
                         }
                     },
@@ -336,6 +348,8 @@ fun LeftoversNavHost(
                         when {
                             initialState.isAdd() -> fadeIn(tween(220))
                             initialState.isSheet() -> fadeIn(tween(300))
+                            targetState.isTab() && initialState.isTab() && forward(initialState, targetState) ->
+                                slideIntoContainer(SlideDirection.Start, navTween) + fadeIn(tween(220))
                             else -> slideIntoContainer(SlideDirection.End, navTween) { it / 4 } + fadeIn(tween(220))
                         }
                     },
@@ -343,6 +357,8 @@ fun LeftoversNavHost(
                         when {
                             initialState.isAdd() -> slideOutVertically(tween(260, easing = FastOutSlowInEasing)) { it / 5 } + fadeOut(tween(200))
                             initialState.isSheet() -> slideOutVertically(tween(360, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(260))
+                            targetState.isTab() && initialState.isTab() && forward(initialState, targetState) ->
+                                slideOutOfContainer(SlideDirection.Start, navTween) { it / 4 } + fadeOut(tween(220))
                             else -> slideOutOfContainer(SlideDirection.End, navTween) + fadeOut(tween(220))
                         }
                     },
@@ -363,6 +379,7 @@ fun LeftoversNavHost(
                             onOpenGoal = { nav.navigate(Routes.goal(it)) },
                             onOpenGoals = { nav.navigate(Routes.GOALS) },
                             onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                            onOpenNotices = { nav.navigate(Routes.NOTICES) },
                             onOpenTransaction = { nav.navigate(Routes.edit(it)) },
                             onReviewSms = { s -> nav.navigate(Routes.add(s.epochDay, s.amountMinor, s.merchant, s.id)) },
                             onOpenRecap = { nav.navigate(Routes.recap(it.toString())) },
@@ -386,6 +403,7 @@ fun LeftoversNavHost(
                     }
                     screen(Routes.INSIGHTS) {
                         StatsScreen(
+                            onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                             onOpenRecap = { nav.navigate(Routes.recap(it.toString())) },
                             onOpenYear = { nav.navigate(Routes.recap(it.toString())) },
                             onOpenTransaction = { nav.navigate(Routes.edit(it)) },
@@ -394,6 +412,7 @@ fun LeftoversNavHost(
                     }
                     screen(Routes.PLAN) {
                         PlanScreen(
+                            onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                             onOpenBudget = { nav.navigate(Routes.BUDGET) },
                             onEditPlan = { nav.navigate(Routes.BUDGET_PLAN) },
                             onOpenSubscriptions = { nav.navigate(Routes.subscriptions()) },
@@ -426,6 +445,7 @@ fun LeftoversNavHost(
                             initialShiftId = shiftIdArg,
                         )
                     }
+                    screen(Routes.NOTICES) { NoticesScreen(onBack = back) }
                     screen(Routes.DEBTS) { DebtsScreen(onBack = back) }
                     screen(Routes.DELETED) { DeletedScreen(onBack = back) }
                     screen(Routes.REMITTANCE) {
@@ -499,6 +519,7 @@ fun LeftoversNavHost(
                             onEditPlan = { nav.navigate(Routes.BUDGET_PLAN) },
                             onOpenSubscriptions = { nav.navigate(Routes.subscriptions()) },
                             onOpenGoals = { nav.navigate(Routes.GOALS) },
+                            onAdd = { note -> nav.navigate(Routes.add(note = note)) },
                         )
                     }
                     screen(Routes.BUDGET_PLAN) { BudgetPlanScreen(onBack = back) }
@@ -517,7 +538,7 @@ fun LeftoversNavHost(
                     }
                     screen(Routes.GOALS) { GoalsScreen(onBack = back, onOpenGoal = { nav.navigate(Routes.goal(it)) }) }
                     screen(Routes.GOAL, idArg) { GoalDetailScreen(onBack = back) }
-                    screen(Routes.ACCOUNTS) { AccountsScreen(onBack = back) }
+                    screen(Routes.ACCOUNTS) { AccountsScreen(onBack = back, onOpenTransaction = { nav.navigate(Routes.edit(it)) }) }
                     screen(Routes.RECAP, listOf(navArgument("month") { type = NavType.StringType })) { RecapScreen(onClose = back) }
                     screen(Routes.SETTINGS) {
                         SettingsScreen(
@@ -525,7 +546,32 @@ fun LeftoversNavHost(
                             onManageCategories = { nav.navigate(Routes.CATEGORIES) },
                             onOpenAccounts = { nav.navigate(Routes.ACCOUNTS) },
                             onOpenDeleted = { nav.navigate(Routes.DELETED) },
+                            onOpenHelp = { nav.navigate(Routes.HELP) },
                         )
+                    }
+                    screen(Routes.HELP) {
+                        com.leftovers.app.ui.screens.HelpScreen(onBack = back) { place ->
+                            when (place) {
+                                // Everything opens on top of the guide, tabs too, so going back always returns here.
+                                // (Switching tabs would clear the guide away, or, for Home, put it straight back.)
+                                com.leftovers.app.util.HelpGuide.Place.HOME -> nav.navigate(Routes.HOME)
+                                com.leftovers.app.util.HelpGuide.Place.ACTIVITY -> nav.navigate(Routes.ACTIVITY)
+                                com.leftovers.app.util.HelpGuide.Place.INSIGHTS -> nav.navigate(Routes.INSIGHTS)
+                                com.leftovers.app.util.HelpGuide.Place.PLAN -> nav.navigate(Routes.PLAN)
+                                com.leftovers.app.util.HelpGuide.Place.ADD -> nav.navigate(Routes.add())
+                                com.leftovers.app.util.HelpGuide.Place.ACCOUNTS -> nav.navigate(Routes.ACCOUNTS)
+                                com.leftovers.app.util.HelpGuide.Place.BUDGET -> nav.navigate(Routes.BUDGET)
+                                com.leftovers.app.util.HelpGuide.Place.BUDGET_PLAN -> nav.navigate(Routes.BUDGET_PLAN)
+                                com.leftovers.app.util.HelpGuide.Place.SUBSCRIPTIONS -> nav.navigate(Routes.subscriptions())
+                                com.leftovers.app.util.HelpGuide.Place.GOALS -> nav.navigate(Routes.GOALS)
+                                com.leftovers.app.util.HelpGuide.Place.DEBTS -> nav.navigate(Routes.DEBTS)
+                                com.leftovers.app.util.HelpGuide.Place.CATEGORIES -> nav.navigate(Routes.CATEGORIES)
+                                com.leftovers.app.util.HelpGuide.Place.SETTINGS -> back()
+                                com.leftovers.app.util.HelpGuide.Place.DELETED -> nav.navigate(Routes.DELETED)
+                                com.leftovers.app.util.HelpGuide.Place.ASSISTANT -> nav.navigate(Routes.assistant())
+                                com.leftovers.app.util.HelpGuide.Place.NOTICES -> nav.navigate(Routes.NOTICES)
+                            }
+                        }
                     }
                     screen(Routes.CATEGORIES) { CategoriesScreen(onBack = back) }
                 }
@@ -576,6 +622,9 @@ fun LeftoversNavHost(
                     Toast(toast.orEmpty())
                 }
 
+                // Money owed sent from a friend's Leftovers, from the link the app was opened with.
+                sharedOwed?.let { com.leftovers.app.ui.screens.SharedOwedSheet(it, onDismiss = onSharedHandled) }
+
                 // Pop-up cards, above the tab bar and everything else.
                 popups.Content()
             }
@@ -584,10 +633,14 @@ fun LeftoversNavHost(
 }
 
 private fun NavHostController.switchTab(route: String) {
+    // A tab opened on top of other screens (Help's Open puts Activity over Settings and Help): those are a detour,
+    // left behind when moving to a tab, not kept. Kept, they were what came back on going to Home, so Home showed
+    // Activity again and couldn't be reached.
+    val detour = currentBackStack.value.any { e -> e.destination.route.let { it != null && it !in Routes.tabs && it != graph.route } }
     navigate(route) {
-        popUpTo(graph.findStartDestination().id) { saveState = true }
+        popUpTo(graph.findStartDestination().id) { saveState = !detour }
         launchSingleTop = true
-        restoreState = true
+        restoreState = !detour
     }
 }
 
@@ -662,12 +715,13 @@ private fun DockItem(tab: Tab, selected: Boolean, compact: Boolean, onClick: () 
         Icon(tab.icon, contentDescription = tab.label, tint = tint, modifier = Modifier.size(22.dp))
         AnimatedVisibility(
             visible = selected && !compact,
-            enter = expandHorizontally(spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
-            exit = shrinkHorizontally(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut(),
+            // The name fades out before the pill narrows and in once it has widened, so it's never seen cut off.
+            enter = expandHorizontally(spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(160, delayMillis = 110)),
+            exit = shrinkHorizontally(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut(tween(70)),
         ) {
             Row {
                 Spacer(Modifier.width(8.dp))
-                Text(tab.label, style = MaterialTheme.typography.labelLarge, color = c.textPrimary, maxLines = 1)
+                Text(tab.label, style = MaterialTheme.typography.labelLarge, color = c.textPrimary, maxLines = 1, softWrap = false)
             }
         }
     }

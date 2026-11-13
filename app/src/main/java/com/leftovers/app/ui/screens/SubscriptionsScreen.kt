@@ -618,7 +618,14 @@ private fun RecurringEditor(
     var chargeThisMonth by rememberSaveable { mutableStateOf(true) }
     var skipNext by rememberSaveable { mutableStateOf(false) }
     var accountId by rememberSaveable { mutableStateOf(initial.accountId) }
-    val amount = AmountInput.toMinor(amountText) ?: 0L
+    // Interest (#32): a yearly rate on the account's balance instead of a fixed amount.
+    var interest by rememberSaveable { mutableStateOf(initial.ratePercent != null) }
+    var rateText by rememberSaveable { mutableStateOf(initial.ratePercent.orEmpty()) }
+    val interestAccount = accounts.firstOrNull { it.id == accountId } ?: accounts.firstOrNull()
+    val estimate = if (interest && type == TxType.INCOME) {
+        initial.copy(ratePercent = rateText.takeIf { it.isNotBlank() }, everyMonths = every).interestOn(interestAccount?.balanceMinor ?: 0L)
+    } else null
+    val amount = estimate ?: AmountInput.toMinor(amountText) ?: 0L
     // Months that can be picked for the next charge: the coming cycle, or the whole year for yearly bills.
     val monthChoices = (0 until if (every == 12) 12 else every).map { now.plusMonths(it.toLong()) }
     val nextMonth = YearMonth.parse(billMonth).takeIf { it in monthChoices } ?: now
@@ -642,6 +649,8 @@ private fun RecurringEditor(
                         Chip(t.name, icon = CategoryIcons[t.icon], iconTint = c.textSecondary, onClick = {
                             name = t.name
                             type = t.type
+                            // Interest is a rate on a balance, not a fixed amount (#32).
+                            if (t.name == "Interest") interest = true
                             categories.firstOrNull { it.type == t.type && it.name == t.categoryName }?.let { categoryId = it.id }
                         })
                     }
@@ -661,7 +670,30 @@ private fun RecurringEditor(
             )
             GlassTextField(name, { name = it.take(30) }, placeholder = if (type == TxType.INCOME) "e.g. Salary" else "e.g. Netflix", label = "Name")
             SegmentedToggle(cycles, every, ::cycleLabel, { every = it }, Modifier.fillMaxWidth())
-            MoneyField(
+            if (type == TxType.INCOME) {
+                Chip(
+                    "Interest on a balance",
+                    { interest = !interest },
+                    icon = if (interest) Lucide.CircleCheck else Lucide.Plus,
+                    selected = interest,
+                )
+            }
+            if (interest && type == TxType.INCOME) {
+                GlassTextField(
+                    rateText,
+                    { v -> rateText = v.filter { it.isDigit() || it == '.' }.take(6) },
+                    placeholder = "e.g. 3.5",
+                    label = "Interest rate, % a year",
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                )
+                Text(
+                    (estimate?.takeIf { it > 0 }?.let { "About ${LocalMoney.current.format(it)} each time at today's balance${interestAccount?.let { a -> " of ${a.name}" }.orEmpty()}. " } ?: "") +
+                        "Each time it's logged, it's worked out on the balance then, so it follows your balance.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.textSecondary,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            } else MoneyField(
                 amountText, { amountText = it },
                 label = when (every) {
                     1 -> "Amount every month"
@@ -669,7 +701,7 @@ private fun RecurringEditor(
                     else -> "Amount every $every months"
                 },
             )
-            if (every > 1 && amount > 0) {
+            if (every > 1 && amount > 0 && !(interest && type == TxType.INCOME)) {
                 Text(
                     "About ${LocalMoney.current.format(amount / every)} a month",
                     style = MaterialTheme.typography.bodySmall,
@@ -680,7 +712,7 @@ private fun RecurringEditor(
 
             Text("Category", style = MaterialTheme.typography.labelMedium, color = c.textSecondary, modifier = Modifier.padding(start = 6.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                categories.filter { it.type == type }.forEach { cat ->
+                categories.filter { it.type == type && (!it.hidden || it.id == categoryId) }.forEach { cat ->
                     Chip(cat.name, icon = CategoryIcons[cat.emoji], iconTint = Color(cat.color), selected = cat.id == categoryId, onClick = { categoryId = cat.id })
                 }
             }
@@ -779,7 +811,9 @@ private fun RecurringEditor(
                             else -> now.toString()
                         }
                     }
-                    var saved = initial.copy(name = name.trim(), amountMinor = amount, type = type, categoryId = categoryId, dayOfMonth = day, startMonth = start, everyMonths = every, accountId = accountId)
+                    var saved = initial.copy(name = name.trim(), amountMinor = amount, type = type, categoryId = categoryId, dayOfMonth = day, startMonth = start, everyMonths = every,
+                        accountId = if (interest && type == TxType.INCOME) accountId ?: interestAccount?.id else accountId,
+                        ratePercent = rateText.takeIf { interest && type == TxType.INCOME && it.isNotBlank() })
                     if (skipNext) {
                         // Marking the next charge as already logged skips it without touching the schedule.
                         saved = saved.copy(lastPostedMonth = YearMonth.from(saved.nextChargeDate()).toString())
@@ -787,7 +821,7 @@ private fun RecurringEditor(
                     onSave(saved)
                 },
                 Modifier.fillMaxWidth(),
-                enabled = name.isNotBlank() && amount > 0 && categories.any { it.id == categoryId && it.type == type },
+                enabled = name.isNotBlank() && (amount > 0 || (interest && type == TxType.INCOME && (rateText.toBigDecimalOrNull()?.signum() ?: 0) > 0 && interestAccount != null)) && categories.any { it.id == categoryId && it.type == type },
             )
             if (onDelete != null) {
                 Text(

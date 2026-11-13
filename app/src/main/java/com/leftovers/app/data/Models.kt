@@ -21,6 +21,10 @@ data class Category(
     val budgetMinor: Long? = null,
     /** Income only: money logged here is added on top of that month's budget (gifts, bonuses). */
     @ColumnInfo(defaultValue = "0") val addsToBudget: Boolean = false,
+    /** Spending only: [Bucket] name for 50/30/20 (#39); null uses the usual one for its name. */
+    val bucket: String? = null,
+    /** Kept with its entries but left out when adding new ones, such as an old job's salary (#56). */
+    @ColumnInfo(defaultValue = "0") val hidden: Boolean = false,
 )
 
 /** Amounts are stored in minor units (amount × 100) so money math never uses floating point. */
@@ -51,6 +55,8 @@ data class Transaction(
     /** Spent in another currency (travel): what was paid there, e.g. 4500 with [foreignCurrency] "AED". */
     val foreignMinor: Long? = null,
     val foreignCurrency: String? = null,
+    /** A part of a split bill: the entry it was split from, which it's shown under (#36). */
+    val splitOf: Long? = null,
 )
 
 /** A transaction joined with its category, ready to display. */
@@ -72,10 +78,13 @@ data class TransactionItem(
     val accountName: String? = null,
     val foreignMinor: Long? = null,
     val foreignCurrency: String? = null,
+    /** Its account is left out of the budget (#33): it doesn't use up Safe to spend or the month's budget. */
+    val outOfBudget: Boolean = false,
+    val splitOf: Long? = null,
 ) {
     val date: LocalDate get() = LocalDate.ofEpochDay(epochDay)
 
-    fun toTransaction() = Transaction(id, amountMinor, type, categoryId, epochDay, note, createdAt, accountId, receiptPath, foreignMinor, foreignCurrency)
+    fun toTransaction() = Transaction(id, amountMinor, type, categoryId, epochDay, note, createdAt, accountId, receiptPath, foreignMinor, foreignCurrency, splitOf)
 }
 
 data class CategoryTotal(

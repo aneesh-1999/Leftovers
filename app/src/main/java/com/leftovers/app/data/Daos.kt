@@ -11,7 +11,8 @@ private const val SELECT_ITEMS = """
            c.name AS categoryName, c.emoji AS categoryEmoji, c.color AS categoryColor,
            t.accountId, t.receiptPath, c.addsToBudget,
            a.currency AS accountCurrency, a.name AS accountName,
-           t.foreignMinor, t.foreignCurrency
+           t.foreignMinor, t.foreignCurrency,
+           COALESCE(a.outOfBudget, 0) AS outOfBudget, t.splitOf
     FROM transactions t 
     INNER JOIN categories c ON c.id = t.categoryId
     LEFT JOIN accounts a ON a.id = t.accountId
@@ -39,6 +40,7 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE amountMinor = :amountMinor AND epochDay = :epochDay AND type = :type LIMIT 1")
     suspend fun findByAmountAndDay(amountMinor: Long, epochDay: Long, type: TxType): Transaction?
 
+    /** The entry's id: the new one for a new entry, -1 when an existing one was updated. */
     @Upsert
     suspend fun upsert(transaction: Transaction): Long
 
@@ -125,6 +127,9 @@ interface GoalDao {
     @Query("SELECT * FROM goal_deposits WHERE goalId = :goalId ORDER BY epochDay DESC, createdAt DESC")
     fun observeDeposits(goalId: Long): Flow<List<GoalDeposit>>
 
+    @Query("SELECT * FROM goal_deposits")
+    fun observeAllDeposits(): Flow<List<GoalDeposit>>
+
     /** Returns the new row id for an insert, or -1 for an update. */
     @Upsert
     suspend fun upsert(goal: Goal): Long
@@ -173,7 +178,7 @@ interface AccountDao {
             + COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE toAccountId = a.id), 0)
             - COALESCE((SELECT SUM(amountMinor) FROM transfers WHERE fromAccountId = a.id), 0)
             - COALESCE((SELECT SUM(amountMinor) FROM debts WHERE accountId = a.id), 0) AS balanceMinor
-        FROM accounts a ORDER BY a.id
+        FROM accounts a ORDER BY a.position, a.id
         """,
     )
     fun observeWithBalance(): Flow<List<AccountWithBalance>>
@@ -199,8 +204,11 @@ interface AccountDao {
     )
     fun observeNativeParts(): Flow<List<NativeParts>>
 
-    @Query("SELECT * FROM accounts ORDER BY id")
+    @Query("SELECT * FROM accounts ORDER BY position, id")
     suspend fun getAll(): List<Account>
+
+    @Query("UPDATE accounts SET position = :position WHERE id = :id")
+    suspend fun setPosition(id: Long, position: Int)
 
     @Upsert
     suspend fun upsert(account: Account): Long
@@ -233,7 +241,7 @@ interface SmsDao {
     fun observeAll(): Flow<List<SmsSuggestion>>
 
     @androidx.room.Insert
-    suspend fun insert(suggestion: SmsSuggestion)
+    suspend fun insert(suggestion: SmsSuggestion): Long
 
     @Query("SELECT * FROM sms_suggestions WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): SmsSuggestion?
@@ -295,8 +303,8 @@ interface DebtDao {
     @Query("DELETE FROM debts")
     suspend fun deleteAll()
 
-    @Query("UPDATE debts SET settled = 1 WHERE settled = 0 AND LOWER(TRIM(person)) = LOWER(TRIM(:person))")
-    suspend fun settle(person: String)
+    @Query("UPDATE debts SET settled = 1, settledOn = :day WHERE settled = 0 AND LOWER(TRIM(person)) = LOWER(TRIM(:person))")
+    suspend fun settle(person: String, day: Long)
 
     @Query("SELECT COUNT(*) FROM debts WHERE accountId = :accountId")
     suspend fun countForAccount(accountId: Long): Int

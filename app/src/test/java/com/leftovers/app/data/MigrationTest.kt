@@ -36,7 +36,7 @@ class MigrationTest {
             close()
         }
 
-        val db = helper.runMigrationsAndValidate(name, 25, true, *ALL_MIGRATIONS)
+        val db = helper.runMigrationsAndValidate(name, 30, true, *ALL_MIGRATIONS)
 
         db.query("SELECT amountMinor, note, accountId FROM transactions WHERE id = 1").use {
             it.moveToFirst()
@@ -167,6 +167,7 @@ class MigrationTest {
         helper.runMigrationsAndValidate(name, 23, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 24, true, *ALL_MIGRATIONS).close()
         helper.runMigrationsAndValidate(name, 25, true, *ALL_MIGRATIONS).close()
+        helper.runMigrationsAndValidate(name, 30, true, *ALL_MIGRATIONS).close()
     }
 
     @Test fun upgradesFromVersion24KeepingDebts() {
@@ -175,7 +176,7 @@ class MigrationTest {
             close()
         }
 
-        val db = helper.runMigrationsAndValidate(name, 25, true, *ALL_MIGRATIONS)
+        val db = helper.runMigrationsAndValidate(name, 30, true, *ALL_MIGRATIONS)
         db.query("SELECT id, person, amountMinor, currency, nativeMinor FROM debts WHERE id = 1").use {
             it.moveToFirst()
             assertEquals(1L, it.getLong(0))

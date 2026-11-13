@@ -35,7 +35,7 @@ import com.leftovers.app.data.roomexpense.RoomExpenseDao
         StatementPaymentAllocation::class,
         RoomExpense::class,
     ],
-    version = 25,
+    version = 30,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -70,14 +70,107 @@ abstract class AppDatabase : RoomDatabase() {
     }
 }
 
+private fun SupportSQLiteDatabase.addColumnIfNotExists(table: String, column: String, definition: String) {
+    val cursor = query("PRAGMA table_info(`$table`)")
+    var exists = false
+    while (cursor.moveToNext()) {
+        val nameIndex = cursor.getColumnIndex("name")
+        if (nameIndex != -1 && cursor.getString(nameIndex).equals(column, ignoreCase = true)) {
+            exists = true
+            break
+        }
+    }
+    cursor.close()
+    if (!exists) {
+        execSQL("ALTER TABLE `$table` ADD COLUMN `$column` $definition")
+    }
+}
+
+/**
+ * v30: unifies all upstream v1.10.0-rc2 changes and guarantees columns exist.
+ */
+private val MIGRATION_29_30 = object : Migration(29, 30) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumnIfNotExists("accounts", "outOfBudget", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("accounts", "outOfTotal", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("recurring", "ratePercent", "TEXT")
+        db.addColumnIfNotExists("goals", "moreLinks", "TEXT")
+        db.addColumnIfNotExists("categories", "bucket", "TEXT")
+        db.addColumnIfNotExists("transactions", "splitOf", "INTEGER")
+        db.addColumnIfNotExists("deleted_transactions", "splitOf", "INTEGER")
+
+        db.addColumnIfNotExists("debts", "currency", "TEXT")
+        db.addColumnIfNotExists("debts", "nativeMinor", "INTEGER")
+        db.addColumnIfNotExists("debts", "accountId", "INTEGER")
+        db.addColumnIfNotExists("debts", "dueDateEpochDay", "INTEGER")
+        db.addColumnIfNotExists("debts", "reminderEnabled", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("debts", "repayment", "INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+/**
+ * Direct migration from v25 (v1.8.5) to v30 for seamless single-step upgrade.
+ */
+private val MIGRATION_25_30 = object : Migration(25, 30) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumnIfNotExists("debts", "splitOf", "INTEGER")
+        db.addColumnIfNotExists("debts", "pending", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("debts", "settledOn", "INTEGER")
+        db.addColumnIfNotExists("debts", "sharedId", "TEXT")
+
+        db.addColumnIfNotExists("accounts", "position", "INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("UPDATE `accounts` SET `position` = (SELECT COUNT(*) FROM `accounts` b WHERE b.id < `accounts`.id)")
+        db.addColumnIfNotExists("accounts", "outOfBudget", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("accounts", "outOfTotal", "INTEGER NOT NULL DEFAULT 0")
+
+        db.addColumnIfNotExists("recurring", "ratePercent", "TEXT")
+        db.addColumnIfNotExists("goals", "moreLinks", "TEXT")
+        db.addColumnIfNotExists("categories", "bucket", "TEXT")
+        db.addColumnIfNotExists("categories", "hidden", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("transactions", "splitOf", "INTEGER")
+        db.addColumnIfNotExists("deleted_transactions", "splitOf", "INTEGER")
+    }
+}
+
+/** v29: a category can be hidden from adding without deleting it (#56); money owed received from a friend's app. */
+private val MIGRATION_28_29 = object : Migration(28, 29) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumnIfNotExists("categories", "hidden", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("debts", "sharedId", "TEXT")
+    }
+}
+
+/** v28: accounts in the order the user puts them (#47). */
+private val MIGRATION_27_28 = object : Migration(27, 28) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumnIfNotExists("accounts", "position", "INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("UPDATE `accounts` SET `position` = (SELECT COUNT(*) FROM `accounts` b WHERE b.id < `accounts`.id)")
+    }
+}
+
+/** v27: the day a lent or borrowed entry was paid back, to show on it. */
+private val MIGRATION_26_27 = object : Migration(26, 27) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumnIfNotExists("debts", "settledOn", "INTEGER")
+    }
+}
+
+/** v26: lent or borrowed with the amount not known yet, kept as a reminder (#36). */
+private val MIGRATION_25_26 = object : Migration(25, 26) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumnIfNotExists("debts", "pending", "INTEGER NOT NULL DEFAULT 0")
+        db.addColumnIfNotExists("debts", "splitOf", "INTEGER")
+    }
+}
+
 /**
  * v25 adds optional currency and nativeMinor to debts so money lent/borrowed can be in another
  * currency (e.g. USD, EUR, NPR) like accounts and transactions.
  */
 private val MIGRATION_24_25 = object : Migration(24, 25) {
     override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE `debts` ADD COLUMN `currency` TEXT")
-        db.execSQL("ALTER TABLE `debts` ADD COLUMN `nativeMinor` INTEGER")
+        db.addColumnIfNotExists("debts", "currency", "TEXT")
+        db.addColumnIfNotExists("debts", "nativeMinor", "INTEGER")
     }
 }
 
@@ -787,5 +880,10 @@ val DefaultCategories = listOf(
 
 /** Every upgrade step, oldest first; also used by the migration tests. */
 internal val ALL_MIGRATIONS: Array<Migration>
-    get() = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
-
+    get() = arrayOf(
+        MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+        MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
+        MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19,
+        MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
+        MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_25_30,
+    )

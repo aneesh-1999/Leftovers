@@ -1,5 +1,7 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.data.openBalances
+import com.leftovers.app.ui.components.LocalUndo
 import com.leftovers.app.ui.components.Haptics
 import com.leftovers.app.ui.components.toggleHaptic
 import androidx.compose.foundation.gestures.transformable
@@ -158,8 +160,11 @@ import java.time.YearMonth
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-/** A slice of a split entry: [amountMinor] goes to [categoryId]; the rest stays with the main category. */
-data class SplitPart(val categoryId: Long, val amountMinor: Long)
+/**
+ * A slice of a split entry: [amountMinor] goes to [categoryId]; the rest stays with the main category.
+ * [note] is the part's own note; empty, it takes the main entry's.
+ */
+data class SplitPart(val categoryId: Long, val amountMinor: Long, val note: String = "", val id: Long = 0)
 
 /** Drives the keypad editor for adding a new entry or editing an existing one. */
 class EditorViewModel(
@@ -176,6 +181,43 @@ class EditorViewModel(
 ) : ViewModel() {
     /** Whether an AI is connected, for reading a receipt photo into the entry. */
     val aiConfig = assistant.config
+
+    /** 50/30/20 with its picker on: an expense's category is chosen by Needs, Wants or Savings first (#39). */
+    val pickByBucket: StateFlow<Boolean> = settings.settings.map { it.plan.buckets && it.plan.bucketPicker }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** What's open with each person, to spot an entry that is really someone paying back. */
+    val openOwed: StateFlow<List<com.leftovers.app.data.PersonBalance>> = planning.debts.map { d -> d.openBalances().filter { it.netMinor != 0L } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * This entry as someone paying you back (income) or you paying them (spending): settled in Money owed instead
+     * of saved as an entry. [onDone] gets what to say and the Undo.
+     */
+    fun recordPayback(match: com.leftovers.app.util.Payback.Match, onDone: (String, suspend () -> Unit) -> Unit) {
+        val amount = amountMinor
+        if (amount <= 0) return
+        val income = type == TxType.INCOME
+        viewModelScope.launch {
+            val undo = planning.recordPayback(match.person, amount, accountId, date.toEpochDay())
+            if (smsId > 0) sms.dismiss(smsId)
+            onDone(if (income) "${match.person} paid you back" else "Paid ${match.person} back", undo)
+        }
+    }
+
+    /** The budget's envelope, when it counts entries by a #tag (#57): with its dates, to offer it only on those days. */
+    val envelope: StateFlow<com.leftovers.app.data.BudgetPlan?> = settings.settings.map { it.plan.takeIf { p -> p.envelopeTag != null } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Whether this entry counts in the envelope: it carries the envelope's tag. */
+    fun inEnvelope(tag: String): Boolean = tag in com.leftovers.app.data.hashtags(note)
+
+    /** Counts this entry in the envelope or takes it out, by adding or removing its tag, so nobody has to type it. */
+    fun setInEnvelope(tag: String, on: Boolean) {
+        val words = com.leftovers.app.data.noteText(note)
+        val others = com.leftovers.app.data.hashtags(note).filter { it != tag }
+        note = com.leftovers.app.data.withTags(words, if (on) others + tag else others)
+    }
     var readingReceipt by mutableStateOf(false)
         private set
     /** What happened when the photo was read: filled in, or why not. */
@@ -196,7 +238,7 @@ class EditorViewModel(
         viewModelScope.launch {
             runCatching {
                 val image = com.leftovers.app.ai.ImagePrep.prepare(app, Uri.fromFile(File(path)))
-                val cats = categories.value
+                val cats = categories.value.filter { !it.hidden }
                 com.leftovers.app.ai.ReceiptReader.read(
                     config,
                     image,
@@ -264,6 +306,10 @@ class EditorViewModel(
     var repeatMonthly by mutableStateOf(false)
     /** Other categories that take part of the amount; saved as separate entries. */
     val splits = mutableStateListOf<SplitPart>()
+    /** Editing a split bill: its parts as they were saved, to update or remove them. */
+    private var savedParts: List<Transaction> = emptyList()
+    /** Editing a bill split with people: what each of them owes for it, as saved. */
+    private var savedShares: List<Debt> = emptyList()
     val splitTotal: Long get() = splits.sumOf { it.amountMinor }
     /** People sharing this expense; each one's share is saved to Money owed. */
     val people = mutableStateListOf<String>()
@@ -361,6 +407,22 @@ class EditorViewModel(
                     accountId = tx.accountId
                     receiptPath = tx.receiptPath
                     originalReceipt = tx.receiptPath
+                    val parts = repository.getAllTransactions().filter { it.splitOf == tx.id }.map { it.toTransaction() }
+                    val shares = planning.debts.first().filter { it.splitOf == tx.id && !it.repayment }
+                    if (parts.isNotEmpty() || shares.isNotEmpty()) {
+                        savedParts = parts
+                        savedShares = shares
+                        // The whole bill: your share, the parts and everyone else's share.
+                        amountText = AmountInput.fromMinor(tx.amountMinor + parts.sumOf { it.amountMinor } + shares.sumOf { it.amountMinor })
+                        // A part that only repeats the bill's note shows none of its own.
+                        parts.forEach { p -> splits += SplitPart(p.categoryId, p.amountMinor, if (p.note == tx.note) "" else p.note, p.id) }
+                        // The people it was split with, as they were: evenly, or each with their own amount.
+                        shares.forEach { people += it.person }
+                        if (shares.isNotEmpty() && shares.any { it.amountMinor != personShare }) {
+                            equalSplit = false
+                            shares.forEach { customShares[it.person] = AmountInput.fromMinor(it.amountMinor) }
+                        }
+                    }
                 }
                 loaded = true
             }
@@ -383,9 +445,18 @@ class EditorViewModel(
             }
             // A detected payment to somewhere filed before opens under the same category again.
             if (smsId > 0 && categoryId == null && note.isNotBlank()) {
-                val past = repository.getAllTransactions().map { com.leftovers.app.util.MerchantMemory.Past(it.note, it.type, it.categoryId, it.epochDay, it.createdAt) }
+                val hidden = repository.categories.first().filter { it.hidden }.map { it.id }.toSet()
+                val past = repository.getAllTransactions().filter { it.categoryId !in hidden }
+                    .map { com.leftovers.app.util.MerchantMemory.Past(it.note, it.type, it.categoryId, it.epochDay, it.createdAt) }
                 com.leftovers.app.util.MerchantMemory.categoryFor(note, type, past)?.let { remembered ->
                     if (categoryId == null) categoryId = remembered
+                }
+                // Somewhere new: the phone's own AI, where there is one, picks from the categories.
+                if (categoryId == null) {
+                    val options = repository.categories.first().filter { it.type == type && !it.hidden }
+                    com.leftovers.app.ai.OnDevice.pickCategory(note, options.map { it.name })?.let { name ->
+                        if (categoryId == null) categoryId = options.firstOrNull { it.name == name }?.id
+                    }
                 }
             }
 
@@ -570,7 +641,25 @@ class EditorViewModel(
     }
 
     private fun saveOwed(onDone: (String) -> Unit, describe: (Long) -> String): Boolean {
-        if (amountMinor <= 0 || totalMinor <= 0) return false
+        // No amount yet: a reminder for each person, filled in once it's known (#36).
+        if (amountMinor <= 0) {
+            if (owedWith.isEmpty()) {
+                needPerson = true
+                return false
+            }
+            val way = if (lent) 1 else -1
+            val people = owedWith.toList()
+            val text = note.trim()
+            val day = date.toEpochDay()
+            val account = accountId
+            viewModelScope.launch {
+                people.forEach { planning.saveDebt(Debt(person = it, amountMinor = 0, note = text, epochDay = day, receiptPath = receiptPath, accountId = account, pending = way)) }
+                if (isEditing) repository.getTransaction(id)?.let { repository.removeTransaction(it) }
+                onDone("Saved for ${people.joinToString(" and ")} · amount pending, in Money owed")
+            }
+            return true
+        }
+        if (totalMinor <= 0) return false
         val shares = owedShares()
         if (shares.isEmpty()) {
             needPerson = true
@@ -589,6 +678,8 @@ class EditorViewModel(
             shares.forEach { (person, amount) ->
                 planning.saveDebt(Debt(person = person, amountMinor = if (wasLent) amount else -amount, note = text, epochDay = day, receiptPath = photo, accountId = account))
             }
+            // An entry edited into lent or borrowed is now in Money owed, so the expense or income goes.
+            if (isEditing) repository.getTransaction(id)?.let { repository.removeTransaction(it) }
             if (smsId > 0) sms.dismiss(smsId)
             val names = shares.map { it.first }.let { if (it.size == 1) it[0] else it.dropLast(1).joinToString(", ") + " and " + it.last() }
             val same = shares.map { it.second }.distinct().size == 1
@@ -632,7 +723,8 @@ class EditorViewModel(
     fun sortedCategories(all: List<Category>, items: List<TransactionItem>): List<Category> {
         val since = LocalDate.now().minusDays(120).toEpochDay()
         val usage = items.filter { it.epochDay >= since }.groupingBy { it.categoryId }.eachCount()
-        return all.filter { it.type == type }.sortedByDescending { usage[it.id] ?: 0 }
+        // Hidden categories aren't offered, unless this entry is already in one.
+        return all.filter { it.type == type && (!it.hidden || it.id == categoryId) }.sortedByDescending { usage[it.id] ?: 0 }
     }
 
     /**
@@ -640,16 +732,16 @@ class EditorViewModel(
      * when the entry isn't complete yet.
      */
     fun save(onDone: (String) -> Unit, describe: (Long) -> String): Boolean {
-        if (owed && !isEditing) return saveOwed(onDone, describe)
+        if (owed) return saveOwed(onDone, describe)
         if (amountMinor <= 0 || totalMinor <= 0) return false
         val category = categoryId
         if (category == null) {
             needCategory = true
             return false
         }
-        val parts = if (isEditing || repeatMonthly) emptyList() else splits.toList()
+        val parts = if (repeatMonthly) emptyList() else splits.toList()
         // Others' shares go to Money owed; only your own share is your expense.
-        val sharers = if (isEditing || repeatMonthly || type != TxType.EXPENSE) emptyList()
+        val sharers = if (repeatMonthly || type != TxType.EXPENSE) emptyList()
         else people.map { it to shareOf(it) }.filter { it.second > 0 }
         val yours = totalMinor - sharers.sumOf { it.second }
         // The original amount abroad is kept only when this entry is the whole bill.
@@ -662,21 +754,7 @@ class EditorViewModel(
         val savedAmount = yours - parts.sumOf { it.amountMinor }
         val savedDate = date
         viewModelScope.launch {
-            parts.forEach { part ->
-                repository.saveTransaction(
-                    Transaction(
-                        amountMinor = part.amountMinor,
-                        type = savedType,
-                        categoryId = part.categoryId,
-                        epochDay = savedDate.toEpochDay(),
-                        note = note.trim(),
-                        createdAt = createdAt,
-                        accountId = accountId,
-                    ),
-                )
-                if (savedType == TxType.EXPENSE) budgetAlerts.checkAfterExpense(savedDate, part.categoryId)
-            }
-            repository.saveTransaction(
+            val mainId = repository.saveTransaction(
                 Transaction(
                     id = if (isEditing) id else 0,
                     amountMinor = savedAmount,
@@ -691,16 +769,42 @@ class EditorViewModel(
                     foreignCurrency = abroad,
                 ),
             )
+            val kept = parts.map { it.id }.toSet()
+            savedParts.filter { it.id !in kept }.forEach { repository.deleteTransaction(it) }
+            parts.forEach { part ->
+                repository.saveTransaction(
+                    Transaction(
+                        id = part.id,
+                        amountMinor = part.amountMinor,
+                        type = savedType,
+                        categoryId = part.categoryId,
+                        epochDay = savedDate.toEpochDay(),
+                        note = part.note.trim().ifBlank { note.trim() },
+                        createdAt = createdAt,
+                        accountId = accountId,
+                        // Shown under the entry it was split from (#36).
+                        splitOf = mainId,
+                    ),
+                )
+                if (savedType == TxType.EXPENSE) budgetAlerts.checkAfterExpense(savedDate, part.categoryId)
+            }
             foreignCurrency?.let { settings.setForeignRate(it, abroadRate) }
             if (originalReceipt != null && originalReceipt != receiptPath) ReceiptStore.delete(originalReceipt)
             val owedNote = note.trim().ifBlank { categories.value.find { it.id == category }?.name.orEmpty() }
+            // Each person's share, linked to this entry so it can be shown and changed with it. Changing the split
+            // updates what they owe; anyone taken off it no longer owes for it.
             sharers.forEach { (person, share) ->
-                planning.saveDebt(Debt(person = person, amountMinor = share, note = owedNote, epochDay = savedDate.toEpochDay(), accountId = accountId))
+                val was = savedShares.firstOrNull { it.person.equals(person, ignoreCase = true) }
+                planning.saveDebt(
+                    was?.copy(amountMinor = share, note = owedNote, epochDay = savedDate.toEpochDay(), accountId = accountId)
+                        ?: Debt(person = person, amountMinor = share, note = owedNote, epochDay = savedDate.toEpochDay(), accountId = accountId, splitOf = mainId),
+                )
             }
             if (isRoomExpense && roomExpensePawanPaid) {
                 val otherPerson = Roommate.fromString(settings.settings.first().roomExpenseRoommate).other.displayName
                 planning.saveDebt(Debt(person = otherPerson, amountMinor = -savedAmount, note = owedNote, epochDay = savedDate.toEpochDay(), accountId = accountId))
             }
+            savedShares.filter { s -> sharers.none { it.first.equals(s.person, ignoreCase = true) } }.forEach { planning.deleteDebt(it) }
             if (smsId > 0) sms.dismiss(smsId)
             val repeats = repeatMonthly && !isEditing
             if (repeats) {
@@ -724,7 +828,7 @@ class EditorViewModel(
             val whenText = if (savedDate == LocalDate.now()) "" else " · ${savedDate.friendlyLabel()}"
             onDone(
                 when {
-                    isEditing -> "Changes saved"
+                    isEditing && sharers.isEmpty() -> "Changes saved"
                     isRoomExpense && roomExpensePawanPaid -> "${describe(savedAmount)} added · You owe ${Roommate.fromString(settings.settings.first().roomExpenseRoommate).other.displayName} ${describe(savedAmount)}"
                     sharers.isNotEmpty() && sharers.map { it.second }.distinct().size == 1 -> "${describe(savedAmount + parts.sumOf { it.amountMinor })} added · " +
                         "${sharers.joinToString(" and ") { it.first }} ${if (sharers.size == 1) "owes" else "owe"} you ${describe(sharers[0].second)}${if (sharers.size > 1) " each" else ""}"
@@ -753,6 +857,9 @@ class EditorViewModel(
                 // The photo stays with the entry in Deleted entries until it's removed for good.
                 repository.deleteTransaction(it)
             }
+            // A split bill goes as a whole: its parts, and what people owe for it.
+            savedParts.forEach { repository.deleteTransaction(it) }
+            savedShares.forEach { planning.deleteDebt(it) }
             stopRepeating?.let { planning.deleteRecurring(it.toRecurring()) }
             onDone()
         }
@@ -765,7 +872,7 @@ private val stripDay = DateTimeFormatter.ofPattern("EEE")
 enum class OwedSplit(val label: String) { EACH("Each"), SPLIT("Split"), BY_AMOUNT("By amount") }
 
 /** What the add screen is logging. Swiping across the amount moves between expense and income; the lent or borrowed button sets owed. */
-enum class EntryKind(val label: String) { EXPENSE("Expense"), INCOME("Income"), OWED("Lent or borrowed") }
+enum class EntryKind(val label: String) { EXPENSE("Spending"), INCOME("Income"), OWED("Lent or borrowed") }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -970,8 +1077,45 @@ fun EditorScreen(
             Spacer(Modifier.height(16.dp))
             // A long note is cut short here rather than pushing the buttons below off screen.
             NotePill(viewModel.note, onClick = { showNote = true }, modifier = Modifier.padding(horizontal = 32.dp).widthIn(max = 320.dp))
+            // Someone paying you back, typed as income (or you paying them, as spending): one tap records it in
+            // Money owed instead, so it isn't counted twice. Only for a new entry, by the note's name or the amount.
+            val owedNow by viewModel.openOwed.collectAsStateWithLifecycle()
+            val payback = if (viewModel.isEditing || viewModel.owed || viewModel.amountMinor <= 0) null
+            else remember(owedNow, viewModel.note, viewModel.amountMinor, viewModel.type) {
+                com.leftovers.app.util.Payback.find(com.leftovers.app.data.noteText(viewModel.note), viewModel.amountMinor, viewModel.type == TxType.INCOME, owedNow)
+            }
+            if (payback != null) {
+                val undo = LocalUndo.current
+                Spacer(Modifier.height(10.dp))
+                Chip(
+                    if (viewModel.type == TxType.INCOME) "${payback.person} paying you back? Record it" else "Paying ${payback.person} back? Record it",
+                    onClick = {
+                        viewModel.recordPayback(payback) { said, restore ->
+                            undo.show(said, restore)
+                            onClose()
+                        }
+                    },
+                    icon = Lucide.HandCoins,
+                    iconTint = c.textSecondary,
+                )
+            }
+            // An envelope budget by #tag: one tap counts this entry in it, instead of typing the tag (#57).
+            val envelope by viewModel.envelope.collectAsStateWithLifecycle()
+            val envelopeTag = envelope?.envelopeTag
+            if (envelopeTag != null && envelope?.envelopeCovers(viewModel.date) == true && viewModel.type == TxType.EXPENSE && !viewModel.owed) {
+                val on = viewModel.inEnvelope(envelopeTag)
+                Spacer(Modifier.height(10.dp))
+                Chip(
+                    if (on) "In the #$envelopeTag budget" else "Count in the #$envelopeTag budget",
+                    onClick = { viewModel.setInEnvelope(envelopeTag, !on) },
+                    icon = if (on) Lucide.Check else Lucide.PiggyBank,
+                    iconTint = if (on) null else c.textSecondary,
+                    selected = on,
+                )
+            }
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Top-aligned outside lent or borrowed, so the account chip lines up with the buttons, their names below.
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = if (viewModel.owed) Alignment.CenterVertically else Alignment.Top) {
                 if (viewModel.owed) {
                     RoundButton(
                         Lucide.HandCoins,
@@ -992,10 +1136,11 @@ fun EditorScreen(
                 if (accounts.size > 1) {
                     AccountPicker(accounts, viewModel.accountId) { viewModel.chooseAccount(it) }
                 }
-                if (!viewModel.isEditing) {
+                run {
                     val repeating = viewModel.repeatMonthly
-                    RoundButton(
+                    if (!viewModel.isEditing) NamedRound(
                         Lucide.Repeat,
+                        "Repeat",
                         if (repeating) "Don't repeat" else "Repeat every month",
                         {
                             viewModel.repeatMonthly = !repeating
@@ -1005,28 +1150,28 @@ fun EditorScreen(
                             }
                             if (repeating && viewModel.date > LocalDate.now()) viewModel.date = LocalDate.now()
                         },
-                        size = 40.dp,
                         tint = if (repeating) c.onAccent else c.textSecondary,
                         container = if (repeating) c.accent else null,
                     )
                     if (!repeating) {
                         // One button for both kinds of split: with people, or across your own categories.
                         val split = viewModel.splits.isNotEmpty() || (viewModel.people.isNotEmpty() && viewModel.type == TxType.EXPENSE)
-                        RoundButton(
+                        NamedRound(
                             Lucide.Split,
+                            "Split",
                             "Split this",
                             { showSplit = true },
-                            size = 40.dp,
                             tint = if (split) c.onAccent else c.textSecondary,
                             container = if (split) c.accent else null,
                         )
                     }
-                    RoundButton(Lucide.HandCoins, "Lent or borrowed", { viewModel.selectKind(EntryKind.OWED) }, size = 40.dp, tint = c.textSecondary)
+                    NamedRound(Lucide.HandCoins, "Lent", "Lent or borrowed", { viewModel.selectKind(EntryKind.OWED) }, tint = c.textSecondary)
                 }
                 }
                 val path = viewModel.receiptPath
                 if (path == null) {
-                    RoundButton(Lucide.Camera, "Attach receipt", { receiptMenu = true }, size = 40.dp, tint = c.textSecondary)
+                    if (viewModel.owed) RoundButton(Lucide.Camera, "Attach receipt", { receiptMenu = true }, size = 40.dp, tint = c.textSecondary)
+                    else NamedRound(Lucide.Camera, "Photo", "Attach receipt", { receiptMenu = true }, tint = c.textSecondary)
                 } else {
                     ReceiptThumb(path, onOpen = { viewReceipt = true })
                 }
@@ -1179,12 +1324,53 @@ fun EditorScreen(
             )
         }
         val sorted = remember(categories, history, viewModel.type) { viewModel.sortedCategories(categories, history) }
+        // 50/30/20, when chosen: Needs, Wants or Savings first, then only that group's categories (#39).
+        val byBucket by viewModel.pickByBucket.collectAsStateWithLifecycle()
+        val grouped = byBucket && viewModel.type == TxType.EXPENSE
+        var group by rememberSaveable(viewModel.type) { mutableStateOf<String?>(null) }
+        // An entry being changed opens on its category's group.
+        LaunchedEffect(grouped, viewModel.categoryId) {
+            if (grouped && group == null) sorted.find { it.id == viewModel.categoryId }?.let { group = com.leftovers.app.data.Bucket.of(it).name }
+        }
+        val shown = if (grouped && group != null) sorted.filter { com.leftovers.app.data.Bucket.of(it).name == group } else sorted
+        var showAll by rememberSaveable { mutableStateOf(false) }
+        if (showAll) {
+            AllCategoriesSheet(sorted, viewModel.categoryId, onDismiss = { showAll = false }) {
+                viewModel.selectCategory(it)
+                showAll = false
+            }
+        }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = sliding,
         ) {
-            items(sorted, key = { it.id }) { cat ->
+            if (grouped && group == null) {
+                items(com.leftovers.app.data.Bucket.entries, key = { "bucket-${it.name}" }) { b ->
+                    Chip(
+                        text = b.label,
+                        onClick = { group = b.name },
+                        icon = when (b) {
+                            com.leftovers.app.data.Bucket.NEED -> Lucide.House
+                            com.leftovers.app.data.Bucket.WANT -> Lucide.ShoppingBag
+                            com.leftovers.app.data.Bucket.SAVE -> Lucide.PiggyBank
+                        },
+                        iconTint = c.textSecondary,
+                    )
+                }
+            } else {
+                if (grouped) {
+                    // Back to the three groups.
+                    item(key = "bucket-back") {
+                        Chip(
+                            com.leftovers.app.data.Bucket.entries.first { it.name == group }.label,
+                            onClick = { group = null },
+                            icon = Lucide.ChevronLeft,
+                            iconTint = c.textSecondary,
+                        )
+                    }
+                }
+            items(shown, key = { it.id }) { cat ->
                 Chip(
                     text = cat.name,
                     onClick = { viewModel.selectCategory(cat.id) },
@@ -1193,6 +1379,9 @@ fun EditorScreen(
                     selected = viewModel.categoryId == cat.id,
                 )
             }
+            }
+            // Many categories: all of them at once, in a grid with a search, instead of a long way sideways.
+            if (sorted.size > 6) item(key = "all") { Chip("All", onClick = { showAll = true }, icon = Lucide.LayoutGrid, iconTint = c.textSecondary) }
             item { Chip("Edit", onClick = onManageCategories, icon = Lucide.SlidersHorizontal, iconTint = c.textSecondary) }
         }
         }
@@ -1242,7 +1431,7 @@ fun EditorScreen(
                 SplitBody(
                     total = viewModel.totalMinor,
                     mainCategory = categories.find { it.id == viewModel.categoryId },
-                    categories = categories.filter { it.type == viewModel.type },
+                    categories = categories.filter { it.type == viewModel.type && !it.hidden },
                     parts = viewModel.splits,
                     onDismiss = { showSplit = false },
                     header = header,
@@ -1406,7 +1595,7 @@ fun EditorScreen(
             title = { Text("Delete this entry?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("You can restore it later from Settings → Deleted entries.", color = c.textSecondary)
+                    Text("You can restore it later from Settings → Backup & data → Deleted entries.", color = c.textSecondary)
                     linked?.let { r ->
                         Row(
                             Modifier.fillMaxWidth().pressable({ stopRepeating = !stopRepeating }, pressedScale = 0.98f),
@@ -1453,12 +1642,16 @@ private fun NotePill(note: String, onClick: () -> Unit, modifier: Modifier = Mod
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // The envelope budget's tag has its own chip below, so it isn't repeated here (#57).
+        val envelopeTag = LocalEnvelopeTag.current
+        val shown = if (envelopeTag == null) note
+        else com.leftovers.app.data.withTags(com.leftovers.app.data.noteText(note), com.leftovers.app.data.hashtags(note).filter { it != envelopeTag })
         Icon(Lucide.PenLine, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(8.dp))
         Text(
-            note.ifBlank { "Add a note" },
+            shown.ifBlank { "Add a note" },
             style = MaterialTheme.typography.labelLarge,
-            color = if (note.isBlank()) c.textTertiary else c.textPrimary,
+            color = if (shown.isBlank()) c.textTertiary else c.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -1714,12 +1907,22 @@ private fun SplitBody(
     val money = LocalMoney.current
     var pick by rememberSaveable { mutableStateOf<Long?>(null) }
     var amountText by rememberSaveable { mutableStateOf("") }
+    var partNote by rememberSaveable { mutableStateOf("") }
+    // A part taken back into the fields to change it: the saved entry it is, so saving updates it.
+    var changingId by rememberSaveable { mutableStateOf(0L) }
+    val amountFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     val rest = total - parts.sumOf { it.amountMinor }
     val partMinor = AmountInput.toMinor(amountText) ?: 0L
+    // After Add part: the keyboard closes and the list scrolls into view, with the new part in it,
+    // instead of the form jumping down under the keyboard as the list grows.
+    val scroll = rememberScrollState()
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val scope = rememberCoroutineScope()
 
     run {
         Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+            Modifier.verticalScroll(scroll).padding(horizontal = 20.dp).padding(bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             header()
@@ -1729,7 +1932,7 @@ private fun SplitBody(
                 return@Column
             }
             Text(
-                "Each part is saved as its own entry with the same date and note.",
+                "Each part is its own entry on the same day, shown under this one. Give a part its own note, or it keeps this entry's.",
                 style = MaterialTheme.typography.bodySmall,
                 color = c.textSecondary,
             )
@@ -1746,6 +1949,14 @@ private fun SplitBody(
                         com.leftovers.app.ui.components.RowDivider()
                         com.leftovers.app.ui.components.ListRow(
                             cat?.name ?: "Category",
+                            onClick = {
+                                pick = part.categoryId
+                                amountText = AmountInput.fromMinor(part.amountMinor)
+                                partNote = part.note
+                                changingId = part.id
+                                parts.removeAt(i)
+                            },
+                            subtitle = part.note.ifBlank { null },
                             leading = { if (cat != null) CategoryIcon(cat.emoji, cat.color, size = 38.dp) },
                             trailing = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1764,20 +1975,32 @@ private fun SplitBody(
                     Chip(cat.name, onClick = { pick = cat.id }, icon = CategoryIcons[cat.emoji], iconTint = Color(cat.color), selected = pick == cat.id)
                 }
             }
-            MoneyField(amountText, { amountText = it }, label = "Amount for this part")
-            PrimaryButton(
-                "Add part",
-                {
-                    val id = pick ?: return@PrimaryButton
-                    val existing = parts.indexOfFirst { it.categoryId == id }
-                    if (existing >= 0) parts[existing] = parts[existing].copy(amountMinor = parts[existing].amountMinor + partMinor)
-                    else parts += SplitPart(id, partMinor)
-                    amountText = ""
-                    pick = null
-                },
-                Modifier.fillMaxWidth(),
-                enabled = pick != null && partMinor > 0 && partMinor < rest,
+            val canAdd = pick != null && partMinor > 0 && partMinor < rest
+            fun addPart() {
+                // Read now, not when this was made: the keyboard's ✓ can hold on to an older copy of it.
+                val id = pick ?: return
+                val amount = AmountInput.toMinor(amountText) ?: 0L
+                if (amount <= 0 || amount >= total - parts.sumOf { it.amountMinor }) return
+                val text = partNote.trim()
+                // The same category and note again adds to that part; another note is a part of its own.
+                val existing = parts.indexOfFirst { it.categoryId == id && it.note == text }
+                if (existing >= 0) parts[existing] = parts[existing].copy(amountMinor = parts[existing].amountMinor + amount)
+                else parts += SplitPart(id, amount, text, changingId)
+                amountText = ""
+                partNote = ""
+                changingId = 0L
+                pick = null
+                focus.clearFocus()
+                keyboard?.hide()
+                scope.launch { scroll.animateScrollTo(0) }
+            }
+            // The keyboard's ✓ adds the part too, so Add part can stay under the field even while the keyboard covers it.
+            GlassTextField(
+                partNote, { partNote = it.take(80) }, placeholder = "Note for this part (optional)", modifier = Modifier.fillMaxWidth(),
+                onDone = { runCatching { amountFocus.requestFocus() } },
             )
+            MoneyField(amountText, { amountText = it }, label = "Amount for this part", focusRequester = amountFocus, onDone = ::addPart)
+            PrimaryButton(if (changingId != 0L) "Save part" else "Add part", ::addPart, Modifier.fillMaxWidth(), enabled = canAdd)
             if (rest <= 0) {
                 Text("The parts add up to the whole amount. Leave something for ${mainCategory?.name ?: "the main category"}.", style = MaterialTheme.typography.bodySmall, color = c.negative)
             }
@@ -1950,5 +2173,47 @@ private fun ForeignSheet(
                 }
             }
         }
+    }
+}
+
+/** Every category at once, most used first, in a grid with a search: for when there are too many to scroll through. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AllCategoriesSheet(categories: List<Category>, selected: Long?, onDismiss: () -> Unit, onPick: (Long) -> Unit) {
+    val c = LocalAppColors.current
+    var query by rememberSaveable { mutableStateOf("") }
+    val found = categories.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
+    GlassSheet(onDismiss) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Categories", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+            GlassTextField(query, { query = it.take(24) }, placeholder = "Search")
+            if (found.isEmpty()) {
+                Text("No category called that", style = MaterialTheme.typography.bodyMedium, color = c.textSecondary, modifier = Modifier.padding(start = 6.dp))
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                found.forEach { cat ->
+                    Chip(cat.name, onClick = { onPick(cat.id) }, icon = CategoryIcons[cat.emoji], iconTint = Color(cat.color), selected = cat.id == selected)
+                }
+            }
+        }
+    }
+}
+
+/** A round button with its name under it, so what the add screen's buttons do doesn't have to be guessed. */
+@Composable
+private fun NamedRound(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    name: String,
+    description: String,
+    onClick: () -> Unit,
+    tint: Color,
+    container: Color? = null,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        RoundButton(icon, description, onClick, size = 40.dp, tint = tint, container = container)
+        Text(name, style = MaterialTheme.typography.labelSmall, color = LocalAppColors.current.textSecondary, maxLines = 1)
     }
 }

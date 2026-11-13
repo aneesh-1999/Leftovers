@@ -94,6 +94,8 @@ data class BudgetsUiState(
     val pendingSubscriptions: Long = 0,
     val goalsMonthly: Long = 0,
     val rows: List<CategoryBudgetRow> = emptyList(),
+    /** 50/30/20, when it's on (#39). */
+    val buckets: List<com.leftovers.app.data.BucketUse> = emptyList(),
 )
 
 class BudgetsViewModel(
@@ -108,12 +110,13 @@ class BudgetsViewModel(
         repository.categories,
         repository.allTransactions,
         planning.recurring,
-        planning.goals,
-    ) { s, categories, all, recurring, goals ->
-        val items = all.filter { YearMonth.from(it.date) == month }
-        val breakdown = s.plan.breakdownFor(month, all)
+        combine(planning.goals, planning.allDeposits, ::Pair),
+    ) { s, categories, all, recurring, (goals, deposits) ->
+        val cycle = s.plan.cycleOf(LocalDate.now())
+        val items = all.filter { it.date in cycle }
+        val breakdown = s.plan.breakdownFor(cycle.month, all)
         val budget = breakdown.total
-        val pending = recurring.pendingExpenses(month)
+        val pending = if (s.plan.envelope) 0L else recurring.pendingExpenses(cycle)
         val spentByCategory = items.filter { it.type == TxType.EXPENSE }
             .groupBy { it.categoryId }
             .mapValues { (_, list) -> list.sumOf { it.amountMinor } }
@@ -123,11 +126,17 @@ class BudgetsViewModel(
             plan = s.plan,
             overallBudget = budget,
             breakdown = breakdown,
-            totalSpent = items.totalOf(TxType.EXPENSE),
-            daysLeft = month.lengthOfMonth() - LocalDate.now().dayOfMonth + 1,
-            today = dailyBudget(budget, items, pending),
+            // What uses the budget: not accounts left out of it (#33), nor spending outside an envelope (#42).
+            totalSpent = items.filter { !it.outOfBudget }.totalOf(TxType.EXPENSE),
+            daysLeft = cycle.daysLeft(),
+            today = dailyBudget(budget, items, pending, periodEnd = cycle.end),
             pendingSubscriptions = pending,
             goalsMonthly = goals.filter { !it.reached }.sumOf { it.monthlyNeeded() },
+            buckets = if (!s.plan.buckets) emptyList() else {
+                val income = com.leftovers.app.data.bucketBase(s.plan.bucketIncome, items.totalOf(TxType.INCOME), budget)
+                val saved = deposits.filter { it.epochDay in cycle.start.toEpochDay()..cycle.end.toEpochDay() }.sumOf { it.amountMinor }
+                com.leftovers.app.data.bucketUse(income, items, categories, saved)
+            },
             rows = categories.filter { it.type == TxType.EXPENSE }
                 .map { CategoryBudgetRow(it, spentByCategory[it.id] ?: 0L) }
                 // Categories with a limit first, then the ones you spend most on.
@@ -146,6 +155,8 @@ fun BudgetsScreen(
     onEditPlan: () -> Unit,
     onOpenSubscriptions: () -> Unit,
     onOpenGoals: () -> Unit,
+    /** Opens the add screen, given the note to start with (the envelope's tag, when the budget is one). */
+    onAdd: (String) -> Unit = {},
     viewModel: BudgetsViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -163,10 +174,12 @@ fun BudgetsScreen(
         }
     }
 
+    val envelopeTag = LocalEnvelopeTag.current
     GlassScreen(
         title = "Budget",
         subtitle = state.month.label(),
         onBack = onBack,
+        actions = { com.leftovers.app.ui.components.RoundButton(Lucide.Plus, "Add an entry", { onAdd(envelopeTag?.let { "#$it" }.orEmpty()) }) },
     ) { padding ->
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -263,6 +276,35 @@ fun BudgetsScreen(
                                     trailing = { Text("${money.format(state.goalsMonthly)}/mo", style = MaterialTheme.typography.titleSmall, color = c.textPrimary) },
                                     onClick = onOpenGoals,
                                 )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (state.buckets.isNotEmpty()) {
+                item { SectionHeader("50/30/20", Modifier.appear(2)) }
+                item {
+                    Glass(Modifier.fillMaxWidth().appear(2)) {
+                        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            if (state.buckets.all { it.allowed == 0L }) {
+                                Text("Log this month's income, or set it in Budget plan, to see your 50/30/20.", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                            }
+                            state.buckets.forEach { b ->
+                                val save = b.bucket == com.leftovers.app.data.Bucket.SAVE
+                                // Savings is a target to reach; needs and wants are limits not to pass.
+                                val over = !save && b.used > b.allowed && b.allowed > 0
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("${b.bucket.label} · ${b.bucket.share}%", style = MaterialTheme.typography.titleSmall, color = c.textPrimary, modifier = Modifier.weight(1f))
+                                        Text(
+                                            "${money.formatWhole(b.used)} of ${money.formatWhole(b.allowed)}",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = when { over -> c.negative; save && b.used >= b.allowed && b.allowed > 0 -> c.positive; else -> c.textSecondary },
+                                        )
+                                    }
+                                    ProgressLine(if (b.allowed > 0) b.used.toFloat() / b.allowed else 0f)
+                                }
                             }
                         }
                     }

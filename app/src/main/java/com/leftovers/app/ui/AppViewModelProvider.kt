@@ -13,6 +13,7 @@ import com.leftovers.app.ui.screens.BudgetPlanViewModel
 import com.leftovers.app.ui.screens.BudgetsViewModel
 import com.leftovers.app.ui.screens.CategoriesViewModel
 import com.leftovers.app.ui.screens.DebtsViewModel
+import com.leftovers.app.ui.screens.NoticesViewModel
 import com.leftovers.app.ui.screens.DeletedViewModel
 import com.leftovers.app.ui.screens.EditorViewModel
 import com.leftovers.app.ui.screens.EmailSetupViewModel
@@ -41,17 +42,18 @@ object AppViewModelProvider {
         initializer { StatsViewModel(container().repository, container().settings, container().planning) }
         initializer { PlanViewModel(container().repository, container().settings, container().planning) }
         initializer { BudgetsViewModel(container().repository, container().settings, container().planning) }
-        initializer { BudgetPlanViewModel(container().settings, container().repository) }
+        initializer { BudgetPlanViewModel(container().settings, container().repository, container().accounts) }
         initializer {
             val c = container()
             SubscriptionsViewModel(c.planning, c.repository, c.accounts, c.settings) { c.syncRecurring() }
         }
         initializer { GoalsViewModel(container().planning) }
+        initializer { NoticesViewModel(container().settings) }
         initializer { DebtsViewModel(container().planning, container().accounts, container().settings) }
         initializer { DeletedViewModel(container().repository, container().roster, container().settings) }
         initializer { GoalDetailViewModel(createSavedStateHandle(), container().planning) }
-        initializer { CategoriesViewModel(container().repository) }
-        initializer { TransactionPeekViewModel(container().repository, container().accounts) }
+        initializer { CategoriesViewModel(container().repository, container().settings) }
+        initializer { TransactionPeekViewModel(container().repository, container().accounts, container().settings, container().planning) }
         initializer {
             val c = container()
             SettingsViewModel(c.repository, c.settings, c.backup, c.assistant, c.planning, c.accounts) { c.resetEverything() }

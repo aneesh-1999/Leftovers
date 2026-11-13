@@ -165,6 +165,10 @@ class AppUpdateRepository(
     }
 
     private val checkMutex = Mutex()
+    @Volatile
+    private var inMemoryCachedRelease: GitHubRelease? = null
+    @Volatile
+    private var inMemoryCacheTimestamp: Long = 0L
 
     companion object {
         const val DEFAULT_REPO_OWNER = "aneesh-1999"
@@ -255,10 +259,11 @@ class AppUpdateRepository(
                 )
             }
 
-            val cacheAge = now - settings.updateCacheTimestamp
-            val isCacheValid = settings.updateCachedReleaseJson.isNotBlank() && cacheAge in 0 until CACHE_TTL_MILLIS
+            val effectiveTimestamp = if (settings.updateCacheTimestamp > 0) settings.updateCacheTimestamp else inMemoryCacheTimestamp
+            val cacheAge = now - effectiveTimestamp
+            val isCacheValid = (settings.updateCachedReleaseJson.isNotBlank() || inMemoryCachedRelease != null) && cacheAge >= 0 && cacheAge < CACHE_TTL_MILLIS
             if (!forceRefresh && isCacheValid) {
-                val cached = runCatching { parseReleaseJson(settings.updateCachedReleaseJson) }.getOrNull()
+                val cached = inMemoryCachedRelease ?: runCatching { parseReleaseJson(settings.updateCachedReleaseJson) }.getOrNull()
                 if (cached != null) return@withLock Result.success(cached)
             }
 
@@ -286,6 +291,8 @@ class AppUpdateRepository(
                     }
                     in 200..299 -> {
                         val release = parseReleaseJson(response.body)
+                        inMemoryCachedRelease = release
+                        inMemoryCacheTimestamp = now
                         val etag = response.headers.findHeader("ETag").orEmpty()
                         settingsRepo.setUpdateCache(response.body, etag, now)
                         settingsRepo.setLastUpdateCheckTime(now)
@@ -330,7 +337,7 @@ class AppUpdateRepository(
             val now = System.currentTimeMillis()
             val rateLimitReset = settings.updateRateLimitResetTime
             val isRateLimited = rateLimitReset > now
-            val cachedRelease = runCatching {
+            val cachedRelease = inMemoryCachedRelease ?: runCatching {
                 if (settings.updateCachedReleaseJson.isNotBlank()) parseReleaseJson(settings.updateCachedReleaseJson) else null
             }.getOrNull()
 
@@ -348,13 +355,14 @@ class AppUpdateRepository(
             }
 
             // 2. Reuse valid cached release data if within 15 minutes and not forced
-            val cacheAge = now - settings.updateCacheTimestamp
-            val isCacheValid = settings.updateCachedReleaseJson.isNotBlank() && cacheAge in 0 until CACHE_TTL_MILLIS
+            val effectiveTimestamp = if (settings.updateCacheTimestamp > 0) settings.updateCacheTimestamp else inMemoryCacheTimestamp
+            val cacheAge = now - effectiveTimestamp
+            val isCacheValid = (settings.updateCachedReleaseJson.isNotBlank() || inMemoryCachedRelease != null) && cacheAge >= 0 && cacheAge < CACHE_TTL_MILLIS
             if (!forceRefresh && isCacheValid && cachedRelease != null) {
                 return@withLock if (cachedRelease.apkAsset == null) {
                     UpdateCheckStatus.Failed(
                         error = "Release ${cachedRelease.displayVersion} exists but does not contain an Android APK (.apk asset).",
-                        checkedAt = settings.updateCacheTimestamp,
+                        checkedAt = effectiveTimestamp,
                         cachedRelease = cachedRelease,
                     )
                 } else if (VersionComparator.isUpdateAvailable(currentVersionName, currentVersionCode, cachedRelease)) {
@@ -362,13 +370,13 @@ class AppUpdateRepository(
                         currentVersion = currentVersionName,
                         latestVersion = cachedRelease.displayVersion,
                         release = cachedRelease,
-                        checkedAt = settings.updateCacheTimestamp,
+                        checkedAt = effectiveTimestamp,
                         fromCache = true,
                     )
                 } else {
                     UpdateCheckStatus.UpToDate(
                         currentVersion = currentVersionName,
-                        checkedAt = settings.updateCacheTimestamp,
+                        checkedAt = effectiveTimestamp,
                         fromCache = true,
                         release = cachedRelease,
                     )
@@ -432,6 +440,8 @@ class AppUpdateRepository(
 
                     in 200..299 -> {
                         val release = parseReleaseJson(response.body)
+                        inMemoryCachedRelease = release
+                        inMemoryCacheTimestamp = now
                         val etag = response.headers.findHeader("ETag").orEmpty()
                         settingsRepo.setUpdateCache(response.body, etag, now)
                         settingsRepo.setLastUpdateCheckTime(now)

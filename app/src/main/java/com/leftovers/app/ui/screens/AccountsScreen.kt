@@ -1,5 +1,6 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.LocalUndo
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.flow.flowOn
@@ -68,6 +69,7 @@ import com.leftovers.app.ui.components.Chip
 import com.leftovers.app.ui.components.Glass
 import com.leftovers.app.ui.components.GlassScreen
 import com.leftovers.app.ui.components.ListRow
+import com.leftovers.app.ui.components.RoundButton
 import com.leftovers.app.ui.components.PrimaryButton
 import com.leftovers.app.ui.components.RollingText
 import com.leftovers.app.ui.components.RowDivider
@@ -86,6 +88,7 @@ import com.leftovers.app.util.currencyOptions
 import com.leftovers.app.util.friendlyLabel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -115,6 +118,11 @@ class AccountsViewModel(
     transactions: TransactionRepository,
     planning: com.leftovers.app.data.PlanningRepository,
 ) : ViewModel() {
+    /** The accounts in this order, as they were dragged (#47). */
+    fun reorder(ids: List<Long>) {
+        viewModelScope.launch { repository.reorder(ids) }
+    }
+
     val debts: StateFlow<List<com.leftovers.app.data.Debt>> =
         planning.debts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -149,6 +157,36 @@ class AccountsViewModel(
         settings.settings.map { it.currencyCode }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "INR")
     val rates: StateFlow<Map<String, String>> =
         settings.settings.map { it.foreignRates }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+    val autoRates: StateFlow<Boolean> =
+        settings.settings.map { it.autoRates }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    fun setAutoRates(enabled: Boolean) {
+        viewModelScope.launch { settings.setAutoRates(enabled) }
+    }
+
+    /** Today's rate for [code], once, when the user taps for it. */
+    fun todaysRate(code: String, onResult: (Result<String>) -> Unit) {
+        viewModelScope.launch {
+            val base = settings.settings.first().currencyCode
+            onResult(com.leftovers.app.util.ExchangeRates.fetch(base, listOf(code)).mapCatching { it[code] ?: error("No rate for $code today") })
+        }
+    }
+
+    /** What each account's bank last said its balance was, from an SMS (#59). */
+    val bankBalances: StateFlow<Map<Long, com.leftovers.app.data.BankFigure>> =
+        settings.settings.map { it.bankBalances }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /**
+     * Sets [account]'s balance to what its bank said, by moving its opening balance by the difference (entries stay
+     * as they are). [onDone] gets the Undo.
+     */
+    fun matchBank(account: AccountWithBalance, bankMinor: Long, onDone: (suspend () -> Unit) -> Unit) {
+        val before = account.toAccount()
+        viewModelScope.launch {
+            repository.saveAccount(before.copy(openingMinor = before.openingMinor + (bankMinor - account.balanceMinor)))
+            onDone { repository.saveAccount(before) }
+        }
+    }
 
     val defaultAccountId: StateFlow<Long> =
         settings.settings.map { it.defaultAccountId }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 1L)
@@ -178,9 +216,9 @@ class AccountsViewModel(
         viewModelScope.launch { repository.setAccount(ids, backTo) }
     }
 
-    fun transfer(from: Long, to: Long, amount: Long, note: String) {
+    fun transfer(from: Long, to: Long, amount: Long, note: String, day: LocalDate = LocalDate.now()) {
         viewModelScope.launch {
-            repository.saveTransfer(Transfer(fromAccountId = from, toAccountId = to, amountMinor = amount, epochDay = LocalDate.now().toEpochDay(), note = note))
+            repository.saveTransfer(Transfer(fromAccountId = from, toAccountId = to, amountMinor = amount, epochDay = day.toEpochDay(), note = note))
         }
     }
 
@@ -189,15 +227,32 @@ class AccountsViewModel(
     }
 }
 
-private val accountIcons = listOf("banknote", "landmark", "wallet", "credit-card", "smartphone", "piggy-bank", "coins", "building", "briefcase", "trending-up")
+/** Six dots to hold a row by while reordering. */
+@Composable
+private fun GripHandle(color: androidx.compose.ui.graphics.Color) {
+    androidx.compose.foundation.Canvas(Modifier.size(width = 22.dp, height = 22.dp)) {
+        val r = 1.6.dp.toPx()
+        for (x in listOf(size.width * 0.35f, size.width * 0.65f)) for (y in listOf(size.height * 0.25f, size.height * 0.5f, size.height * 0.75f)) {
+            drawCircle(color, r, androidx.compose.ui.geometry.Offset(x, y))
+        }
+    }
+}
+
+private val accountIcons = listOf(
+    "banknote", "landmark", "wallet", "credit-card", "smartphone", "piggy-bank", "coins", "building", "briefcase", "trending-up",
+    "hand-coins", "gem", "shield", "house", "globe", "plane", "laptop", "store", "shopping-bag", "gift", "graduation-cap", "heart-pulse",
+)
 
 @Composable
 fun AccountsScreen(
     onBack: () -> Unit,
+    /** Opens an entry to change it. */
+    onOpenTransaction: (Long) -> Unit = {},
     viewModel: AccountsViewModel = viewModel(factory = AppViewModelProvider.Factory),
 ) {
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
     val transfers by viewModel.transfers.collectAsStateWithLifecycle()
+    val bank by viewModel.bankBalances.collectAsStateWithLifecycle()
     val defaultId by viewModel.defaultAccountId.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
     val money = LocalMoney.current
@@ -208,6 +263,8 @@ fun AccountsScreen(
     var moving by remember { mutableStateOf<Account?>(null) }
     // Tapping an account opens a card with its balance and latest entries; Edit there opens the editor.
     var viewing by remember { mutableStateOf<Long?>(null) }
+    // Moving accounts up and down instead of opening them (#47).
+    var arranging by remember { mutableStateOf(false) }
     var hidden by remember { mutableStateOf<Long?>(null) }
     var viewingFrom by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     val rowBounds = remember { mutableMapOf<Long, androidx.compose.ui.geometry.Rect>() }
@@ -243,17 +300,19 @@ fun AccountsScreen(
                     Column(Modifier.padding(22.dp)) {
                         Text("Total across accounts", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
                         Spacer(Modifier.height(4.dp))
+                        val includedAccounts = accounts.filterNot { it.outOfTotal }
                         if (!hasCustomCurrencies) {
-                            RollingText(money.format(accounts.sumOf { it.balanceMinor }), MaterialTheme.typography.displaySmall, c.textPrimary)
+                            RollingText(money.format(includedAccounts.sumOf { it.balanceMinor }), MaterialTheme.typography.displaySmall, c.textPrimary)
                         } else {
-                            byCurrency.entries.forEachIndexed { idx, (currCode, accs) ->
+                            val includedByCurrency = includedAccounts.groupBy { it.currency }
+                            includedByCurrency.entries.forEachIndexed { idx, (currCode, accs) ->
                                 if (idx > 0) Spacer(Modifier.height(4.dp))
                                 val m = currCode?.let { Money(it) } ?: money
                                 val sum = accs.sumOf { it.balanceMinor }
                                 Row(verticalAlignment = Alignment.Bottom) {
                                     Text(
                                         m.format(sum),
-                                        style = if (byCurrency.size == 1) MaterialTheme.typography.displaySmall else MaterialTheme.typography.headlineMedium,
+                                        style = if (includedByCurrency.size == 1) MaterialTheme.typography.displaySmall else MaterialTheme.typography.headlineMedium,
                                         color = if (sum < 0) c.negative else c.textPrimary,
                                     )
                                     if (currCode != null) {
@@ -268,31 +327,44 @@ fun AccountsScreen(
                     }
                 }
             }
-            item { SectionHeader("Your accounts", Modifier.appear(1)) }
+            item {
+                SectionHeader(
+                    "Your accounts", Modifier.appear(1),
+                    action = if (accounts.size > 1) (if (arranging) "Done" else "Reorder") else null,
+                    onAction = { arranging = !arranging },
+                )
+            }
             item {
                 Glass(Modifier.fillMaxWidth().appear(1)) {
-                    Column(Modifier.padding(vertical = 6.dp)) {
-                        accounts.forEachIndexed { i, a ->
-                            if (i > 0) RowDivider()
-                            val accMoney = a.currency?.let { Money(it) } ?: money
+                    // While reordering, a row is held and dragged up or down; otherwise it opens the account.
+                    com.leftovers.app.ui.components.DragReorderColumn(
+                        accounts, key = { it.id }, enabled = arranging,
+                        onOrder = { list -> viewModel.reorder(list.map { it.id }) },
+                        modifier = Modifier.padding(vertical = 6.dp),
+                    ) { a, i, lifted ->
+                        // Lifted, it sits on a solid card: see-through, the shadow under it showed as a light outline.
+                        Column(Modifier.background(if (lifted) androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh else androidx.compose.ui.graphics.Color.Transparent)) {
+                            if (i > 0 && !lifted) RowDivider()
                             val subtitleParts = mutableListOf<String>()
+                            bankLine(a, bank[a.id], money)?.let { subtitleParts.add(it) }
                             if (a.id == defaultId) subtitleParts.add("Default for new entries")
                             if (a.currency != null) subtitleParts.add(a.currency)
                             ListRow(
                                 title = a.name,
                                 modifier = Modifier
                                     .trackScreenBounds { rowBounds[a.id] = it }
-                                    .graphicsLayer { alpha = if (hidden == a.id) 0f else 1f },
+                                    .then(if (hidden == a.id) Modifier.graphicsLayer { alpha = 0f } else Modifier),
                                 subtitle = subtitleParts.joinToString(" · ").ifBlank { null },
                                 leading = { CategoryIcon(a.icon, a.color, size = 42.dp) },
                                 trailing = {
-                                    Text(
+                                    if (arranging) GripHandle(c.textTertiary)
+                                    else Text(
                                         a.shownBalance(money),
                                         style = MaterialTheme.typography.titleSmall,
                                         color = if (a.shownNegative) c.negative else c.textPrimary,
                                     )
                                 },
-                                onClick = { viewingFrom = rowBounds[a.id]; viewing = a.id },
+                                onClick = if (arranging) null else ({ viewingFrom = rowBounds[a.id]; viewing = a.id }),
                             )
                         }
                     }
@@ -332,6 +404,14 @@ fun AccountsScreen(
         val all by viewModel.allTransactions.collectAsStateWithLifecycle()
         val debts by viewModel.debts.collectAsStateWithLifecycle()
         val b = viewModel.breakdown(a.toAccount(), all, transfers, debts)
+        val figure = bank[a.id]?.takeIf { a.currency == null }
+        // The bank's figure is behind the app's when something was added to this account after that message.
+        val changedSince = figure != null && (
+            all.any { it.accountId == a.id && it.createdAt > figure.at } ||
+                transfers.any { (it.fromAccountId == a.id || it.toAccountId == a.id) && it.createdAt > figure.at } ||
+                debts.any { it.accountId == a.id && it.createdAt > figure.at }
+            )
+        val undo = LocalUndo.current
         val latest = all.filter { it.accountId == a.id }.sortedWith(compareByDescending<TransactionItem> { it.epochDay }.thenByDescending { it.createdAt }).take(4)
         MorphCard(from = viewingFrom, onDismiss = { viewing = null; hidden = null }, onReveal = { hidden = null }, onShown = { hidden = viewing }) { close ->
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -357,7 +437,7 @@ fun AccountsScreen(
                 Text("Balance", style = MaterialTheme.typography.labelLarge, color = c.textSecondary)
                 Text(a.shownBalance(money), style = MaterialTheme.typography.displaySmall, color = if (a.shownNegative) c.negative else c.textPrimary)
                 if (a.currency != null) {
-                    Text("About ${money.formatWhole(a.balanceMinor)} in ${a.currency} converted", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+                    Text("About ${money.formatWhole(a.balanceMinor)} converted. In and out below are in ${money.symbol}", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
                 }
                 Text(
                     "In ${money.formatWhole(b.income + b.transfersIn + b.borrowed)} · Out ${money.formatWhole(b.spent + b.transfersOut + b.lent)}",
@@ -366,20 +446,48 @@ fun AccountsScreen(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
+            // What the bank's last message said (#59), and a way to make the app agree when it doesn't.
+            if (figure != null) {
+                val apart = figure.minor - a.balanceMinor
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Your bank said ${money.format(figure.minor)} ${bankWhen(figure.at)}" + when {
+                            apart == 0L -> ", the same as here."
+                            changedSince -> ". You've added to this account since, so it may not match."
+                            else -> ", ${money.format(kotlin.math.abs(apart))} ${if (apart > 0) "more" else "less"} than here."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textSecondary,
+                        modifier = Modifier.padding(horizontal = 6.dp),
+                    )
+                    if (apart != 0L && !changedSince) {
+                        SecondaryButton("Match the bank: ${money.format(figure.minor)}", {
+                            viewModel.matchBank(a, figure.minor) { restore -> undo.show("${a.name} matches the bank", restore) }
+                        }, Modifier.fillMaxWidth(), icon = Lucide.Check)
+                    }
+                }
+            }
             if (latest.isNotEmpty()) {
                 Column {
                     Text("Latest", style = MaterialTheme.typography.labelLarge, color = c.textSecondary, modifier = Modifier.padding(bottom = 4.dp))
                     latest.forEachIndexed { i, item ->
                         if (i > 0) RowDivider(inset = 50.dp)
-                        Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                        // Like the rest of the app, an entry opens to change it.
+                        Row(
+                            Modifier.fillMaxWidth().pressable({ close { onOpenTransaction(item.id) } }, pressedScale = 0.98f).padding(vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             CategoryIcon(item.categoryEmoji, item.categoryColor, size = 36.dp)
                             Spacer(Modifier.width(14.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(item.note.ifBlank { item.categoryName }, style = MaterialTheme.typography.bodyMedium, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(com.leftovers.app.data.noteText(item.note).ifBlank { item.categoryName }, style = MaterialTheme.typography.bodyMedium, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(item.date.friendlyLabel(), style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
                             }
                             Text(
-                                money.signed(item.amountMinor, item.type),
+                                // In the account's own currency when it was entered in it.
+                                item.foreignCurrency?.takeIf { it == a.currency && item.foreignMinor != null }
+                                    ?.let { com.leftovers.app.util.Money(it).signed(item.foreignMinor!!, item.type) }
+                                    ?: money.signed(item.amountMinor, item.type),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = if (item.type == TxType.INCOME) c.positive else c.textPrimary,
                             )
@@ -404,6 +512,9 @@ fun AccountsScreen(
             onDismiss = { editing = null },
             appCurrency = viewModel.appCurrency.collectAsStateWithLifecycle().value,
             rates = viewModel.rates.collectAsStateWithLifecycle().value,
+            autoRates = viewModel.autoRates.collectAsStateWithLifecycle().value,
+            onAutoRates = viewModel::setAutoRates,
+            onTodaysRate = viewModel::todaysRate,
             onSave = { a, makeDefault, rate ->
                 viewModel.save(a, makeDefault, rate)
                 editing = null
@@ -454,8 +565,8 @@ fun AccountsScreen(
     }
 
     if (transferring && accounts.size >= 2) {
-        TransferSheet(accounts, onDismiss = { transferring = false }) { from, to, amount, note ->
-            viewModel.transfer(from, to, amount, note)
+        TransferSheet(accounts, onDismiss = { transferring = false }) { from, to, amount, note, day ->
+            viewModel.transfer(from, to, amount, note, day)
             transferring = false
         }
     }
@@ -475,6 +586,9 @@ private fun AccountEditor(
     isDefault: Boolean,
     appCurrency: String,
     rates: Map<String, String>,
+    autoRates: Boolean,
+    onAutoRates: (Boolean) -> Unit,
+    onTodaysRate: (String, (Result<String>) -> Unit) -> Unit,
     onDismiss: () -> Unit,
     onSave: (Account, Boolean, String?) -> Unit,
     onMoveEntries: (() -> Unit)?,
@@ -488,9 +602,15 @@ private fun AccountEditor(
     var currency by rememberSaveable { mutableStateOf(initial.currency) }
     var rate by rememberSaveable { mutableStateOf(initial.currency?.let { rates[it] }.orEmpty()) }
     var pickCurrency by rememberSaveable { mutableStateOf(false) }
+    var fetchingRate by remember { mutableStateOf(false) }
+    var rateProblem by remember { mutableStateOf<String?>(null) }
+    // An account in its own currency needs its rate, or its entries couldn't be counted (#30).
+    val rateOk = currency == null || (rate.toBigDecimalOrNull()?.signum() ?: 0) > 0
     val startOpening = if (initial.currency != null) initial.openingNative ?: 0L else initial.openingMinor
     var opening by rememberSaveable { mutableStateOf(if (startOpening != 0L) AmountInput.fromMinor(startOpening) else "") }
     var makeDefault by rememberSaveable { mutableStateOf(isDefault) }
+    var inBudget by rememberSaveable { mutableStateOf(!initial.outOfBudget) }
+    var inTotal by rememberSaveable { mutableStateOf(!initial.outOfTotal) }
     var digits by rememberSaveable { mutableStateOf(initial.smsDigits.orEmpty()) }
 
     if (pickCurrency) {
@@ -522,10 +642,39 @@ private fun AccountEditor(
             if (currency != null) {
                 GlassTextField(
                     rate,
-                    { v -> rate = v.filter { it.isDigit() || it == '.' }.take(12) },
+                    { v -> rate = v.filter { it.isDigit() || it == '.' }.take(12); rateProblem = null },
                     placeholder = "e.g. 83.2",
                     label = "1 $currency in ${com.leftovers.app.util.Money(appCurrency).symbol}",
                     keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                )
+                // Today's rate on request, and daily if the user wants (#30).
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Chip(if (fetchingRate) "Getting today's rate…" else "Get today's rate", {
+                        val code = currency ?: return@Chip
+                        fetchingRate = true
+                        onTodaysRate(code) { result ->
+                            fetchingRate = false
+                            result.fold({ rate = it; rateProblem = null }, { rateProblem = "Couldn't get today's rate: ${com.leftovers.app.util.WebDavPlace.problem(it)}" })
+                        }
+                    }, icon = Lucide.Download)
+                }
+                rateProblem?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.negative, modifier = Modifier.padding(start = 6.dp)) }
+                ListRow(
+                    "Keep rates up to date",
+                    subtitle = "Fetches today's rates once a day from currency-api, a free and open service",
+                    trailing = {
+                        androidx.compose.material3.Switch(
+                            checked = autoRates,
+                            onCheckedChange = com.leftovers.app.ui.components.toggleHaptic(onAutoRates),
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedTrackColor = c.accent,
+                                checkedThumbColor = c.onAccent,
+                                uncheckedTrackColor = c.glass,
+                                uncheckedBorderColor = c.borderTop,
+                                uncheckedThumbColor = c.textSecondary,
+                            ),
+                        )
+                    },
                 )
                 Text(
                     "Entries in this account are entered and shown in $currency. Totals, budgets and charts count them in $appCurrency at this rate.",
@@ -554,6 +703,8 @@ private fun AccountEditor(
                 modifier = Modifier.padding(start = 6.dp),
             )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // First: an icon from a picture of your own, such as your bank's logo.
+                OwnIcons(icon, color) { icon = it }
                 accountIcons.forEach { key ->
                     val selected = key == icon
                     val bg by animateColorAsState(if (selected) Color(color).copy(alpha = 0.22f) else c.glass, label = "accIcon")
@@ -572,6 +723,27 @@ private fun AccountEditor(
                     )
                 }
             }
+            // A savings account, say, can be left out of the budget and of the total (#33).
+            @Composable
+            fun Toggle(title: String, subtitle: String, on: Boolean, onChange: (Boolean) -> Unit) = ListRow(
+                title,
+                subtitle = subtitle,
+                trailing = {
+                    androidx.compose.material3.Switch(
+                        checked = on,
+                        onCheckedChange = com.leftovers.app.ui.components.toggleHaptic(onChange),
+                        colors = androidx.compose.material3.SwitchDefaults.colors(
+                            checkedTrackColor = c.accent,
+                            checkedThumbColor = c.onAccent,
+                            uncheckedTrackColor = c.glass,
+                            uncheckedBorderColor = c.borderTop,
+                            uncheckedThumbColor = c.textSecondary,
+                        ),
+                    )
+                },
+            )
+            Toggle("Count in Safe to spend", if (inBudget) "Its spending uses up your budget" else "Its spending doesn't use up your budget", inBudget) { inBudget = it }
+            Toggle("Count in All accounts", if (inTotal) "Its balance is in the total on Home" else "Its balance is left out of the total", inTotal) { inTotal = it }
             Chip(
                 if (makeDefault) "Default for new entries" else "Make this the default",
                 onClick = { makeDefault = !makeDefault },
@@ -586,6 +758,8 @@ private fun AccountEditor(
                         initial.copy(
                             name = name.trim(), icon = icon, color = color, smsDigits = digits.ifBlank { null },
                             currency = currency,
+                            outOfBudget = !inBudget,
+                            outOfTotal = !inTotal,
                             openingNative = if (currency != null) typed else null,
                             openingMinor = if (currency != null) com.leftovers.app.data.toAppCurrency(typed, rate) else typed,
                         ),
@@ -594,7 +768,7 @@ private fun AccountEditor(
                     )
                 },
                 Modifier.fillMaxWidth(),
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && rateOk,
             )
             if (breakdown != null) BalanceBreakdownCard(breakdown, initial.createdAt)
             if (onMoveEntries != null) {
@@ -609,16 +783,21 @@ private fun AccountEditor(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TransferSheet(
+internal fun TransferSheet(
     accounts: List<AccountWithBalance>,
     onDismiss: () -> Unit,
-    onSave: (Long, Long, Long, String) -> Unit,
+    /** A transfer being changed; null for a new one. */
+    initial: Transfer? = null,
+    onSave: (Long, Long, Long, String, LocalDate) -> Unit,
 ) {
     val c = LocalAppColors.current
-    var from by rememberSaveable { mutableStateOf(accounts[0].id) }
-    var to by rememberSaveable { mutableStateOf(accounts[1].id) }
-    var amount by rememberSaveable { mutableStateOf("") }
-    var note by rememberSaveable { mutableStateOf("") }
+    var from by rememberSaveable { mutableStateOf(initial?.fromAccountId ?: accounts[0].id) }
+    // The day it happened: today unless it's being caught up on later (#54).
+    var day by rememberSaveable { mutableStateOf(initial?.epochDay ?: LocalDate.now().toEpochDay()) }
+    var picking by remember { mutableStateOf(false) }
+    var to by rememberSaveable { mutableStateOf(initial?.toAccountId ?: accounts[1].id) }
+    var amount by rememberSaveable { mutableStateOf(initial?.let { AmountInput.fromMinor(it.amountMinor) } ?: "") }
+    var note by rememberSaveable { mutableStateOf(initial?.note.orEmpty()) }
     val minor = AmountInput.toMinor(amount) ?: 0L
 
     GlassSheet(onDismiss) {
@@ -626,7 +805,7 @@ private fun TransferSheet(
             Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Move money", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+            Text(if (initial == null) "Move money" else "Edit transfer", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
             Text("Transfers between your own accounts don't count as spending or income.", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
             Text("From", style = MaterialTheme.typography.labelMedium, color = c.textSecondary, modifier = Modifier.padding(start = 6.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -637,9 +816,31 @@ private fun TransferSheet(
                 accounts.filter { it.id != from }.forEach { a -> Chip(a.name, onClick = { to = a.id }, icon = CategoryIcons[a.icon], iconTint = Color(a.color), selected = to == a.id) }
             }
             MoneyField(amount, { amount = it }, label = "Amount", large = true)
+            Chip(LocalDate.ofEpochDay(day).friendlyLabel(), onClick = { picking = true }, icon = com.leftovers.app.ui.icons.Lucide.Calendar)
             GlassTextField(note, { note = it.take(60) }, placeholder = "e.g. ATM withdrawal", label = "Note (optional)")
-            PrimaryButton("Transfer", { onSave(from, to, minor, note.trim()) }, Modifier.fillMaxWidth(), enabled = minor > 0 && from != to)
+            PrimaryButton(if (initial == null) "Transfer" else "Save", { onSave(from, to, minor, note.trim(), LocalDate.ofEpochDay(day)) }, Modifier.fillMaxWidth(), enabled = minor > 0 && from != to)
         }
+    }
+    if (picking) {
+        val utc = java.time.ZoneOffset.UTC
+        val todayUtc = LocalDate.now().atStartOfDay(utc).toInstant().toEpochMilli()
+        val state = androidx.compose.material3.rememberDatePickerState(
+            initialSelectedDateMillis = LocalDate.ofEpochDay(day).atStartOfDay(utc).toInstant().toEpochMilli(),
+            // A transfer that hasn't happened yet would move a balance early, so up to today only.
+            selectableDates = object : androidx.compose.material3.SelectableDates {
+                override fun isSelectableDate(utcTimeMillis: Long) = utcTimeMillis <= todayUtc
+            },
+        )
+        GlassDatePickerDialog(
+            onDismissRequest = { picking = false },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    state.selectedDateMillis?.let { day = java.time.Instant.ofEpochMilli(it).atZone(utc).toLocalDate().toEpochDay() }
+                    picking = false
+                }) { Text("Done", color = c.textPrimary) }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { picking = false }) { Text("Cancel", color = c.textSecondary) } },
+        ) { androidx.compose.material3.DatePicker(state) }
     }
 }
 
@@ -711,5 +912,24 @@ private fun BalanceBreakdownCard(b: BalanceBreakdown, createdAt: Long) {
                 )
             }
         }
+    }
+}
+
+/** "Bank: ₹12,000 · today" under an account, when its bank has said; null otherwise. */
+private fun bankLine(a: AccountWithBalance, figure: com.leftovers.app.data.BankFigure?, money: com.leftovers.app.util.Money): String? {
+    if (figure == null || a.currency != null) return null
+    return "Bank: ${money.format(figure.minor)} · ${bankWhen(figure.at)}"
+}
+
+/** When a bank message came: "today at 9:42 AM", "yesterday", or its date. */
+private fun bankWhen(at: Long): String {
+    val zone = java.time.ZoneId.systemDefault()
+    val time = java.time.Instant.ofEpochMilli(at).atZone(zone)
+    val day = time.toLocalDate()
+    val today = LocalDate.now()
+    return when (day) {
+        today -> "today at " + time.toLocalTime().format(java.time.format.DateTimeFormatter.ofLocalizedTime(java.time.format.FormatStyle.SHORT))
+        today.minusDays(1) -> "yesterday"
+        else -> "on " + day.friendlyLabel()
     }
 }

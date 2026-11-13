@@ -1,5 +1,8 @@
 package com.leftovers.app.ui.screens
 
+import com.leftovers.app.ui.components.LocalUndo
+import androidx.compose.foundation.layout.asPaddingValues
+import com.leftovers.app.ui.components.frosted
 import com.leftovers.app.ui.components.Haptics
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.horizontalScroll
@@ -49,7 +52,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -61,7 +63,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -137,9 +138,19 @@ data class HomeUiState(
     /** Everyone with money still owed either way, largest first. */
     val owed: List<com.leftovers.app.data.PersonBalance> = emptyList(),
     val recent: List<TransactionItem> = emptyList(),
+    /** Splits as one bill with their parts under them; off, every entry on its own. */
+    val oneBill: Boolean = true,
+    /** What people owe for bills split with them, by the entry (your share) each came from. */
+    val shares: Map<Long, List<com.leftovers.app.data.Debt>> = emptyMap(),
     val smsSuggestions: List<SmsSuggestion> = emptyList(),
     /** Last month, when its recap hasn't been seen yet. */
     val recapMonth: YearMonth? = null,
+    /** The version whose What's new was closed. */
+    val whatsNewSeen: String? = null,
+    /** A newer version the last check found, if it's still newer than this one is for the screen to say. */
+    val updateFound: String? = null,
+    /** The newer version already seen in Notices. */
+    val updateSeen: String? = null,
     /** Last month's leftover, while the user hasn't decided whether to carry it over. */
     val carryPrompt: Long? = null,
     /** Sum of every account's balance; null until accounts load. */
@@ -172,7 +183,9 @@ class HomeViewModel(
         val defaultAccountIds = accountList.filter { it.currency == null || it.currency.equals(s.currencyCode, ignoreCase = true) }.map { it.id }.toSet()
         val defaultCurrencyAll = all.filter { it.accountId == null || it.accountId in defaultAccountIds }
         val defaultCurrencyItems = defaultCurrencyAll.filter { YearMonth.from(it.date) == month }
-        val budget = s.plan.budgetFor(month, defaultCurrencyAll)
+        val cycle = s.plan.cycleOf(todayDate)
+        val defaultBudgetItems = defaultCurrencyAll.filter { it.date in cycle }
+        val budget = s.plan.budgetFor(cycle.month, defaultCurrencyAll)
         // Like switching wallets: the balance, spent, income and recent entries follow the chosen account.
         // The budget and safe-to-spend stay for default currency accounts.
         val selected = accountList.firstOrNull { it.id == s.homeAccountId }
@@ -187,9 +200,9 @@ class HomeViewModel(
             userPhotoPath = s.userPhotoPath,
             month = month,
             budgetSet = s.plan.isSet,
-            today = dailyBudget(budget, defaultCurrencyItems, recurring.pendingExpenses(month)),
-            spentToday = defaultCurrencyItems.filter { it.type == TxType.EXPENSE && it.epochDay == todayDate.toEpochDay() }.sumOf { it.amountMinor },
-            daysLeft = month.lengthOfMonth() - todayDate.dayOfMonth + 1,
+            today = dailyBudget(budget, defaultBudgetItems, if (s.plan.envelope) 0L else recurring.pendingExpenses(cycle), periodEnd = cycle.end),
+            spentToday = defaultCurrencyItems.filter { it.type == TxType.EXPENSE && !it.outOfBudget && it.epochDay == todayDate.toEpochDay() }.sumOf { it.amountMinor },
+            daysLeft = cycle.daysLeft(todayDate),
             monthSpent = shownMonth.totalOf(TxType.EXPENSE),
             monthIncome = shownMonth.totalOf(TxType.INCOME),
             upcoming = recurring.filter { it.active }
@@ -197,17 +210,25 @@ class HomeViewModel(
                 .filter { it.toRecurring().nextChargeDate() <= todayDate.plusDays(30) }
                 .take(6),
             goals = goals.filter { !it.reached }.take(5),
-            owed = debts.openBalances().filter { it.netMinor != 0L },
-            recent = shownAll.take(6),
+            owed = debts.openBalances().filter { it.open },
+            // Six entries, a split bill counting as one, with its parts under it as in Activity (#36).
+            recent = if (!s.splitsAsOneBill) shownAll.take(6)
+            else shownAll.filter { it.splitOf == null || shownAll.none { m -> m.id == it.splitOf } }.take(6)
+                .let { mains -> splitOrder(mains + shownAll.filter { p -> p.splitOf != null && mains.any { it.id == p.splitOf } }) },
+            oneBill = s.splitsAsOneBill,
+            shares = debts.filter { it.splitOf != null && !it.repayment }.groupBy { it.splitOf!! },
             smsSuggestions = suggestions,
             recapMonth = month.minusMonths(1).takeIf { prev ->
                 todayDate.dayOfMonth <= 10 && s.recapSeen != prev.toString() && all.any { YearMonth.from(it.date) == prev }
             },
-            carryPrompt = s.plan.pendingCarry(month, defaultCurrencyAll),
-            balance = selected?.balanceMinor ?: defaultBalance,
+            carryPrompt = s.plan.pendingCarry(cycle.month, defaultCurrencyAll),
+            whatsNewSeen = s.whatsNewSeen,
+            updateFound = s.updateAvailable,
+            updateSeen = s.updateSeen,
+            balance = selected?.balanceMinor ?: defaultAccounts.filterNot { it.outOfTotal }.sumOf { it.balanceMinor },
             accountCount = if (selected == null) defaultAccounts.size else 1,
             // Bills and salary aren't tied to an account, so the forecast is only for default currency money together.
-            forecast = if (selected == null) forecastMonthEnd(defaultBalance, defaultCurrencyAll, recurring, todayDate) else null,
+            forecast = if (selected == null) forecastMonthEnd(defaultAccounts.filterNot { it.outOfTotal }.sumOf { it.balanceMinor }, defaultCurrencyAll, recurring, todayDate) else null,
             accounts = accountList,
             selectedAccount = selected,
         )
@@ -234,12 +255,35 @@ class HomeViewModel(
         viewModelScope.launch { planning.saveDebt(debt) }
     }
 
+    fun settleDebt(debt: com.leftovers.app.data.Debt) {
+        viewModelScope.launch { planning.settleEntry(debt) }
+    }
+
     fun deleteDebt(debt: com.leftovers.app.data.Debt) {
         viewModelScope.launch { planning.deleteDebt(debt) }
     }
 
+    fun closeWhatsNew(version: String) {
+        viewModelScope.launch { settings.setWhatsNewSeen(version) }
+    }
+
     fun dismissSms(id: Long) {
         viewModelScope.launch { sms.dismiss(id) }
+    }
+
+    /**
+     * A detected payment that is [match]'s person paying you back (or you paying them): settled against what's
+     * open with them instead of becoming income or spending. [onDone] gets the Undo.
+     */
+    fun paidBack(s: SmsSuggestion, match: com.leftovers.app.util.Payback.Match, onDone: (suspend () -> Unit) -> Unit) {
+        viewModelScope.launch {
+            val undoDebts = planning.recordPayback(match.person, s.amountMinor, s.accountId, s.epochDay)
+            sms.dismiss(s.id)
+            onDone {
+                undoDebts()
+                sms.putBack(s)
+            }
+        }
     }
 
     fun showAccount(id: Long?) {
@@ -263,6 +307,7 @@ fun HomeScreen(
     onOpenRecap: (YearMonth) -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenAssistant: () -> Unit,
+    onOpenNotices: () -> Unit,
     onOpenDebts: () -> Unit = {},
     /** Opens Subscriptions on this one: its day in the calendar, and its details. */
     onOpenSubscription: (RecurringItem) -> Unit = { onOpenSubscriptions(it.type == TxType.INCOME) },
@@ -271,6 +316,17 @@ fun HomeScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val rates by viewModel.rates.collectAsStateWithLifecycle()
     val c = LocalAppColors.current
+    val versionContext = androidx.compose.ui.platform.LocalContext.current
+    val appVersion = remember { com.leftovers.app.util.WhatsNew.version(versionContext) }
+    val freshInstall = remember { com.leftovers.app.util.WhatsNew.freshInstall(versionContext) }
+    val update = remember(state.updateFound) {
+        com.leftovers.app.util.UpdateCheck.decode(state.updateFound)
+            ?.takeIf { com.leftovers.app.util.UpdateCheck.isNewerThanInstalled(versionContext, it) }
+    }
+    // What's new pops up once after each update; a fresh install starts without it.
+    if (state.loaded && state.whatsNewSeen != appVersion && !freshInstall) {
+        WhatsNewDialog(appVersion) { viewModel.closeWhatsNew(appVersion) }
+    }
     val money = LocalMoney.current
     if (!state.loaded) return
     var owedOpen by remember { mutableStateOf<String?>(null) }
@@ -287,6 +343,18 @@ fun HomeScreen(
     val upcomingBounds = remember { mutableMapOf<Long, androidx.compose.ui.geometry.Rect>() }
     // Tapping the balance opens a card with every account, to switch which one Home shows.
     var balanceOpen by remember { mutableStateOf(false) }
+    // Moving money between accounts, straight from the balance card.
+    var transferring by remember { mutableStateOf(false) }
+    val transferScope = androidx.compose.runtime.rememberCoroutineScope()
+    if (transferring && state.accounts.size >= 2) {
+        TransferSheet(state.accounts, onDismiss = { transferring = false }) { from, to, amount, note, day ->
+            val accounts = (versionContext.applicationContext as com.leftovers.app.LeftoversApp).container.accounts
+            transferScope.launch {
+                accounts.saveTransfer(com.leftovers.app.data.Transfer(fromAccountId = from, toAccountId = to, amountMinor = amount, epochDay = day.toEpochDay(), note = note))
+            }
+            transferring = false
+        }
+    }
     var balanceHidden by remember { mutableStateOf(false) }
     var balanceFrom by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var balanceBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
@@ -342,7 +410,7 @@ fun HomeScreen(
                             if (a != null) CategoryIcon(a.icon, a.color, size = 36.dp) else IconTile(Lucide.Wallet, c.textSecondary, size = 36.dp)
                             Spacer(Modifier.width(14.dp))
                             Text(a?.name ?: "All accounts", style = MaterialTheme.typography.bodyMedium, color = c.textPrimary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            val amount = a?.balanceMinor ?: state.accounts.sumOf { it.balanceMinor }
+                            val amount = a?.balanceMinor ?: state.accounts.filterNot { it.outOfTotal }.sumOf { it.balanceMinor }
                             Text(
                                 a?.shownBalance(money, whole = true) ?: money.formatWhole(amount),
                                 style = MaterialTheme.typography.titleSmall,
@@ -357,7 +425,9 @@ fun HomeScreen(
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SecondaryButton("Accounts", { close(onOpenAccounts) }, Modifier.weight(1f))
-                PrimaryButton("See activity", { close { onOpenActivity(null, selected?.id) } }, Modifier.weight(1.4f), icon = Lucide.ArrowUpRight)
+                if (state.accounts.size >= 2) RoundButton(Lucide.Repeat, "Transfer between accounts", { close { transferring = true } }, size = 56.dp)
+                // Short, so it stays on one line with larger text sizes too; the arrow says it opens.
+                PrimaryButton("Activity", { close { onOpenActivity(null, selected?.id) } }, Modifier.weight(1f), icon = Lucide.ArrowUpRight)
             }
         }
     }
@@ -382,7 +452,7 @@ fun HomeScreen(
 
     // Tapping someone on Money owed: a card in the middle with everything about them, to edit or settle.
     state.owed.firstOrNull { it.person.equals(owedOpen, ignoreCase = true) }?.let { b ->
-        val theyOwe = b.netMinor > 0
+        val theyOwe = if (b.pendingOnly) b.entries.first().theyOwe else b.netMinor > 0
         val tone = if (theyOwe) c.positive else c.warning
         val entries = b.entries.sortedByDescending { it.epochDay }
         val lent = b.entries.filter { !it.repayment && it.amountMinor > 0 }.sumOf { it.amountMinor }
@@ -424,7 +494,8 @@ fun HomeScreen(
                             .padding(horizontal = 18.dp, vertical = 16.dp),
                     ) {
                         Text(if (theyOwe) "Owes you" else "You owe", style = MaterialTheme.typography.labelLarge, color = tone)
-                        Text(money.format(abs(b.netMinor)), style = MaterialTheme.typography.displaySmall, color = c.textPrimary)
+                        if (b.pendingOnly) Text("Amount pending", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                        else Text(money.format(abs(b.netMinor)), style = MaterialTheme.typography.displaySmall, color = c.textPrimary)
                         if (parts.size > 1) {
                             Text(
                                 parts.joinToString(" · "),
@@ -455,7 +526,7 @@ fun HomeScreen(
                                 ) {
                                     Icon(
                                         if (d.repayment) Lucide.Check else if (out) Lucide.ArrowUpRight else Lucide.ArrowDownLeft,
-                                        contentDescription = if (d.repayment) "Paid back" else if (out) "Lent" else "Borrowed",
+                                        contentDescription = if (d.repayment) (if (d.amountMinor < 0) "Received" else "Paid back") else if (out) "Lent" else "Borrowed",
                                         tint = if (d.repayment) c.textSecondary else if (out) c.positive else c.warning,
                                         modifier = Modifier.size(16.dp),
                                     )
@@ -463,14 +534,14 @@ fun HomeScreen(
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(
-                                        d.note.ifBlank { if (d.repayment) "Paid back" else if (out) "Lent" else "Borrowed" },
+                                        d.note.ifBlank { if (d.repayment) (if (d.amountMinor < 0) "Received" else "Paid back") else if (out) "Lent" else "Borrowed" },
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = c.textPrimary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        LocalDate.ofEpochDay(d.epochDay).friendlyLabel(),
+                                        listOfNotNull("Split bill".takeIf { d.splitOf != null }, LocalDate.ofEpochDay(d.epochDay).friendlyLabel()).joinToString(" · "),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = c.textSecondary,
                                     )
@@ -478,11 +549,11 @@ fun HomeScreen(
                                 val entryMoney = d.currency?.let { com.leftovers.app.util.Money(it) } ?: money
                                 val displayAmount = abs(d.nativeAmount)
                                 Column(horizontalAlignment = Alignment.End) {
-                                    Text(entryMoney.format(displayAmount), style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
+                                    Text(if (d.isPending) "Pending" else entryMoney.format(displayAmount), style = MaterialTheme.typography.titleSmall, color = c.textPrimary)
                                     if (d.currency != null && d.currency != money.currency.currencyCode) {
                                         Text("≈ ${money.format(abs(d.amountMinor))}", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
-                                    } else {
-                                        Text(if (d.repayment) "paid back" else if (out) "lent" else "borrowed", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                                    } else if (d.note.isNotBlank() || d.repayment) {
+                                        Text(if (d.repayment) (if (d.amountMinor < 0) "received" else "paid back") else if (out) "lent" else "borrowed", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
                                     }
                                 }
                             }
@@ -505,11 +576,12 @@ fun HomeScreen(
                     // Someone who owes you can be reminded, in a message you send from WhatsApp, SMS or any app.
                     if (b.netMinor > 0) {
                         val context = androidx.compose.ui.platform.LocalContext.current
+                        val remindScope = androidx.compose.runtime.rememberCoroutineScope()
                         RoundButton(Lucide.Bell, "Remind ${b.person}", {
-                            com.leftovers.app.util.DebtReminder.share(context, com.leftovers.app.util.DebtReminder.message(b, money::format), b.person)
+                            remindScope.launch { com.leftovers.app.util.DebtReminder.share(context, com.leftovers.app.util.DebtReminder.withLink(context, b, money.currency.currencyCode, money::format), b.person) }
                         }, size = 56.dp)
                     }
-                    PrimaryButton("Pay back", { close { settling = b.person } }, Modifier.weight(1.4f), icon = Lucide.Check)
+                    PrimaryButton(if (b.netMinor > 0) "Received" else "Paid back", { close { settling = b.person } }, Modifier.weight(1.4f), icon = Lucide.Check)
                 }
             }
     }
@@ -536,10 +608,14 @@ fun HomeScreen(
                 viewModel.deleteDebt(debt)
                 editingDebt = null
             },
+            onSettle = {
+                viewModel.settleDebt(it)
+                editingDebt = null
+            },
         )
     }
 
-    // Pull down to run every check now (email, subscriptions due, sync) and reload.
+    // Pull down to run every check now (email, subscriptions due, sync, a new version) and reload.
     val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val refreshScope = androidx.compose.runtime.rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
@@ -600,10 +676,20 @@ fun HomeScreen(
                         )
                     }
                     Column(Modifier.weight(1f)) {
-                        Text(greeting(state.userName) + " · " + LocalDate.now().format(greetingDate), style = MaterialTheme.typography.bodyMedium, color = c.textSecondary, maxLines = 1)
+                        // On a festival where the user lives, the greeting says so: "Happy Diwali 🪔 · Sun, 8 Nov".
+                        val festival = remember(money) { com.leftovers.app.util.Festivals.on(LocalDate.now(), money.currency.currencyCode) }
+                        Text((festival?.greeting ?: greeting(state.userName)) + " · " + LocalDate.now().format(greetingDate), style = MaterialTheme.typography.bodyMedium, color = c.textSecondary, maxLines = 1)
                         Text(state.month.label(), style = MaterialTheme.typography.headlineLarge, color = c.textPrimary)
                     }
-                    RoundButton(Lucide.MessageCircle, "AI assistant", onOpenAssistant)
+                    // Notices: what's new, and a newer version when there is one. A red dot says one is out, until Notices is opened.
+                    Box {
+                        RoundButton(Lucide.Bell, "Notices", onOpenNotices)
+                        if (update != null && state.updateFound != state.updateSeen) {
+                            Box(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp).size(10.dp).background(c.negative, CircleShape))
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    RoundButton(Lucide.BotMessageSquare, "AI assistant", onOpenAssistant)
                     Spacer(Modifier.width(8.dp))
                     RoundButton(Lucide.Settings, "Settings", onOpenSettings)
                 }
@@ -716,25 +802,30 @@ fun HomeScreen(
                         Column(Modifier.padding(vertical = 6.dp)) {
                             state.smsSuggestions.take(5).forEachIndexed { i, s ->
                                 if (i > 0) RowDivider()
+                                // Someone paying you back (or you paying them): settled in Money owed, not income.
+                                val back = remember(s, state.owed) { com.leftovers.app.util.Payback.find(s.merchant, s.amountMinor, s.isIncome, state.owed) }
+                                val where = s.sender.ifBlank {
+                                    when (s.source) {
+                                        SmsSuggestion.SOURCE_EMAIL -> "email"
+                                        SmsSuggestion.SOURCE_NOTIFICATION, SmsSuggestion.SOURCE_APP -> "payment app"
+                                        SmsSuggestion.SOURCE_ROOM_EXPENSE -> "Room Expense"
+                                        else -> "bank SMS"
+                                    }
+                                }
+                                val icon = when (s.source) {
+                                    SmsSuggestion.SOURCE_EMAIL -> Lucide.Mail
+                                    SmsSuggestion.SOURCE_NOTIFICATION, SmsSuggestion.SOURCE_APP -> Lucide.Bell
+                                    SmsSuggestion.SOURCE_ROOM_EXPENSE -> Lucide.Building2
+                                    else -> Lucide.Smartphone
+                                }
                                 ListRow(
                                     title = s.merchant.ifBlank { if (s.isIncome) "Money in" else "Bank payment" },
-                                    subtitle = java.time.LocalDate.ofEpochDay(s.epochDay).friendlyLabel() + " · " +
-                                        s.sender.ifBlank {
-                                            when (s.source) {
-                                                SmsSuggestion.SOURCE_EMAIL -> "email"
-                                                SmsSuggestion.SOURCE_NOTIFICATION, SmsSuggestion.SOURCE_APP -> "payment app"
-                                                SmsSuggestion.SOURCE_ROOM_EXPENSE -> "Room Expense"
-                                                else -> "bank SMS"
-                                            }
-                                        },
-                                    leading = {
-                                        val icon = when (s.source) {
-                                            SmsSuggestion.SOURCE_EMAIL -> Lucide.Mail
-                                            SmsSuggestion.SOURCE_NOTIFICATION, SmsSuggestion.SOURCE_APP -> Lucide.Bell
-                                            SmsSuggestion.SOURCE_ROOM_EXPENSE -> Lucide.Building2
-                                            else -> Lucide.Smartphone
-                                        }
+                                    subtitle = if (back != null) {
+                                        (if (s.isIncome) "${back.person} paying you back?" else "Paying ${back.person} back?") + " · " + where
+                                    } else {
+                                        java.time.LocalDate.ofEpochDay(s.epochDay).friendlyLabel() + " · " + where
                                     },
+                                    leading = { IconTile(icon, c.textPrimary, size = 42.dp) },
                                     trailing = {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
@@ -743,6 +834,15 @@ fun HomeScreen(
                                                 color = if (s.isIncome) c.positive else c.textPrimary,
                                             )
                                             Spacer(Modifier.width(10.dp))
+                                            if (back != null) {
+                                                val undo = LocalUndo.current
+                                                RoundButton(Lucide.Check, if (s.isIncome) "${back.person} paid you back" else "You paid ${back.person} back", {
+                                                    viewModel.paidBack(s, back) { restore ->
+                                                        undo.show(if (s.isIncome) "${back.person} paid you back" else "Paid ${back.person} back", restore)
+                                                    }
+                                                }, size = 34.dp, tint = c.onAccent, container = c.accent)
+                                                Spacer(Modifier.width(6.dp))
+                                            }
                                             RoundButton(Lucide.X, "Dismiss", { viewModel.dismissSms(s.id) }, size = 34.dp, tint = c.textTertiary)
                                         }
                                     },
@@ -805,14 +905,29 @@ fun HomeScreen(
 
             item { SectionHeader("Recent", Modifier.appear(5), action = if (state.recent.isNotEmpty()) "See all" else null, onAction = { onOpenActivity(null, state.selectedAccount?.id) }) }
             item {
-                Glass(Modifier.fillMaxWidth().appear(5)) {
-                    if (state.recent.isEmpty()) {
+                if (state.recent.isEmpty()) {
+                    Glass(Modifier.fillMaxWidth().appear(5)) {
                         EmptyState(Lucide.Wallet, "Nothing logged yet", "Tap the + button below to add your first expense.")
-                    } else {
-                        Column(Modifier.padding(vertical = 6.dp)) {
-                            state.recent.forEachIndexed { i, item ->
-                                if (i > 0) RowDivider()
-                                TransactionRow(item, onClick = { peek.show(item) }, subtitle = item.date.friendlyLabel(), modifier = Modifier.peekSource(peek, item.id))
+                    }
+                } else {
+                    // Each split bill on a card of its own, as in Activity (#36).
+                    Column(Modifier.appear(5), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        billCards(state.recent, state.shares, state.oneBill).forEach { card ->
+                            Glass(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(vertical = 6.dp)) {
+                                    // A split bill is one row here; where its money went is on its card and in Activity.
+                                    card.forEachIndexed { i, line ->
+                                        if (line !is BillLine.Entry || line.under()) return@forEachIndexed
+                                        if (i > 0) RowDivider(inset = 74.dp)
+                                        TransactionRow(
+                                            line.item,
+                                            onClick = { peek.show(line.item) },
+                                            subtitle = billSubtitle(line.item.date.friendlyLabel(), line),
+                                            wholeMinor = line.whole(),
+                                            modifier = Modifier.peekSource(peek, line.item.id),
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -823,8 +938,8 @@ fun HomeScreen(
         Box(
             Modifier
                 .fillMaxWidth()
-                .windowInsetsTopHeight(WindowInsets.statusBars)
-                .background(Brush.verticalGradient(listOf(c.background.copy(alpha = 0.85f), Color.Transparent))),
+                .height(WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 10.dp)
+                .frosted(fadeBottom = true),
         )
         // What the pull found, for a moment.
         androidx.compose.animation.AnimatedVisibility(
@@ -908,7 +1023,7 @@ private fun TodayCard(state: HomeUiState, onClick: () -> Unit, modifier: Modifie
                 Text(
                     when {
                         budget == null -> "Spent today"
-                        usedUp -> "Over this month's budget"
+                        usedUp -> "Over budget"
                         over -> "Over today's budget"
                         else -> "Safe to spend today"
                     },
@@ -919,24 +1034,34 @@ private fun TodayCard(state: HomeUiState, onClick: () -> Unit, modifier: Modifie
                 Icon(Lucide.ChevronRight, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
             }
             Spacer(Modifier.height(2.dp))
-            RollingText(
-                text = money.formatWhole(
-                    when {
-                        budget == null -> state.spentToday
-                        usedUp -> abs(budget.monthLeft)
-                        else -> abs(budget.leftToday)
-                    },
-                ),
-                style = MaterialTheme.typography.displayLarge,
-                color = if (over) c.negative else c.textPrimary,
+            val heroText = money.formatWhole(
+                when {
+                    budget == null -> state.spentToday
+                    usedUp -> abs(budget.monthLeft)
+                    else -> abs(budget.leftToday)
+                },
             )
+            // A long amount ("₹10,17,989") shrinks just enough to fit the width instead of running off the screen.
+            androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val full = MaterialTheme.typography.displayLarge
+                val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+                val width = remember(heroText, full) { measurer.measure(heroText, full).size.width }
+                val room = constraints.maxWidth
+                val style = if (width > room && width > 0) full.copy(fontSize = full.fontSize * (room.toFloat() / width * 0.97f)) else full
+                RollingText(text = heroText, style = style, color = if (over) c.negative else c.textPrimary)
+            }
             Spacer(Modifier.height(14.dp))
             if (budget != null) {
                 ProgressLine(budget.usedFraction)
                 Spacer(Modifier.height(10.dp))
                 Row {
                     Text(
-                        if (usedUp) "${money.formatWhole(budget.monthlyBudget - budget.monthLeft)} of ${money.formatWhole(budget.monthlyBudget)} this month"
+                        if (usedUp) {
+                            // Bills still to come take their share too; say so, or "₹20,149 of ₹14,000" makes no sense.
+                            val spent = budget.monthlyBudget - budget.monthLeft - budget.reserved
+                            if (budget.reserved > 0) "${money.formatWhole(spent)} spent + ${money.formatWhole(budget.reserved)} bills due, of ${money.formatWhole(budget.monthlyBudget)}"
+                            else "${money.formatWhole(spent)} of ${money.formatWhole(budget.monthlyBudget)}"
+                        }
                         else "${money.formatWhole(state.spentToday)} of ${money.formatWhole(budget.dailyLimit)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textSecondary,
@@ -1045,20 +1170,20 @@ private fun OwedSummary(
                 }
             }
             shown.forEach { b ->
-                val theyOwe = b.netMinor > 0
+                val theyOwe = if (b.pendingOnly) b.entries.first().theyOwe else b.netMinor > 0
                 val latest = b.entries.maxByOrNull { it.epochDay }
                 RowDivider(inset = 16.dp)
                 com.leftovers.app.ui.components.ListRow(
                     b.person,
                     subtitle = latest?.let { d ->
-                        listOfNotNull(d.note.ifBlank { null }, LocalDate.ofEpochDay(d.epochDay).friendlyLabel()).joinToString(" · ") +
+                        listOfNotNull("Split".takeIf { d.splitOf != null }, d.note.ifBlank { null }, LocalDate.ofEpochDay(d.epochDay).friendlyLabel()).joinToString(" · ") +
                             if (b.entries.size > 1) " · +${b.entries.size - 1} more" else ""
                     },
                     leading = { IconTile(Lucide.HandCoins, if (theyOwe) c.positive else c.warning, size = 38.dp) },
                     trailing = {
                         Column(horizontalAlignment = Alignment.End) {
-                            Text(money.format(abs(b.netMinor)), style = MaterialTheme.typography.titleSmall, color = if (theyOwe) c.positive else c.textPrimary)
-                            Text(if (theyOwe) "owes you" else "you owe", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
+                            Text(if (b.pendingOnly) "Pending" else money.format(abs(b.netMinor)), style = MaterialTheme.typography.titleSmall, color = if (theyOwe) c.positive else c.textPrimary)
+                            Text(if (b.pendingOnly) "amount to come" else if (theyOwe) "owes you" else "you owe", style = MaterialTheme.typography.labelSmall, color = c.textTertiary)
                         }
                     },
                     onClick = { onOpen(b.person, rows[b.person]) },

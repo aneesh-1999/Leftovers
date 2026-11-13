@@ -29,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.kyant.backdrop.backdrops.layerBackdrop
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -70,6 +71,13 @@ class MainActivity : FragmentActivity() {
     private var openRosterShiftId by mutableStateOf<Long?>(null)
     private var openDebtsRequest by mutableStateOf(false)
     private var openCreditCardsRequest by mutableStateOf(false)
+    /** Money owed sent from a friend's Leftovers, in the link this was opened with; shown once the app is unlocked. */
+    private var sharedOwed by mutableStateOf<com.leftovers.app.util.SharedOwed.Shared?>(null)
+
+    private fun readShared(intent: Intent) {
+        val data = intent.data?.takeIf { com.leftovers.app.util.SharedOwed.isLink(it.scheme, it.host, it.path) } ?: return
+        com.leftovers.app.util.SharedOwed.parse(data.toString())?.let { sharedOwed = it }
+    }
     private var locked by mutableStateOf(true)
     private var lockChecked by mutableStateOf(false)
     private var backgroundedAt = 0L
@@ -90,6 +98,7 @@ class MainActivity : FragmentActivity() {
         if (sId > 0) openRosterShiftId = sId
         openDebtsRequest = intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)
         openCreditCardsRequest = intent.getBooleanExtra(EXTRA_OPEN_CREDIT_CARDS, false) || intent.getBooleanExtra("extra_open_credit_cards", false)
+        if (savedInstanceState == null) readShared(intent)
         lifecycleScope.launch {
             locked = container.settings.settings.first().appLock
             lockChecked = true
@@ -100,20 +109,15 @@ class MainActivity : FragmentActivity() {
             val scope = rememberCoroutineScope()
             val s = settings
             if (s != null && lockChecked) {
-                val dark = when (s.themeMode) {
+                val themeDark = when (s.themeMode) {
                     ThemeMode.SYSTEM -> isSystemInDarkTheme()
                     ThemeMode.LIGHT -> false
                     ThemeMode.DARK -> true
                 }
-                // Keep status/navigation bar icons readable when the app theme differs from the system theme.
-                LaunchedEffect(dark) {
-                    val style = if (dark) SystemBarStyle.dark(Color.TRANSPARENT) else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
-                    enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
-                }
 
-                // With app lock on, hide balances from the Recents preview and block screenshots.
-                LaunchedEffect(s.appLock) {
-                    if (s.appLock) {
+                // With app lock on, or screenshots blocked, hide balances from the Recents preview and block screenshots.
+                LaunchedEffect(s.appLock, s.blockScreenshots) {
+                    if (s.appLock || s.blockScreenshots) {
                         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                     } else {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -123,8 +127,41 @@ class MainActivity : FragmentActivity() {
                 val money = remember(s.currencyCode) { Money(s.currencyCode) }
                 val hazeState = rememberHazeState()
                 val showLock = s.appLock && locked
-                LeftoversTheme(darkTheme = dark, dynamicColor = s.dynamicColor, glassEffects = s.glassEffects, pureBlack = s.pureBlack) {
+                val backdrop = com.leftovers.app.ui.theme.Backdrop.of(s.backdrop)
+                // The background photo, loaded again when a new one is chosen.
+                var photo by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<com.leftovers.app.ui.theme.BackgroundPhoto.Loaded?>(null) }
+                androidx.compose.runtime.LaunchedEffect(s.photoVersion, backdrop, s.photoBlur) {
+                    photo = if (backdrop != com.leftovers.app.ui.theme.Backdrop.PHOTO) null
+                    else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        com.leftovers.app.ui.theme.BackgroundPhoto.loadWithFrost(this@MainActivity, s.photoBlur)
+                    }
+                }
+                val dark = themeDark
+                // Over a photo, only the text changes: white or black, picked by how bright the photo is unless chosen.
+                val blackText = photo?.let { p ->
+                    when (s.photoText) {
+                        "WHITE" -> false
+                        "BLACK" -> true
+                        else -> p.bright
+                    }
+                }
+                // Keep status/navigation bar icons readable: they follow the text over a photo, else the theme.
+                val lightBars = blackText ?: !dark
+                LaunchedEffect(lightBars) {
+                    val style = if (!lightBars) SystemBarStyle.dark(Color.TRANSPARENT) else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+                    enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+                }
+                LeftoversTheme(
+                    darkTheme = dark, dynamicColor = s.dynamicColor, glassEffects = s.glassEffects || photo != null, pureBlack = s.pureBlack,
+                    backdrop = backdrop, photo = photo?.photo, frost = photo?.frost, blackText = blackText == true, photoDim = s.photoDim,
+                    accent = s.accentColor.takeIf { it != 0L }?.let { androidx.compose.ui.graphics.Color(it) },
+                ) {
+                    // Cards are liquid glass over a photo where the phone can draw it (Android 13+), with glass on.
+                    val bgBackdrop = com.kyant.backdrop.backdrops.rememberLayerBackdrop()
+                    val liquidCards = photo != null && android.os.Build.VERSION.SDK_INT >= 33 && s.liquidGlass
                     CompositionLocalProvider(
+                        com.leftovers.app.ui.components.LocalBackgroundBackdrop provides (if (liquidCards) bgBackdrop else null),
+                        com.leftovers.app.ui.screens.LocalEnvelopeTag provides s.plan.envelopeTag,
                         LocalMoney provides money,
                         com.leftovers.app.util.LocalUse24Hour provides when (s.timeFormat) {
                             com.leftovers.app.data.TimeFormat.H12 -> false
@@ -136,7 +173,7 @@ class MainActivity : FragmentActivity() {
                     ) {
                         Box(Modifier.fillMaxSize()) {
                             // The aurora is a blur source so frosted bars pick up its colour.
-                            AuroraBackground(Modifier.hazeSource(hazeState, zIndex = 0f))
+                            AuroraBackground(Modifier.hazeSource(hazeState, zIndex = 0f).then(if (liquidCards) Modifier.layerBackdrop(bgBackdrop) else Modifier))
                             when {
                                 !s.onboarded -> WelcomeScreen(
                                     defaultCurrency = s.currencyCode,
@@ -150,9 +187,9 @@ class MainActivity : FragmentActivity() {
                                     },
                                     onRestore = { uri, password, onNeedPassword, onResult ->
                                         scope.launch {
-                                            container.backup.import(uri, password).fold(
-                                                { count ->
-                                                    onResult("Restored $count entries successfully")
+                                            container.backup.`import`(uri, password).fold(
+                                                { restored ->
+                                                    onResult("Restored ${restored.entries} entries successfully")
                                                 },
                                                 { err ->
                                                     if (err is com.leftovers.app.util.BackupPasswordException) {
@@ -180,6 +217,8 @@ class MainActivity : FragmentActivity() {
                                     },
                                     onOpenDebtsHandled = { openDebtsRequest = false },
                                     onOpenCreditCardsHandled = { openCreditCardsRequest = false },
+                                    sharedOwed = sharedOwed,
+                                    onSharedHandled = { sharedOwed = null },
                                 )
                             }
                             // After a crash: offer to report it. Nothing leaves the phone unless the user sends it.
@@ -266,6 +305,7 @@ class MainActivity : FragmentActivity() {
         }
         if (intent.getBooleanExtra(EXTRA_OPEN_DEBTS, false)) openDebtsRequest = true
         if (intent.getBooleanExtra(EXTRA_OPEN_CREDIT_CARDS, false) || intent.getBooleanExtra("extra_open_credit_cards", false)) openCreditCardsRequest = true
+        readShared(intent)
     }
 
     override fun onStart() {
