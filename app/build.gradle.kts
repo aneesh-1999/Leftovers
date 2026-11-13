@@ -39,8 +39,8 @@ android {
         applicationId = "com.leftovers.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "1.8.6"
+        versionCode = 30
+        versionName = "1.8.7"
         resourceConfigurations += listOf("en")
 
         // Injected securely from local.properties or CI environment variables (never committed to git)
